@@ -1,0 +1,996 @@
+{
+ "reviewed_on": "2026-11-06",
+ "method": "classify + independent skeptic + diagnosis check",
+ "misses": {
+  "H01": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-000",
+   "variant": "v0",
+   "qid": "Q1",
+   "question_text": "What was the smallest depth, in miles, among the earthquakes that occurred between 10:40 UTC on 12 April 2026 and 16:40 UTC on 12 April 2026? Round to 1 decimal place.",
+   "answer_key": 9.7,
+   "model_answer": 5.5,
+   "cause": "other",
+   "label": "an out-of-window event counted (no format reason)",
+   "confidence": "low",
+   "agents": {
+    "classified": {
+     "miss_id": "H01",
+     "recomputed_answer": "9.7",
+     "key_is_correct": true,
+     "key_notes": "After converting local times, seven events fall in [10:40, 16:40) UTC on 12 Apr: ak66973250 10:53, ci85179058 11:45, ci56109721 12:40, ci51488939 14:27, us77319k4i 15:05, us6083hvb8 16:27, us698159t5 16:35. The shallowest is ci85179058 at 15.6 km = 9.69 mi, which rounds to 9.7.",
+     "cause": "other",
+     "culprit_events": [
+      "ci22105207"
+     ],
+     "culprit_lines": [
+      "CI WIRE [08:04 UTC on 12 April 2026] ML 2.6 quake in Southern California @ (33.983, -116.691); 8.9 km deep. Ref ci22105207, reviewed."
+     ],
+     "explanation": "The model most likely let ci22105207 into the window even though its time is printed as 08:04 UTC, 2h36m before 10:40, then converted its 8.9 km correctly to 5.53, giving 5.5 mi. No format reason shows: maybe it took the CI WIRE time as Pacific local time, or picked up the 8.9 km from the line just before ci85179058, which is in the window. The alternative needs two slips: reading ak71202490's '15:19 (UTC-10:00) 12 Apr' (really 01:19 on 13 Apr) as 15:19 UTC and leaving its '5.5 km' unconverted. That is less likely because Haiku converts km to mi correctly in 29 of 29 other renderings that need it, and here it was not fooled by the uu84607107 local-time trap ('10:50 (UTC-07:00)', 4.4 km), which would have given a smaller answer.",
+     "reproduces_exact_answer": true,
+     "confidence": "low"
+    },
+    "skeptic": {
+     "miss_id": "H01",
+     "my_answer": "9.7",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "Minor, does not affect the result. (1) The station line \"Station CI.BSN was offline from 13:00 to 14:39 UTC for maintenance; its readings are not included.\" overlaps ci51488939 (06:27 UTC-08:00 = 14:27Z). Rule 9 says station-status lines change nothing, and dropping that event would leave the minimum at 9.7 anyway. (2) Times like \"15:19 (UTC-10:00) 12 Apr 2026\" do not carry the word \"local\". The digest itself shows they are local times: \"11:22 (UTC-12:00) 12 Apr 2026 ref=at67416429 ... same_as=us6231c33s\" matches \"US WIRE [23:22 UTC on 12 April 2026] ... Ref us6231c33s\". Reading them as UTC instead would make the answer 2.7 (uu84607107, 4.4 km), not 5.5.",
+     "notes": "Window [10:40Z, 16:40Z) on 12 Apr. Earthquakes inside it, with times converted to UTC: ak66973250 00:53 (UTC-10) = 10:53Z, 91.5 km = 56.9 mi; ci85179058 11:45:22Z, 15.6 km = 9.69 mi; ci56109721 4:40 AM (UTC-08) = 12:40Z, 10.5 mi; ci51488939 06:27 (UTC-08) = 14:27Z, 15.9 km = 9.88 mi; us77319k4i 3:05 AM (UTC-12) = 15:05Z, 33.4 mi; us6083hvb8 4:27 AM (UTC-12) = 16:27Z, 158.3 mi; us698159t5 01:35 (UTC+09) on 13 Apr = 16:35Z on 12 Apr, 23.1 mi. The minimum is 9.7, so the key is correct. The model's 5.5 fits only two cases. One is ci22105207 (\"CI WIRE [08:04 UTC on 12 April 2026] ... 8.9 km deep\" = 5.53 mi), which occurred 2h36m before the window opens; no reading of rule 6 puts it inside, even if the bracketed time were read as the wire's send time. The other is ak71202490 (\"15:19 (UTC-10:00) 12 Apr 2026 ... depth 5.5 km\"), which needs two slips: ignoring the offset (it is 01:19Z on 13 Apr) and leaving the depth in km (it is 3.4 mi). No consistent reading gives 5.5. The same model answered 9.7 on renderings v1 and v2, which fits a one-off slip."
+    },
+    "diagnosis": {
+     "miss_id": "H01",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "The key of 9.7 is right. Seven events fall in the window and the shallowest is ci85179058 at 15.6 km = 9.69 mi. Only two values in the digest give 5.5: ci22105207's 8.9 km (5.53 mi) and ak71202490's 5.5 km left unconverted. Two pieces of evidence beyond the diagnosis count against the ak71202490 route. First, the same reply's Q3=9 is correct, and that count needs ak71202490 at 01:19 UTC on 13 Apr (inside 21:00-05:15), so the model timed that line correctly. Second, across the whole run Haiku got 30 of 30 other depth-in-miles renderings right where the answer event's depth was printed only in km (the diagnosis says 29/29, close enough), so skipping the conversion is very unlikely. The uu84607107 local-time trap (4.4 km = 2.7 mi) was also avoided. In v1 and v2, ci22105207 is printed as '08:04:12Z ... 8.9 km (5.5 mi)' and was left out, so the v0 slip looks one-off. In v0 the CI WIRE line sits right above ci85179058, the true minimum, which makes it plausible the model gave ci85179058 the 8.9 km from the line above. The line's time is explicitly UTC, so 'other' fits better than time_conversion. Low confidence is appropriate."
+    }
+   }
+  },
+  "H02": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-004",
+   "variant": "v1",
+   "qid": "Q1",
+   "question_text": "Among the earthquakes at least 16.3 miles deep, what was the highest magnitude recorded?",
+   "answer_key": 5.6,
+   "model_answer": 4.5,
+   "cause": "overlooked_line",
+   "label": "a qualifying line overlooked",
+   "confidence": "medium",
+   "agents": {
+    "classified": {
+     "miss_id": "H02",
+     "recomputed_answer": "5.6",
+     "key_is_correct": true,
+     "key_notes": "16.3 mi = 26.23 km. us698159t5 (reviewed, M5.6 mww, 37.1 km = 23.05 mi) qualifies and is the largest. The next largest qualifier is us7972msjn M4.5 at 18.3 mi; us6507h7kn counts at its reviewed M4.3, not the preliminary M4.6.",
+     "cause": "overlooked_line",
+     "culprit_events": [
+      "us698159t5"
+     ],
+     "culprit_lines": [
+      "01:35 (UTC+09:00) 13 Apr 2026 \u2014 A magnitude 5.6 (mww) earthquake struck Honshu, Japan; epicentre 39\u00b042.24'N 142\u00b026.04'E, depth 37.1 km. The US network lists it as us698159t5 (reviewed)."
+     ],
+     "explanation": "The model left us698159t5 (37.1 km = 23.1 mi) out of the depth-filtered set and returned the next largest, us7972msjn M4.5 ('depth 18.3 mi'). No depth reading can exclude 37.1 km, the same km depth with the same miles threshold was handled in v0 (pipe format), and its correct Q2 count of 8 suggests it saw the event, so this looks like the prose line was skipped in the Q1 scan. An alternative is ignoring km-only depths in this mostly-miles digest: that also drops us68032lh6 and still gives 4.5.",
+     "reproduces_exact_answer": true,
+     "confidence": "medium"
+    },
+    "skeptic": {
+     "miss_id": "H02",
+     "my_answer": "5.6",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "Minor, does not affect the result. \"highest magnitude recorded\" could be read as the highest value printed on any report, preliminary ones included (e.g. \"ref=us6507h7kn net=at mag=4.6 ... status=preliminary\", or ew93062955 M5.4, which is only 0.1 mi deep). The maximum is still 5.6 under that reading. Separately, the preliminary \"[EW] pr10083501 | ... | depth 4.5 mi\" and the reviewed \"depth 4.5 km (2.8 mi)\" disagree on units, but that event is shallow either way and does not matter for Q1.",
+     "notes": "Earthquakes at least 16.3 mi deep: ak82817824 20.2 mi, M1.1; us68032lh6 34.1 km = 21.19 mi, MB 4.2; us698159t5 37.1 km = 23.05 mi, mww 5.6; ak53937112 31.2 mi, M1.0; ak83586299 61.4 mi, M1.1; pr46139773 17.0 mi, MD 1.1; us7972msjn 18.3 mi, MB 4.5; us6507h7kn 44.6 mi, reviewed MB 4.3; ak51444988 54.6 mi, M3.5. Excluded as too shallow: ak86711893 at 15.4 mi and pr21452414 at 17.6 km = 10.94 mi. The maximum is 5.6, so the key is correct. The model's 4.5 is what you get by dropping us698159t5, i.e. \"01:35 (UTC+09:00) 13 Apr 2026 \u2014 A magnitude 5.6 (mww) earthquake struck Honshu, Japan; ... depth 37.1 km ... us698159t5 (reviewed)\". The most likely cause is skipping depths given only in km: the only qualifying km-only events are us68032lh6 and us698159t5, and dropping both still gives 4.5. That breaks rule 5. Excluding the mww scale would break rule 7, which names mww explicitly. The question has no time window, and the event's time (16:35Z on 12 Apr) is inside the digest's coverage anyway. Even comparing 37.1 to 16.3 without converting would keep the event in. No defensible reading drops it. The same model answered 5.6 on renderings v0 and v2."
+    },
+    "diagnosis": {
+     "miss_id": "H02",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "The key of 5.6 is right: 16.3 mi = 26.23 km and us698159t5 (37.1 km = 23.05 mi) qualifies. Dropping it leaves us7972msjn at M4.5 as the largest; us6507h7kn counts at its reviewed M4.3. No conversion of 37.1 km, done either way, comes out below 16.3, so a unit error cannot exclude it. Only skipping the line, or skipping km-only depths, works. Skipping km-only depths would also drop us68032lh6 (34.1 km, M4.2) and still gives 4.5. The other evidence fits. Q2=8 needs us698159t5's M5.6, and Q2-Q5 in this rendering are all correct. In v0 the same 37.1 km depth with the same miles threshold, in pipe format, got 5.6. In v2 the threshold is in km and the answer was also 5.6. A skipped line and skipped km-only values cannot be told apart, and both are omissions, so overlooked_line with medium confidence is reasonable."
+    }
+   }
+  },
+  "H03": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-006",
+   "variant": "v1",
+   "qid": "Q5",
+   "question_text": "Count the distinct earthquakes that occurred between 18:00 UTC on 12 April 2026 and 01:25 UTC on 13 April 2026.",
+   "answer_key": 6,
+   "model_answer": 7,
+   "cause": "time_conversion",
+   "label": "local time \u2192 UTC conversion",
+   "confidence": "low",
+   "agents": {
+    "classified": {
+     "miss_id": "H03",
+     "recomputed_answer": "6",
+     "key_is_correct": true,
+     "key_notes": "In the window: ak53937112 18:05, ak65752034 18:30, nc44871449 18:41, ak52054996 19:32 ('09:32 (UTC-10:00)'), nc46687735 19:57, pr81889138 22:49 ('18:49 (UTC-04:00)'). us6530aeef, ew74910210, the EW pr81889138 report and the US ak65752034 report are duplicates. us6814g32r is retracted. ak42965892 falls at 04:27 UTC on 13 Apr, after the 01:25 end.",
+     "cause": "time_conversion",
+     "culprit_events": [
+      "ak42965892"
+     ],
+     "culprit_lines": [
+      "[AK] ak42965892 | 18:27 (UTC-10:00) 12 Apr 2026 | Southern Alaska | 60.596\u00b0N, 150.708\u00b0W | depth 13.8 mi | ML 1.0 | reviewed"
+     ],
+     "explanation": "Most likely the model read ak42965892's local '18:27 (UTC-10:00) 12 Apr' as 18:27 UTC, inside the window (it is really 04:27 UTC on 13 Apr), and counted a seventh quake. That local-time trap appears only in v1 (v0 and v2 print 04:27 UTC, and the model answered 6 there), and the line comes right after ak53937112's '18:05:01 UTC'. The slip must have been selective, since ignoring every offset also loses ak52054996 and nets 6. Missing the us6814g32r retraction or counting us6530aeef as separate would also give exactly 7, so the evidence is weak.",
+     "reproduces_exact_answer": true,
+     "confidence": "low"
+    },
+    "skeptic": {
+     "miss_id": "H03",
+     "my_answer": "6",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "Minor, does not affect the result. (1) Two IDs are nearly identical: us6814y8ny (\"US WIRE [Sun, 12 Apr 2026 09:47:26 +0000] MB 4.1 quake in Central Chile ... 74.2 mi deep\") and us6814g32r (\"23:08 UTC on 12 April 2026 | Central Chile | ... 75.8 mi | MB 4.1\"). The retraction names the exact ID (\"report us6814g32r has been RETRACTED (mine blast). Disregard it.\"), and us6814y8ny falls outside the window anyway. (2) \"Station PR.WLA was offline from 19:00 to 20:26 UTC for maintenance; its readings are not included.\" sits under the \"Corrections and retractions:\" heading, but it is a station-status line, so rule 9 applies. If a reader wrongly applied it, the count would go down, not up.",
+     "notes": "Window [18:00Z on 12 Apr, 01:25Z on 13 Apr). Distinct earthquakes inside it: (1) ak53937112 18:05:01Z, with us6530aeef \"same event as ak53937112\"; (2) ak65752034 18:30:03Z, with the [US] preliminary under the same ID; (3) nc44871449 18:41:44Z, with ew74910210 \"same event as nc44871449\" (10:41 AM UTC-08 = 18:41Z); (4) ak52054996 09:32 (UTC-10) = 19:32Z; (5) nc46687735 19:57:44Z; (6) pr81889138 18:49 (UTC-04) = 22:49Z, with the [EW] preliminary under the same ID at 22:49:57Z. us6814g32r (23:08Z) is retracted. Outside the window: ak42965892 18:27 (UTC-10) = 04:27Z on 13 Apr, ak51444988 05:09:57Z on 13 Apr, and ci50840186 17:20:06Z. The count is 6, so the key is correct. Getting 7 needs exactly one error, and every candidate breaks an explicit rule. Counting the retracted us6814g32r breaks rule 4. Counting one of the four duplicates as its own earthquake breaks rule 1, which says reports sharing an ID or naming it in a \"same event as\" note are one earthquake. Reading \"[AK] ak42965892 | 18:27 (UTC-10:00) 12 Apr 2026\" as UTC ignores the stated offset, and the digest confirms that format is local time: \"18:49 (UTC-04:00)\" matches \"2026-04-12 22:49:57 UTC\" for pr81889138. Nothing falls on a window boundary. The same model got the other four questions right in this reply and answered 6 on renderings v0 and v2."
+    },
+    "diagnosis": {
+     "miss_id": "H03",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "The key of 6 is right: ak53937112, ak65752034, nc44871449, ak52054996 (19:32), nc46687735 and pr81889138 (22:49). Reading ak42965892's '18:27 (UTC-10:00)' as UTC gives 7. Ignoring every offset nets 6 because ak52054996 also drops out, as the diagnosis says. Other single slips that give 7: missing the us6814g32r retraction, or counting us6530aeef, the EW pr81889138 report, or the US ak65752034 report as separate quakes. Counting ew74910210 separately is ruled out because Q2=nc44871449 (if it were separate, its M2.3 would be the strongest Northern California event). The US ak65752034 line has the same pipe format in v2, where the model answered correctly. Run-wide error rates favour the time slip. Haiku never missed a pipe-format 'same event as' note elsewhere (0 of about 125 load-bearing cases outside this item). It may have missed a 'NOTICE ... RETRACTED' retraction once in about 115 (inst-031 v0 Q4). Local-time-read-as-UTC slips match its answers in two other count misses (inst-031 v0 Q4, inst-058 v0 Q4), making it Haiku's most common slip. The 'only in v1' argument is weaker than stated, though. v1 is also the only rendering with the NOTICE-style retraction wording and the pipe-format note for us6530aeef. And v0 has a similar trap the model handled: ak51444988 '19:09 (UTC-10:00)', which rolls past midnight to after the window end. Low confidence is appropriate."
+    }
+   }
+  },
+  "H04": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-008",
+   "variant": "v2",
+   "qid": "Q1",
+   "question_text": "Count the distinct earthquakes of magnitude 4.3 or greater.",
+   "answer_key": 10,
+   "model_answer": 9,
+   "cause": "correction_or_status",
+   "label": "a correction or the reviewed value not applied",
+   "confidence": "medium",
+   "agents": {
+    "classified": {
+     "miss_id": "H04",
+     "recomputed_answer": "10",
+     "key_is_correct": true,
+     "key_notes": "",
+     "cause": "correction_or_status",
+     "culprit_events": [
+      "us6110inme"
+     ],
+     "culprit_lines": [
+      "UPDATE [2026-04-13T00:05:43Z]: magnitude for us6110inme revised from 4.1 to 5.1 mb.",
+      "2026-04-12T22:59:06Z ref=us6110inme net=us mag=4.1 type=mb region=\"Honshu, Japan\" loc=37.451,140.168 depth=36.5 km status=reviewed"
+     ],
+     "explanation": "The model most likely kept the reviewed M4.1 for us6110inme and missed the UPDATE notice revising it to M5.1. In v2 that notice is the first line of the digest, about 22 lines above the event's own line, while in v0 and v1 (both answered 10) it sat in an end section or nearer the event; dropping us6110inme turns 10 into 9. Dropping one of the three exact-M4.3 events (us7226ksb8, us6885k269, us6507h7kn) would also give 9, but a strict-inequality misreading would drop all three and give 7, so that explanation is unlikely.",
+     "reproduces_exact_answer": true,
+     "confidence": "medium"
+    },
+    "skeptic": {
+     "miss_id": "H04",
+     "my_answer": "10",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "None that decides Q1. Two things a reader could stumble on, both settled by the rules: (1) The correction is labelled UPDATE, not CORRECTION: \"UPDATE [2026-04-13T00:05:43Z]: magnitude for us6110inme revised from 4.1 to 5.1 mb.\" Rule 3 covers it explicitly (\"any notice saying that a value was revised\"). (2) us6889dlcy carries a local date of the previous day, \"[US] us6889dlcy | 21:37 (UTC-12:00) 11 Apr 2026 | Tonga | ...\", while the header reads \"the 24 hours ending 2026-04-13T06:00:00Z\". It converts to 09:37 UTC on 12 Apr, inside the window, and rule 9 says the header carries no data anyway. Unrelated minor point: Q2 says \"recorded from ... up to ...\" where rule 6 speaks of occurrence time.",
+     "notes": "My own pass gives 10 events at M4.3 or above: us7226ksb8 4.3, us6889dlcy 4.6 (09:37 UTC 12 Apr), us698159t5 5.6, us7738n73z 4.7 (ew53705666 is a declared duplicate of it, so it counts once), us6885k269 4.3, us6794ad77 4.6, us6110inme (printed 4.1, corrected to 5.1), us6507h7kn 4.3, us6330f32y 4.4, us6084crko 4.6. Excluded: us6895pxbk 4.2; us67870zf7 4.2 (its preliminary duplicate at91174847 says 4.5 but is superseded under rule 2); us7320mfio 4.1; us6397z8cu 4.0; us7618kmw6 4.0; ci79104736 (retracted); and the small CI/NN/AK/PR events. Getting 9 needs one of: ignoring the UPDATE correction against rule 3; dropping one of the three events at exactly 4.3, though '4.3 or greater' is inclusive; or dropping us6889dlcy by misconverting its time and treating the header as a filter, against rule 9. All three are plain slips. The same model answered 10 on v0 and v1, and v1 uses the identical UPDATE wording, which also points to a slip. The model's other answers in this rendering (Q2-Q5) are all correct."
+    },
+    "diagnosis": {
+     "miss_id": "H04",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "I re-derived key 10 from the v2 digest. The UPDATE is on line 35, 22 lines above the us6110inme mag=4.1 line (57). Leaving out that revision gives exactly 9. v1 uses the same UPDATE wording but puts it 7 lines above the event, and v0 puts a CORRECTION in an end section; both were answered 10. So the notice's position, not its label, is what changed in v2. The only other v2-specific oddity among the ten qualifying events is us6889dlcy, printed as 21:37 (UTC-12:00) 11 Apr (= 09:37 UTC 12 Apr). Q1 has no time filter, so that is a weak alternative. A strict '>' reading would drop all three M4.3 events and give 7, not 9. Q3=16:35 cannot tell the cases apart, because the M5.6 us698159t5 outranks 5.1 either way. Medium confidence is fair."
+    }
+   }
+  },
+  "H05": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-014",
+   "variant": "v2",
+   "qid": "Q3",
+   "question_text": "How many distinct earthquakes that occurred between 2026-04-12 12:45 UTC and 2026-04-12 18:45 UTC are there?",
+   "answer_key": 3,
+   "model_answer": 2,
+   "cause": "other",
+   "label": "a retraction applied to a look-alike report",
+   "confidence": "low",
+   "agents": {
+    "classified": {
+     "miss_id": "H05",
+     "recomputed_answer": "3",
+     "key_is_correct": true,
+     "key_notes": "",
+     "cause": "other",
+     "culprit_events": [
+      "us7083rixz",
+      "us7870yno3"
+     ],
+     "culprit_lines": [
+      "RETRACTION [13:37 UTC on 12 April 2026]: us7870yno3 was not an earthquake (sonic boom); ignore that report.",
+      "13:30 UTC on 12 April 2026 \u2014 A magnitude 4.4 (mb) earthquake struck Tonga; epicentre 19.445\u00b0S, 174.006\u00b0W, depth 69.2 mi. The US network lists it as us7083rixz (reviewed).",
+      "2026-04-12 12:09:38 UTC \u2014 A magnitude 4.5 (mb) earthquake struck Tonga; epicentre 19.462\u00b0S, 174.124\u00b0W, depth 113.7 km. The US network lists it as us7870yno3 (reviewed)."
+     ],
+     "explanation": "Most likely the model applied the us7870yno3 retraction to the us7083rixz report printed directly beneath the notice and dropped it, leaving only ak50715142 and ak33694694 (2). The two Tonga events have near-identical epicentres and look-alike IDs, the notice's 13:37 time sits next to the event's 13:30 inside the window, v0/v1 (retraction placed at the end) were answered 3, and Q2=12 still holds if it counted us7870yno3 instead. A plain skip of ak50715142 or ak33694694 gives the same 2, so the evidence is weak.",
+     "reproduces_exact_answer": true,
+     "confidence": "low"
+    },
+    "skeptic": {
+     "miss_id": "H05",
+     "my_answer": "3",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "Q3 says \"between 2026-04-12 12:45 UTC and 2026-04-12 18:45 UTC\" without saying whether the endpoints count. Rule 6 settles it (start included, end excluded), and no event falls near either end, so it does not matter here. One layout trap, not a real ambiguity: the retraction line sits directly above a lookalike event. \"RETRACTION [13:37 UTC on 12 April 2026]: us7870yno3 was not an earthquake (sonic boom); ignore that report.\" is followed by \"13:30 UTC on 12 April 2026 \u2014 A magnitude 4.4 (mb) earthquake struck Tonga; epicentre 19.445\u00b0S, 174.006\u00b0W, depth 69.2 mi. The US network lists it as us7083rixz (reviewed).\" The two events have almost the same epicentre and depth: us7870yno3 is at 19.462\u00b0S, 174.124\u00b0W, 113.7 km. But the retraction names us7870yno3 by ID, and that event has its own report at 12:09:38 UTC.",
+     "notes": "Three distinct events fall in [12:45, 18:45) UTC on 12 Apr: us7083rixz at 13:30 UTC; ak50715142 at 14:13:00Z (a preliminary M1.7 and a reviewed M1.0 report share the ID, so it is one quake); ak33694694 at 15:02 UTC. The nearest events outside are ak16328412 at 12:08:24 +0000, us7870yno3 at 12:09:38 (retracted anyway) and us6556efqy at 19:31:34Z. The local-time events (ak86711893 = 08:46 UTC 12 Apr; us7457rw3n = 10:06 UTC) fall well outside. All three in-window events are printed in UTC, so no conversion choice can push one out. An answer of 2 most plausibly comes from applying the us7870yno3 retraction to us7083rixz on the next line, which rules 1 and 4 forbid because they tie reports together by ID only. The same model answered 3 on v0 and v1. Its Q1 (117.1) and Q2 (12) are correct."
+    },
+    "diagnosis": {
+     "miss_id": "H05",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "I re-derived key 3: us7083rixz 13:30, ak50715142 14:13 (preliminary on line 35, reviewed on line 62), ak33694694 15:02. No event sits at a window edge. Only v2 prints the RETRACTION (line 37) directly above us7083rixz (line 38); v0 and v1 put it in an end section and were answered 3. The retracted us7870yno3 and us7083rixz look like twins: both Tonga, 12.5 km apart, 113.7 vs 111.4 km deep, M4.5 vs M4.4. Q2=12 is unchanged by the swap, since one M>=2.6 Tonga event is counted either way. It also rules out dropping both Tonga events, which would give 11. Q1=117.1 (us7457rw3n) holds either way. A plain skip of ak33694694 has no trigger: in v0 it needed a UTC-10 conversion and was still counted. ak50715142's two split reports would more naturally be double-counted (4) than dropped. 'other' fits, because retraction_ignored is the opposite error. Low confidence is right."
+    }
+   }
+  },
+  "H06": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-017",
+   "variant": "v0",
+   "qid": "Q4",
+   "question_text": "Among the earthquakes with a depth of 14 km or more, how deep was the shallowest one, in km? Round to 1 decimal place.",
+   "answer_key": 15.5,
+   "model_answer": 18.0,
+   "cause": "overlooked_line",
+   "label": "a qualifying line overlooked",
+   "confidence": "low",
+   "agents": {
+    "classified": {
+     "miss_id": "H06",
+     "recomputed_answer": "15.5",
+     "key_is_correct": true,
+     "key_notes": "",
+     "cause": "overlooked_line",
+     "culprit_events": [
+      "ak97598259",
+      "ak49220723"
+     ],
+     "culprit_lines": [
+      "[AK] ak97598259 | 21:20 UTC on 12 April 2026 | Southern Alaska | (60.862, -150.941) | depth 15.5 km | M2.5 (ml) | reviewed",
+      "2026-04-12T13:12:00Z \u2014 A magnitude 1.5 (ml) earthquake struck Southern Alaska; epicentre 60.858\u00b0N, 150.278\u00b0W, depth 10.8 mi. The AK network lists it as ak49220723 (reviewed).",
+      "RETRACTION [13:51 UTC on 12 April 2026]: ak49220723 was not an earthquake (quarry blast); ignore that report.",
+      "[US] us77429wiq | 11:44 UTC on 12 April 2026 | Tonga | (-20.629, -176.820) | depth 11.2 mi | M5.4 (mb) | reviewed"
+     ],
+     "explanation": "The model left ak97598259 (15.5 km) out, so the shallowest depth of 14 km or more became us77429wiq's 11.2 mi = 18.02 km, rounded to 18.0. It did exclude the retracted ak49220723 (17.4 km), otherwise it would have said 17.4. In v0 ak97598259 sits directly below that retracted twin in the AK block (same region, latitude 60.858 vs 60.862) and between two lines given in miles, so the retraction spilling over or 15.5 km being read as miles are also possible; in v1/v2, where the lines are apart, the model found it and answered 15.4. The evidence cannot tell these apart.",
+     "reproduces_exact_answer": true,
+     "confidence": "low"
+    },
+    "skeptic": {
+     "miss_id": "H06",
+     "my_answer": "15.5",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "None for Q4. One layout trap: the retracted phantom sits directly above the decisive event in the same AK section. \"2026-04-12T13:12:00Z \u2014 A magnitude 1.5 (ml) earthquake struck Southern Alaska; epicentre 60.858\u00b0N, 150.278\u00b0W, depth 10.8 mi. The AK network lists it as ak49220723 (reviewed).\" is followed by \"[AK] ak97598259 | 21:20 UTC on 12 April 2026 | Southern Alaska | (60.862, -150.941) | depth 15.5 km | M2.5 (ml) | reviewed\". The retraction names only ak49220723: \"RETRACTION [13:51 UTC on 12 April 2026]: ak49220723 was not an earthquake (quarry blast); ignore that report.\" Unrelated minor point: Q2's \"recorded from ... up to ...\" uses 'recorded' where rule 6 defines a report's time as occurrence time.",
+     "notes": "Earthquakes 14 km deep or more, after dedupe and retractions: ak97598259 at 15.5 km is the shallowest. Next come us77429wiq (11.2 mi = 18.02 km), ak56887991 (15.3 mi = 24.62 km) and us67040hvn (27.1 km), then deeper ones. ak49220723 (10.8 mi = 17.38 km) is retracted. Just under 14 km: nn50991702 (8.2 mi = 13.20 km), us67298d0a 12.4, us6073za8k 12.1, nc12141731 12.0. The model's 18.0 is us77429wiq, so it skipped ak97598259. No retraction, correction or duplicate note touches ak97598259. The only retraction was issued at 13:51 UTC and names ak49220723, which occurred at 13:12; it cannot refer to an event at 21:20. That makes this an overlooked line, not a reading choice. Cross-rendering check: in v1 and v2, ak97598259 is printed as 9.6 mi (= 15.45 km, which rounds to 15.4). The model answered 15.4 there, so it found the event in those renderings, and the keys correctly differ by rendering. The model's Q1 (117.3), Q2 (9) and Q3 (uu97380412) in v0 are correct."
+    },
+    "diagnosis": {
+     "miss_id": "H06",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "I re-derived key 15.5: ak97598259 is printed as 15.5 km in v0. Excluding it and the retracted ak49220723 (10.8 mi = 17.38 km) leaves us77429wiq at 11.2 mi = 18.02 km, i.e. 18.0. Q2=9 on the same reply shows separately that the model applied the ak49220723 retraction: that event (13:12) falls in the Q2 window, and counting it would give 10. In v1 and v2 the depth is printed as 9.6 mi = 15.45 km, which is why the model answered 15.4 there (scored correct). v0 is the only rendering that gives it in km. Other misreadings that give the same 18.0: (a) reading 15.5 km as miles (24.9 km), since it sits between 10.8 mi and 15.3 mi lines; (b) merging it with the adjacent ak49220723 line or carrying that retraction over to it; (c) skipping the whole AK block, since ak56887991 at 24.6 km would not change the answer. The adjacency trigger is much weaker than in H05: the two AK events are 36 km and 8 h apart, M1.5 vs 2.5, in different formats. Defaulting to overlooked_line is therefore defensible, at low confidence."
+    }
+   }
+  },
+  "H07": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-022",
+   "variant": "v1",
+   "qid": "Q4",
+   "question_text": "Among the earthquakes with magnitude below 4.1, what was the highest magnitude recorded?",
+   "answer_key": 4.0,
+   "model_answer": 2.4,
+   "cause": "time_conversion",
+   "label": "local time \u2192 UTC conversion",
+   "confidence": "medium",
+   "agents": {
+    "classified": {
+     "miss_id": "H07",
+     "recomputed_answer": "4.0",
+     "key_is_correct": true,
+     "key_notes": "'Below 4.1' is strict. The M4.1 reports us6672jhbr and us6597cufw are out, us6836ytlf is withdrawn and pr16105855 is revised to 0.9. The two M4.0 quakes, us7618kmw6 (mb) and ak96782286 (ml), set the maximum. The miss file prints the M4.1 events as 'pass (margin 0.0)' but lists them as excluded; that is a display quirk and the key is unaffected.",
+     "cause": "time_conversion",
+     "culprit_events": [
+      "ak96782286",
+      "us7618kmw6"
+     ],
+     "culprit_lines": [
+      "[AK] ak96782286 | 22:46 (UTC-10:00) 11 Apr 2026 | Southern Alaska | (60.333, -155.385) | depth 14.2 mi | M4.0 (ml) | reviewed",
+      "4:04 AM local time (UTC+10:00) on Apr 13, 2026 ref=us7618kmw6 net=us mag=4.0 type=mb region=\"Honshu, Japan\"",
+      "Window: the 24 hours up to 06:00 UTC on 13 April 2026.",
+      "AK WIRE [2026-04-13 04:07:59 UTC] ML 2.4 quake in Southern Alaska @ (59.705, -151.459); 19.3 km (12.0 mi) deep. Ref ak89400569, reviewed."
+     ],
+     "explanation": "The model dropped both M4.0 quakes, the only events between 2.4 and 4.1, so ak89400569's M2.4 became the maximum. v1 is the only rendering where both need a date rollover: 22:46 UTC-10 on 11 Apr is 08:46 UTC on 12 Apr, and 04:04 UTC+10 on 13 Apr is 18:04 UTC on 12 Apr. If the local dates are kept (08:46 on 11 Apr, 18:04 on 13 Apr), both fall outside the digest's 24-hour window. Dropping every v1 line that fails this way reproduces all four of the model's v1 answers. The same model dropped us698159t5 ('01:35 (UTC+09:00) 13 Apr 2026') the same way in inst-004 v1, and it scored 4.0 on v0 and v2, where ak96782286 is printed in UTC. The alternative is a lapse that treated 4.0 as not below 4.1, which has no basis in the text.",
+     "reproduces_exact_answer": true,
+     "confidence": "medium"
+    },
+    "skeptic": {
+     "miss_id": "H07",
+     "my_answer": "4.0",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "Nothing that matters here. The only line that might tempt a reader is the header \"Window: the 24 hours up to 06:00 UTC on 13 April 2026.\" Rule 9 says headers change nothing, and both M4.0 events fall inside that window anyway once times are converted correctly. The two qualifying maxima are on different scales (mb and ml), but rule 7 says to compare them as plain numbers.",
+     "notes": "I worked it out independently, applying rules 2-4: pr16105855 corrected from 4.3 to 0.9, us6836ytlf ignored as withdrawn, and the PT preliminaries superseded. The highest magnitude below 4.1 is 4.0, and two reviewed reports have it: \"4:04 AM local time (UTC+10:00) on Apr 13, 2026 ref=us7618kmw6 net=us mag=4.0 type=mb ...\" and \"[AK] ak96782286 | 22:46 (UTC-10:00) 11 Apr 2026 | Southern Alaska | ... | M4.0 (ml) | reviewed\". The 4.1s (us6672jhbr, us6597cufw) do not count because the filter is strictly below. The model's 2.4 is the magnitude of ak89400569 (\"ML 2.4 quake in Southern Alaska\"). It is the maximum only if both M4.0 events are dropped. The question has no time or region filter, and no rule removes either event. Even if someone filtered by the header window, the correct UTC times are 08:46 UTC on 12 Apr (ak96782286) and 18:04 UTC on 12 Apr (us7618kmw6), both inside it. To exclude them you need a header filter that rule 9 forbids plus a reversed-sign offset conversion, or you need to carry over Q2's 'below 2.4' threshold. Either way it is a slip. The same model answered 4.0 on the v0 and v2 renderings, where these times are given in UTC. The key is confirmed by the ground-truth list (both M4.0 events pass with margin 0.1)."
+    },
+    "diagnosis": {
+     "miss_id": "H07",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "Checked with the repo's digest parser. Each v1 local time was shifted by its offset but kept on its printed date, and only events inside the header window were kept. That drops us7500hbrp, us7618kmw6, us70374idw, us6110inme, ak96782286 and ak62259644 and returns pr96370419 / 34.2 / Honshu, Japan / 2.4, which is the model's exact v1 reply. Reading the times at face value keeps us7618kmw6 (04:04 on 13 Apr is inside the window) and gives 4.0. Reversing the offset changes Q2 to 117.1. Overlooking both M4.0 lines by chance is much less likely. Caveats: Q4 has no time window, so this explanation also needs the model to have used the header window as a filter, which rule 9 says headers cannot do. The slip is sporadic. In v2 the model kept us7618kmw6 ('04:04 (UTC+10:00) 13 Apr 2026') for Q3, where dropping it would give a tie, and across the run it kept these rollover events in about 30 other cases where dropping them would have changed the answer. The inst-004 v1 parallel is only partial: that same reply's Q2=8 still counts us698159t5, whereas a filter applied to every question would give 6."
+    }
+   }
+  },
+  "H08": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-031",
+   "variant": "v0",
+   "qid": "Q2",
+   "question_text": "What was the smallest depth, in miles, among the earthquakes that occurred between 2026-04-12 18:35 UTC and 2026-04-13 04:25 UTC? Round to 1 decimal place.",
+   "answer_key": 1.2,
+   "model_answer": 5.4,
+   "cause": "overlooked_line",
+   "label": "a qualifying line overlooked",
+   "confidence": "medium",
+   "agents": {
+    "classified": {
+     "miss_id": "H08",
+     "recomputed_answer": "1.2",
+     "key_is_correct": true,
+     "key_notes": "hv86940852 occurred at 13:23 UTC-10, which is 23:23 UTC on 12 Apr, inside [18:35, 04:25). Its depth is printed as 1.2 mi (1.9 km), the shallowest of the 10 in-window quakes.",
+     "cause": "time_conversion",
+     "culprit_events": [
+      "hv86940852"
+     ],
+     "culprit_lines": [
+      "1:23 PM local time (UTC-10:00) on Apr 12, 2026 \u2014 A magnitude 2.4 (md) earthquake struck Hawaii; epicentre 19.439\u00b0N, 155.298\u00b0W, depth 1.2 mi. The HV network lists it as hv86940852 (reviewed).",
+      "2026-04-12 19:22:20 UTC \u2014 A magnitude 1.4 (ml) earthquake struck Southern Alaska; epicentre (61.176, -151.677), depth 5.4 mi. The AK network lists it as ak62486964 (reviewed)."
+     ],
+     "explanation": "The model left hv86940852 out of the window, which most simply happens if its local time is converted wrongly. Taking 13:23 as UTC, applying the offset the wrong way (03:23 UTC) or reading 1:23 PM as 01:23 (11:23 UTC) all put it before 18:35, so the minimum falls to ak62486964's 5.4 mi. Dropping exactly this one event reproduces 5.4. The same model answered 1.2 on v1, where the event is printed in UTC, and on v2. It is also the last line of the digest, so simply overlooking it is the main alternative.",
+     "reproduces_exact_answer": true,
+     "confidence": "medium"
+    },
+    "skeptic": {
+     "miss_id": "H08",
+     "my_answer": "1.2",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "None that matters. Rule 6 settles the endpoints of \"between\" (start included, end excluded), and no event falls near either boundary. The nearest is nc44871449 at 18:41 UTC. us6779a0x9 at 17:46 is clearly outside, and nothing falls near 04:25.",
+     "notes": "After dedupe and dropping the retracted us7547qkux, 10 events fall in [18:35 Apr 12, 04:25 Apr 13). Their depths in miles are 1.2, 5.4, 6.6, 7.0, 8.2, 13.9, 15.3, 18.3, 42.9 and 50.2. The shallowest is \"1:23 PM local time (UTC-10:00) on Apr 12, 2026 \u2014 A magnitude 2.4 (md) earthquake struck Hawaii; epicentre 19.439\u00b0N, 155.298\u00b0W, depth 1.2 mi. The HV network lists it as hv86940852 (reviewed).\" That converts to 23:23 UTC on 12 Apr, well inside the window, so the answer is 1.2 mi. The model's 5.4 is ak62486964 (\"2026-04-12 19:22:20 UTC ... depth 5.4 mi\"), the next shallowest. So the model dropped hv86940852, either by converting the offset the wrong way (13:23 - 10 = 03:23 UTC) or by missing the last digest line. No reading of that line or of the question places 23:23 UTC outside the window, and no notice touches hv86940852. The same model answered 1.2 on v1 and on v2, and v2 uses the identical local-time rendering for hv86940852."
+    },
+    "diagnosis": {
+     "miss_id": "H08",
+     "diagnosis_holds": false,
+     "reproduces_exact_answer": true,
+     "better_cause": "overlooked_line",
+     "better_explanation": "hv86940852 is the very last line of the v0 digest (report 32 of 32, directly before </digest>). Missing it leaves ak62486964's 5.4 mi as the minimum. A conversion error is less likely. v2 prints this event with the identical string '1:23 PM local time (UTC-10:00) on Apr 12, 2026' as its 7th report, and the model answered 1.2 there. The model also converted this event's local time correctly in inst-077 v0/v2 and inst-081 v0/v2, where an error would have changed the answer. The conversion itself is a simple same-day +10 h to 23:23 UTC, nearly 5 h inside the window. The only thing specific to this line in v0 is that it comes last.",
+     "notes": "The named slips (13:23 taken as UTC, the offset reversed, PM read as AM) do give 5.4. A one-off conversion slip cannot be ruled out: across the run the two kinds of error occur at similar rates. Either way hv86940852 is probably missing from Q4 too, so Q4's 13 implies two wrongly added quakes."
+    }
+   }
+  },
+  "H09": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-031",
+   "variant": "v0",
+   "qid": "Q4",
+   "question_text": "How many distinct earthquakes that were recorded from 17:35 UTC on 12 April 2026 up to 05:25 UTC on 13 April 2026 are there?",
+   "answer_key": 12,
+   "model_answer": 13,
+   "cause": "time_conversion",
+   "label": "local time \u2192 UTC conversion",
+   "confidence": "medium",
+   "agents": {
+    "classified": {
+     "miss_id": "H09",
+     "recomputed_answer": "12",
+     "key_is_correct": true,
+     "key_notes": "These 12 quakes fall in [17:35, 05:25): us6779a0x9, nc44871449, ak62486964, ak56887991, hv86940852, us7314jvmh, us6170jsos, us7972msjn, nn13063237, us7119lytc, nc68289560, us67870zf7. at92499836 is merged into nc44871449, the EW and AT re-reports into us7314jvmh and us67870zf7, and the retracted us7547qkux is excluded.",
+     "cause": "time_conversion",
+     "culprit_events": [
+      "ak66973250",
+      "nc88917162"
+     ],
+     "culprit_lines": [
+      "AK WIRE [12:53 AM local time (UTC-10:00) on Apr 12, 2026] MW 5.2 quake in Southern Alaska @ 60.274\u00b0N, 153.031\u00b0W; 56.9 mi deep. Ref ak66973250, reviewed.",
+      "[NC] nc88917162 | 12:27 AM local time (UTC-08:00) on Apr 12, 2026 | Northern California | (38.365, -121.984) | depth 3.6 mi | MD 2.6 | reviewed"
+     ],
+     "explanation": "12:53 AM local (UTC-10) is 00:53 local, or 10:53 UTC, outside the window. Read as 12:53 PM it becomes 22:53 UTC, inside, which adds a 13th quake. v1 and v2 print ak66973250 in UTC and scored 12. The same model over-counted by exactly one in inst-006 v1 Q5, the only rendering there with this same '12:53 AM local time (UTC-10:00)' line. If the model also lost hv86940852 here as it did in Q2, the same slip on nc88917162 (12:27 AM read as 20:27 UTC) would supply the second added quake. Trap misreadings also give 13: the cross-reference at92499836, the retracted us7547qkux, or the EW and AT same-ID re-reports. The last three would also have raised Q5, which the model under-counted.",
+     "reproduces_exact_answer": true,
+     "confidence": "medium"
+    },
+    "skeptic": {
+     "miss_id": "H09",
+     "my_answer": "12",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "Minor and not decisive. \"recorded\" could be read as a filing time, but rule 6 says a report's time is when the earthquake occurred. WIRE reports put the occurrence time in brackets in the same style as notice issue times, e.g. \"US WIRE [20:44 UTC on 12 April 2026] MB 4.5 quake in Tonga ... Ref us7547qkux, reviewed.\" next to \"NOTICE [21:34 UTC on 12 April 2026]: report us7547qkux has been RETRACTED (quarry blast). Disregard it.\". The retraction is also printed before the report it retracts. Rule 4 has no ordering condition, so none of this changes the count. As for \"up to\": rule 6 makes the end exclusive, and the only event near the end, us67870zf7 at 05:22:06, is inside either way.",
+     "notes": "I count 12 distinct, non-retracted earthquakes in [17:35 Apr 12, 05:25 Apr 13). Times are UTC, 12 Apr unless marked 13 Apr:\n- us6779a0x9 17:46:19\n- nc44871449 18:41 (10:41 at UTC-08:00)\n- ak62486964 19:22\n- ak56887991 22:15 (12:15 at UTC-10:00)\n- hv86940852 23:23\n- us7314jvmh 23:52:48\n- us6170jsos 00:21, 13 Apr\n- us7972msjn 01:19, 13 Apr\n- nn13063237 01:52, 13 Apr\n- us7119lytc 01:54, 13 Apr\n- nc68289560 02:49, 13 Apr\n- us67870zf7 05:22:06, 13 Apr\n\nA script recomputation agrees, and so does the ground-truth list. Getting 13 needs one spurious addition, and every candidate breaks a clear rule:\n- the retracted us7547qkux (rule 4);\n- the cross-reference duplicate \"Ref at92499836, preliminary. Dup of nc44871449.\" (rule 1);\n- a same-ID preliminary, either the EW us7314jvmh or the AT us67870zf7 (rule 1);\n- an unconverted local time, such as us698159t5 \"01:35 (UTC+09:00) 13 Apr 2026\" (= 16:35 UTC, outside) or us6204stt7 \"20:16 (UTC+09:00) 12 Apr 2026\" (= 11:16 UTC, outside).\n\nNo event sits within minutes of 17:35, and the end boundary cannot be pushed to include anything new. The same model answered 12 on v1 and v2."
+    },
+    "diagnosis": {
+     "miss_id": "H09",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "The main claim holds. Reading ak66973250's '12:53 AM local time (UTC-10:00)' as 12:53 PM gives 22:53 UTC, which adds a 13th quake and leaves Q2 (56.9 mi) and Q5 (no window) unchanged. v1 and v2 print this event in UTC. The conditional second culprit is wrong: nc88917162 read as 20:27 UTC would fall inside Q2's window with a 3.6 mi depth, making Q2 3.6 instead of 5.4 (simulated). If hv86940852 is also missing from Q4, a second addition that fits the rest of the reply is us6204stt7 ('US WIRE [20:16 (UTC+09:00) 12 Apr 2026]', local time only in v0). Read as 20:16 UTC, or with the offset reversed (05:16 on 13 Apr), it falls inside [17:35, 05:25). Simulated together with the ak66973250 slip and with hv86940852 dropped, this gives Q2 5.4 and Q4 13. Counting at92499836 twice would also fit, though v2 has the same 'Dup of' line and the model handled it there. The inst-006 v1 support is weak. Six different single misreadings give 7 there, including ak42965892 '18:27 (UTC-10:00)' read as UTC. The model handled the identical ak66973250 line in inst-011 v2. Across the run it read 12 AM local times correctly in 13 of the 15 cases where a misreading would have changed the answer."
+    }
+   }
+  },
+  "H10": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-031",
+   "variant": "v0",
+   "qid": "Q5",
+   "question_text": "How many distinct earthquakes at least 21.2 km deep are there?",
+   "answer_key": 14,
+   "model_answer": 13,
+   "cause": "unit_conversion",
+   "label": "a km/mile conversion slip",
+   "confidence": "low",
+   "agents": {
+    "classified": {
+     "miss_id": "H10",
+     "recomputed_answer": "14",
+     "key_is_correct": true,
+     "key_notes": "14 quakes are at least 21.2 km deep, including us7430r6kj (14.0 mi = 22.5 km), ak56887991 (15.3 mi = 24.6 km) and us7314jvmh (22.4 km). hv92202949 (18.1 km) and the retracted us7547qkux are excluded.",
+     "cause": "unit_conversion",
+     "culprit_events": [
+      "us7430r6kj",
+      "ak56887991"
+     ],
+     "culprit_lines": [
+      "US WIRE [13:20 UTC on 12 April 2026] MB 4.5 quake in Honshu, Japan @ (37.779, 141.373); 14.0 mi deep. Ref us7430r6kj, reviewed.",
+      "AK WIRE [12:15 (UTC-10:00) 12 Apr 2026] ML 1.5 quake in Southern Alaska @ (60.832, -152.666); 15.3 mi deep. Ref ak56887991, reviewed."
+     ],
+     "explanation": "The model is one short. The likeliest cause is a mile-only depth near the threshold left unconverted, so that 14.0 or 15.3 was compared to 21.2 as if it were km. v0 is the only rendering that prints these two depths only in miles, and the model got 14 on v1 and v2. The evidence is thin: the model handled this kind of conversion correctly in 65 of 71 such cases in the run, and I cannot tell which of the two lines was dropped. Alternatives remain: losing us698159t5 ('01:35 (UTC+09:00) 13 Apr 2026') through the date-rollover slip seen in H07, though the model kept that event for Q1 in this same reply, or simply overlooking one of the 14.",
+     "reproduces_exact_answer": true,
+     "confidence": "low"
+    },
+    "skeptic": {
+     "miss_id": "H10",
+     "my_answer": "14",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "None. \"at least 21.2 km deep\" plainly means depth >= 21.2 km, and no depth is borderline. The closest passes are us7314jvmh (reviewed \"depth 22.4 km (13.9 mi)\"; the EW preliminary \"13.7 mi\" = 22.05 km would pass too), us7430r6kj (\"14.0 mi deep\" = 22.53 km) and ak56887991 (\"15.3 mi deep\" = 24.62 km). The closest fail is hv92202949 at 18.1 km.",
+     "notes": "After dedupe and ignoring the retracted us7547qkux, 14 earthquakes are at least 21.2 km deep:\n- ak66973250 (56.9 mi = 91.6 km)\n- ak56887991 (24.6 km)\n- us6889dlcy (reviewed 47.5 km)\n- us67870zf7 (52.2 km)\n- us7314jvmh (22.4 km)\n- us77319k4i (33.4 mi = 53.8 km)\n- us7430r6kj (22.5 km)\n- us6779a0x9 (93.1 km)\n- us7972msjn (29.4 km)\n- us6170jsos (50.2 mi = 80.8 km)\n- us7119lytc (69.0 km)\n- us7500hbrp (151.1 km)\n- us698159t5 (37.1 km)\n- us6083hvb8 (254.7 km)\n\nThe question has no time or region filter. Even the header window (\"the 24 hours ending 06:00 UTC on 13 April 2026\", which rule 9 neutralizes anyway) contains all 14. The model's 13 means it dropped one passing event, most likely a near-threshold mile value such as us7430r6kj's 14.0 mi, through a bad conversion or by comparing miles with km. That breaks rule 5 and is not a defensible reading. Counting the retracted us7547qkux (97.8 km) would move the count to 15, not 13. The same model answered 14 on v1 and v2."
+    },
+    "diagnosis": {
+     "miss_id": "H10",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "Checked: only v0 prints us7430r6kj (14.0 mi) and ak56887991 (15.3 mi) without a km value, and leaving either one unconverted gives 13. Confidence should stay low. In this run the model converted mile-only depths against a km threshold correctly in all 37 other questions where it mattered, some with margins as tight as 1.1 km. I find no other failure, so the '65 of 71' figure looks overstated. Converting one of the two depths but not the other would itself be inconsistent: missing both gives 12. Two alternatives are about as likely. One is a qualifying line simply overlooked. The other is that us6083hvb8 was dropped by the header window: its time '04:27 (UTC-12:00) 12 Apr 2026' is local only in v0, and read at face value or with the offset reversed it falls before 06:00 on 12 Apr. That event lies outside the Q2 and Q4 windows either way, so nothing else in the reply changes (simulated Q5 = 13). The us698159t5 alternative is weak: it was kept for Q1 in this same reply, and the same time string was handled correctly in the v1 and v2 Q5 answers."
+    }
+   }
+  },
+  "H11": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-049",
+   "variant": "v0",
+   "qid": "Q1",
+   "question_text": "How many distinct earthquakes shallower than 4 miles and that occurred between 2026-04-12 18:15 UTC and 2026-04-13 04:50 UTC are there?",
+   "answer_key": 4,
+   "model_answer": 3,
+   "cause": "time_conversion",
+   "label": "local time \u2192 UTC conversion",
+   "confidence": "medium",
+   "agents": {
+    "classified": {
+     "miss_id": "H11",
+     "recomputed_answer": "4",
+     "key_is_correct": true,
+     "key_notes": "Key is right. With 4 mi = 6.437 km and window [18:15 12 Apr, 04:50 13 Apr) four quakes qualify: nc44095813 (03:43 UTC 13 Apr, 1.5 km); nc63162208 (4:13 PM UTC-8 = 00:13 UTC 13 Apr, 2.0 mi), whose AT re-report at43991852 is the same quake; pr84259679 (04:28:55 UTC, 2.9 mi); pr96881023 (14:30 UTC-4 = 18:30 UTC, 5.1 km / 3.2 mi). nc91823403 (10:05 AM UTC-8 = 18:05) and nc52916277 (17:27) fall before the start, and uu53271656 (4.5 mi) and pr39900316 (4.8 mi) are too deep.",
+     "cause": "time_conversion",
+     "culprit_events": [
+      "pr96881023",
+      "nc63162208"
+     ],
+     "culprit_lines": [
+      "[PR] pr96881023 | 14:30 (UTC-04:00) 12 Apr 2026 | Puerto Rico | 18.055\u00b0N, 66.833\u00b0W | depth 5.1 km (3.2 mi) | MD 1.8 | reviewed",
+      "[NC] nc63162208 | 4:13 PM local time (UTC-08:00) on Apr 12, 2026 | Northern California | 38.692\u00b0N, 123.171\u00b0W | depth 2.0 mi | M1.3 (md) | reviewed"
+     ],
+     "explanation": "Most likely pr96881023's '14:30 (UTC-04:00) 12 Apr 2026' was mis-converted (read as 14:30 UTC, or shifted the wrong way to 10:30) instead of 18:30 UTC, so it fell before the 18:15 start. This line is in local time only in v0; v1/v2 print 18:30 UTC and the model scored 4 there. The runner-up is the same kind of slip on nc63162208's '4:13 PM local time (UTC-08:00) on Apr 12' (no rollover to 00:13 UTC 13 Apr), made less likely because its AT copy prints 2026-04-13 00:14:07 UTC. The correct Q5=16 rules out reading '5.1 km' against 4, and the correct Q4=18.8 rules out ignoring WIRE times, which would have dropped nc44095813.",
+     "reproduces_exact_answer": true,
+     "confidence": "medium"
+    },
+    "skeptic": {
+     "miss_id": "H11",
+     "my_answer": "4",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "Nothing that decides this miss. (1) \"between 2026-04-12 18:15 UTC and 2026-04-13 04:50 UTC\": rule 6 settles it (start included, end excluded), and no event sits on either boundary. The nearest is nc91823403, \"10:05 AM local time (UTC-08:00) on Apr 12, 2026\" = 18:05 UTC, 10 minutes before the start. (2) A lookalike pair: \"NC WIRE [03:43 UTC on 13 April 2026] MD 1.3 quake in Northern California @ 38.677\u00b0N, 123.169\u00b0W; 1.5 km deep. Ref nc44095813, reviewed.\" and \"[NC] nc63162208 | 4:13 PM local time (UTC-08:00) on Apr 12, 2026 | Northern California | 38.692\u00b0N, 123.171\u00b0W | depth 2.0 mi | M1.3 (md) | reviewed\". Same magnitude, about 1.7 km apart, but different reviewed IDs and no duplicate note, so rule 1 makes them distinct. (3) In news-wire style the bracketed WIRE timestamp could be read as a dispatch time, but rule 6 (\"A report's time is when the earthquake occurred\") settles it.",
+     "notes": "Window [04-12 18:15Z, 04-13 04:50Z), depth < 4 mi. Four events pass: pr96881023 (\"14:30 (UTC-04:00) 12 Apr 2026 ... depth 5.1 km (3.2 mi)\" = 18:30 UTC); nc63162208 (4:13 PM UTC-08:00 = 00:13 UTC 13 Apr, 2.0 mi; the AT duplicate \"[2026-04-13 00:14:07 UTC] ... 2.4 mi deep ... Dup of nc63162208\" agrees); nc44095813 (03:43 UTC, 1.5 km = 0.93 mi); pr84259679 (\"2026-04-13 04:28:55 UTC ... depth 2.9 mi\"). In the window but too deep: uu77659617 5.5 mi, pr39900316 4.8 mi, pr39076297 5.2 mi, and the Chile events. Before the window: nc91823403 at 18:05 UTC. All of this matches the ground-truth list. The model's 3 needs one of the four dropped. Every route checked is a slip: converting 14:30 (UTC-04:00) to 10:30, reading 4:13 PM as AM, testing 5.1 km against the 4-mile limit, or merging two distinct reviewed IDs against rule 1. Flipping the offset sign gives 2 and ignoring offsets gives 2, so no consistent reading gives 3. The same model answered 4 on v1 and v2."
+    },
+    "diagnosis": {
+     "miss_id": "H11",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "I confirmed the key of 4 (nc44095813, nc63162208, pr84259679, pr96881023). Dropping pr96881023 gives exactly 3. This happens if its '14:30 (UTC-04:00)' is read as 14:30 or 10:30 instead of 18:30. The other renderings support this: v1 and v2 print it in UTC (18:30:35 / 18:30) and the model scored 4 on both. There is extra support the diagnosis does not mention. If the model skipped the offset on the v0 local times, both pr96881023 and nc63162208 would drop out. nc63162208 would then be saved by its AT copy at 2026-04-13 00:14:07 UTC, which still gives exactly 3. No other v0 answer depends on converting a local time, so the remaining answers stay consistent with this. In v1 nc63162208 is printed in 24-hour local form ('16:13 (UTC-08:00) 12 Apr') and the model still scored 4, so it handled that date rollover there. This makes nc63162208 a weaker suspect than pr96881023. Q5=16 confirms pr96881023 was treated as shallow (3.2 mi). Overlooking nc44095813 would also give 3, and it is printed as a WIRE line only in v0. But it is a well-formed UTC line second from the top of the digest, so no mechanism points to it."
+    }
+   }
+  },
+  "H12": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-053",
+   "variant": "v0",
+   "qid": "Q1",
+   "question_text": "How many distinct earthquakes with a depth of less than 17 miles and that were recorded from 16:15 UTC on 12 April 2026 up to 01:50 UTC on 13 April 2026 are there?",
+   "answer_key": 9,
+   "model_answer": 10,
+   "cause": "duplicate_counted",
+   "label": "a re-report counted as a second quake",
+   "confidence": "low",
+   "agents": {
+    "classified": {
+     "miss_id": "H12",
+     "recomputed_answer": "9",
+     "key_is_correct": true,
+     "key_notes": "Key is right. With 17 mi = 27.36 km and window [16:15 12 Apr, 01:50 13 Apr) nine quakes qualify: us7738n73z, hv48315658, hv47818190 (15.2 mi), nn50889342 (12:01 UTC-8 = 20:01 UTC), hv60937430, pr24748586, hv37933850, uu96669024, uu81473312. The AT us7738n73z line, PT pt44616325 ('Dup of nn50889342') and the preliminary uu96669024 line are re-reports of these. us698159t5 (01:35 UTC+9 = 16:35 UTC) is 37.1 km deep, and uu49306356 (01:57:11 UTC) is after the end. The withdrawn us6789y6g1 (11:59 UTC, 95.9 km) fails both filters anyway, so the mechanical retraction hypothesis cannot apply.",
+     "cause": "duplicate_counted",
+     "culprit_events": [
+      "pt44616325",
+      "nn50889342",
+      "us7738n73z",
+      "uu96669024"
+     ],
+     "culprit_lines": [
+      "PT WIRE [20:02 UTC on 12 April 2026] ML 2.0 quake in Nevada @ 38.680\u00b0N, 117.975\u00b0W; 1.4 km (0.9 mi) deep. Ref pt44616325, preliminary. Dup of nn50889342.",
+      "12:01 (UTC-08:00) 12 Apr 2026 \u2014 A magnitude 2.1 (ml) earthquake struck Nevada; epicentre 38.634\u00b0N, 117.907\u00b0W, depth 1.2 mi. The NN network lists it as nn50889342 (reviewed).",
+      "16:56 UTC on 12 April 2026 \u2014 A magnitude 4.8 (mb) earthquake struck Central Chile; epicentre 33.628\u00b0S, 71.143\u00b0W, depth 7.1 mi. The AT network lists it as us7738n73z (preliminary).",
+      "2026-04-12T22:26:08Z \u2014 A magnitude 2.4 (ml) earthquake struck Utah; epicentre (38.893, -111.490), depth 2.3 km (1.4 mi). The UU network lists it as uu96669024 (preliminary)."
+     ],
+     "explanation": "Most likely one re-report was counted as an extra quake. The likeliest is the PT WIRE pt44616325 line, whose trailing 'Dup of nn50889342' note was missed; it carries its own ref ID, so tallying IDs would not merge it. Counting the same-ID AT re-report of us7738n73z or the preliminary uu96669024 line gives the same 10. The only non-duplicate single flip, uu49306356 at 01:57:11 UTC (7 min past the 01:50 end), is less likely. The other answers (Q2=148.4 and Q3=1, both correct) cannot show which re-report it was.",
+     "reproduces_exact_answer": true,
+     "confidence": "low"
+    },
+    "skeptic": {
+     "miss_id": "H12",
+     "my_answer": "9",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "Minor and not decisive. (1) \"recorded from 16:15 UTC on 12 April 2026 up to 01:50 UTC on 13 April 2026\": \"recorded\" is loose wording for the occurrence time, and \"up to\" could be read as inclusive. Rule 6 settles both, and no event falls at 01:50. The nearest is uu49306356 at \"2026-04-13 01:57:11 UTC\", which is outside the window under either reading. (2) \"16:56 UTC on 12 April 2026 \u2014 ... The AT network lists it as us7738n73z (preliminary).\" An AT report filed under a US ID is unusual, but rule 1 covers it explicitly: a re-report from another network under the same event ID is the same earthquake. (3) \"UPDATE [Sun, 12 Apr 2026 13:23:47 +0000]: us6789y6g1 withdrawn (sonic boom).\" Rule 4 covers this, and the event is outside the window anyway.",
+     "notes": "Window [04-12 16:15Z, 04-13 01:50Z), depth < 17 mi. Nine events pass: us7738n73z (16:56:19, 10.4 km), hv48315658 (18:02:40, 0.8 mi), hv47818190 (19:37, 15.2 mi), nn50889342 (\"12:01 (UTC-08:00)\" = 20:01, 1.2 mi), hv60937430 (20:33, 5.3 mi), pr24748586 (20:55:08, 11.2 mi), hv37933850 (22:21:46, 12.2 mi), uu96669024 (22:26:08, 2.3 km), uu81473312 (22:29:47, 6.0 mi). In the window but too deep: us698159t5 (\"01:35 (UTC+09:00) 13 Apr 2026\" = 16:35 UTC 12 Apr, 37.1 km = 23.05 mi), us6779a0x9 57.8 mi, us7128wt0a 46.7 mi. This matches the ground truth. Ways to reach 10 all contradict a rule: counting a duplicate twice (the AT us7738n73z re-report under the same ID; \"PT WIRE ... Ref pt44616325, preliminary. Dup of nn50889342.\"; or the preliminary uu96669024 line, all merged by rule 1), counting uu49306356 (01:57 is after 01:50), or counting us698159t5 (fails depth whatever the time). Flipping the offset sign or ignoring offsets both give 8, not 10. The same model answered 9 on v1 and v2."
+    },
+    "diagnosis": {
+     "miss_id": "H12",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "I confirmed the key of 9. Only four single errors give 10. Three are counting a re-report as an extra quake: pt44616325 ('Dup of nn50889342'), the AT us7738n73z line with the same ID, or the preliminary uu96669024 line with the same ID. The fourth is letting in uu49306356 at 01:57:11, after the 01:50 end. No time-conversion error can give 10: us698159t5 is 37.1 km deep (above 27.36 km) whatever its time, and hv85841585 falls outside the window under any reading of its offset. Counting distinct IDs in the window gives exactly 10 through pt44616325. Its target, nn50889342, is printed in local time ('12:01 (UTC-08:00)'), so the times 20:01 and 20:02 do not look alike even though the two lines are adjacent. The v0 digest is in time order, which makes running past the end to 01:57 less likely. Caveat: v2 uses the same 'Dup of' wording and the model scored 9 there, so this was a one-off slip. Q2=148.4 and Q3=1 cannot tell the routes apart, though Q3=1 shows the model applied the withdrawal. Low confidence is appropriate."
+    }
+   }
+  },
+  "H13": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-054",
+   "variant": "v2",
+   "qid": "Q1",
+   "question_text": "How many distinct earthquakes with a depth of less than 6.8 miles and that were recorded from 16:05 UTC on 12 April 2026 up to 00:05 UTC on 13 April 2026 are there?",
+   "answer_key": 2,
+   "model_answer": 3,
+   "cause": "time_conversion",
+   "label": "local time \u2192 UTC conversion",
+   "confidence": "low",
+   "agents": {
+    "classified": {
+     "miss_id": "H13",
+     "recomputed_answer": "2",
+     "key_is_correct": true,
+     "key_notes": "Key is right. With 6.8 mi = 10.94 km and window [16:05 12 Apr, 00:05 13 Apr) only pr39076297 (16:10 UTC-4 = 20:10 UTC, 8.4 km) and ci77464891 (12:21 UTC-8 = 20:21 UTC, 2.3 km) qualify. pr66123305 is 9:08 PM UTC-4 = 01:08 UTC on 13 Apr (its AT copy says 01:09:02), past the end. nc45177335 is at 16:02 UTC, before the start. The other shallow-enough events are on 12 Apr before 16:05 or on 13 Apr after 00:05, and the in-window pr19554419 (16.7 km), pr87022014 (21.0 km) and us70468php (20.2 mi) are too deep.",
+     "cause": "time_conversion",
+     "culprit_events": [
+      "pr66123305",
+      "nc45177335"
+     ],
+     "culprit_lines": [
+      "PR WIRE [9:08 PM local time (UTC-04:00) on Apr 12, 2026] MD 1.0 quake in Puerto Rico @ 18.034\u00b0N, 66.915\u00b0W; 9.6 km deep. Ref pr66123305, reviewed.",
+      "16:02 UTC on 12 April 2026 \u2014 A magnitude 1.2 (md) earthquake struck Northern California; epicentre (38.802, -122.938), depth 2.9 km (1.8 mi). The NC network lists it as nc45177335 (reviewed)."
+     ],
+     "explanation": "Most likely pr66123305 was added by reading 'PR WIRE [9:08 PM local time (UTC-04:00) on Apr 12, 2026]' as an evening time on 12 Apr (21:08 taken as UTC, or 17:08 by subtracting) instead of 01:08 UTC on 13 Apr. It is the only shallow-enough excluded event that v2 prints in local time while v0/v1 print it in UTC, and the model scored 2 on both of those. Caveat: the model's correct Q2=8 needs pr66123305 at 01:08 on 13 Apr, unless it was counted there via its AT copy at 2026-04-13 01:09:02 UTC. So the alternative is nearly as likely: nc45177335 at '16:02 UTC on 12 April 2026' was let in despite the 16:05 start (time_window_edge).",
+     "reproduces_exact_answer": true,
+     "confidence": "low"
+    },
+    "skeptic": {
+     "miss_id": "H13",
+     "my_answer": "2",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "Not decisive. (1) \"Editor's note: entries are reproduced exactly as each network filed them, time conventions included.\" Rule 9 says this line carries no data, but it may tempt a reader to second-guess the offsets. No consistent alternative convention gives 3, though. (2) \"recorded ... up to 00:05 UTC on 13 April 2026\" is loose wording, settled by rule 6, and no event falls at 00:05. (3) Traps that are not real ambiguities: \"PR WIRE [9:08 PM local time (UTC-04:00) on Apr 12, 2026] ... 9.6 km deep. Ref pr66123305, reviewed.\" is a local evening of Apr 12 that is 01:08 UTC on 13 Apr. The AT duplicate confirms it: \"2026-04-13 01:09:02 UTC ... This is the same earthquake as pr66123305.\" Also \"00:04 (UTC-08:00) 12 Apr 2026\" (ci22105207) looks like the 00:05 window end but is on a different date.",
+     "notes": "Window [04-12 16:05Z, 04-13 00:05Z), depth < 6.8 mi (10.94 km). Two events pass: pr39076297 (\"16:10 (UTC-04:00) 12 Apr 2026 ... depth 8.4 km (5.2 mi)\" = 20:10 UTC) and ci77464891 (\"12:21 (UTC-08:00) 12 Apr 2026 ... depth 2.3 km\" = 20:21 UTC). In the window but too deep: pr19554419 (19:34 UTC, 16.7 km = 10.38 mi), pr87022014 (19:58 UTC, 21.0 km = 13.05 mi), us70468php (23:55:28 UTC, 20.2 mi). Near misses on time: nc45177335 \"16:02 UTC\" (2.6 minutes before the start), pr66123305 (01:08 UTC 13 Apr), ak50715142 (14:13 UTC), ak71202490 (01:19 UTC 13 Apr). This matches the ground truth. Flipping the offset sign gives 1. Ignoring offsets gives 2 (pr66123305 comes in, ci77464891 drops out). Reaching 3 needs mixed handling, such as converting ci77464891 correctly while placing pr66123305's local Apr 12 evening inside the window, or counting 16:02 against a 16:05 start. Both are slips. The same model answered 2 on v0 and v1."
+    },
+    "diagnosis": {
+     "miss_id": "H13",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "I confirmed the key of 2 (pr39076297, ci77464891). Exactly two single slips give 3. One is pr66123305: its 'PR WIRE [9:08 PM local time (UTC-04:00) on Apr 12]' lands at 21:08 on 12 Apr if the offset is ignored, or at 17:08 if it is subtracted. The other is nc45177335 at 16:02 being let in despite the 16:05 start. A consistent offset error does not give 3: ignoring every offset gives 2 (ci77464891 drops out), and subtracting every offset gives 1. So either route is a one-off slip. The other renderings favor pr66123305: only v2 prints its reviewed time in 12-hour local form. v0 tests the nc45177335 edge cleanly in UTC (16:02:22Z) and the model got it right. v1's '08:02 (UTC-08:00)' is weaker evidence, because skipping the offset would also exclude it. Against pr66123305: the correct Q2=8 needs pr66123305 inside 00:15-05:30 on 13 Apr. That only works through its AT copy at 01:09:02 UTC or a compensating error. Q2=8 also needs us6749nobw's '3:21 PM local time (UTC-12:00) on Apr 12' converted to 03:21 on 13 Apr, so the model handled that 12-hour local format correctly in the same reply; the diagnosis does not mention this. The nc45177335 route fits every other answer without a second error. I rate this a near tie. The diagnosis's lean and its stated caveat are fair, and low confidence is warranted."
+    }
+   }
+  },
+  "H14": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-057",
+   "variant": "v2",
+   "qid": "Q2",
+   "question_text": "Rank the earthquakes no more than 50 miles from station US-69 at (-32.422, -70.888) by magnitude, largest first: which event is second? Give its event ID.",
+   "answer_key": "us6895pxbk",
+   "model_answer": "us6073za8k",
+   "cause": "ranking",
+   "label": "a rank slip",
+   "confidence": "low",
+   "agents": {
+    "classified": {
+     "miss_id": "H14",
+     "recomputed_answer": "us6895pxbk. Within 50 mi (80.47 km): us6073za8k M4.4 at 19.3 km, us6895pxbk M4.2 at 33.2 km, us7855d7d9 M4.1 at 73.2 km. us7887fqi5 is retracted, and us68642pmo M4.5 is 120.9 km (75.1 mi) away, so it is out.",
+     "key_is_correct": true,
+     "key_notes": "",
+     "cause": "ranking",
+     "culprit_events": [
+      "us6073za8k",
+      "us6895pxbk"
+     ],
+     "culprit_lines": [
+      "2026-04-12 13:14:41 UTC ref=us6073za8k net=us mag=4.4 type=mb region=\"Central Chile\" loc=-32.393,-71.091 depth=7.5 mi status=reviewed",
+      "[US] us6895pxbk | 05:16 (UTC-05:00) 12 Apr 2026 | Central Chile | (-32.712, -70.973) | depth 18.6 km | MB 4.2 | reviewed"
+     ],
+     "explanation": "The model's answer, us6073za8k, is the correct first-ranked event of the in-range set (4.4 > 4.2 > 4.1), so it most likely gave the largest event instead of the second. The only realistic alternative that also reproduces it is letting in us68642pmo ('MB 4.5 ... @ (-33.300, -71.651)', 75.1 mi away), for example by comparing a distance in miles with 80.5, the km value of 50 mi. The digest cannot tell these apart, and the model answered the same question correctly in v0 and v1.",
+     "reproduces_exact_answer": true,
+     "confidence": "low"
+    },
+    "skeptic": {
+     "miss_id": "H14",
+     "my_answer": "us6895pxbk",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "",
+     "notes": "Limit is 50 mi = 80.467 km from (-32.422, -70.888), haversine on R=6371. Three events pass: (1) us6073za8k, M4.4, 19.3 km / 12.0 mi ('2026-04-12 13:14:41 UTC ref=us6073za8k net=us mag=4.4 type=mb region=\"Central Chile\" loc=-32.393,-71.091 depth=7.5 mi status=reviewed'); (2) us6895pxbk, M4.2, 33.2 km / 20.6 mi ('[US] us6895pxbk | 05:16 (UTC-05:00) 12 Apr 2026 | Central Chile | (-32.712, -70.973) | depth 18.6 km | MB 4.2 | reviewed'); (3) us7855d7d9, M4.1, 73.2 km / 45.5 mi. us7887fqi5 (M4.2, 15.9 mi) is excluded by 'RETRACTION [2026-04-12 16:11:07 UTC]: us7887fqi5 was not an earthquake (false trigger from instrument noise); ignore that report.' Even if a reader kept it, it would only tie at M4.2 for second, and us6073za8k would still be first. Every event larger than M4.4 is far outside 50 mi: us68642pmo M4.5 at 75.1 mi, us70468php M5.0 at 95.5 mi, us7904tg8z M5.4 at 100.3 mi; the others are in other regions. Reading the limit as 50 km or 50 nautical miles does not bring any of them in. With three events the middle one is us6895pxbk whether sorted largest-first or smallest-first, so us6073za8k cannot be second under any reading. The model's answer is the rank-1 event: either a rank slip or a distance slip that added a far M4.5+ event. The same model answered us6895pxbk on the v0 and v1 renderings, whose wording is equivalent ('within 50 miles' / 'no more than 80.5 km')."
+    },
+    "diagnosis": {
+     "miss_id": "H14",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "Checked against the snapshot. The events within 50 mi (80.47 km) are us6073za8k M4.4 (19.3 km), us6895pxbk M4.2 (33.2 km) and us7855d7d9 M4.1 (73.2 km). us7887fqi5 is retracted. The key is correct. A rank slip (giving 1st instead of 2nd) produces us6073za8k exactly. The tie with the other explanation is real. Letting in us68642pmo (M4.5, 120.9 km = 75.1 mi) by comparing a distance in miles with 80.47 also produces us6073za8k. That mix-up lets in exactly one bigger event: us70468php (95.4 mi) and us7904tg8z (100.3 mi) stay out, and us7904tg8z is still out at 90.5 mi even if its DMS line is misread as decimal degrees. Nothing in v2 favours either reading: the question wording and the us68642pmo line match v0, which Haiku got right. Across the run, Haiku got the other 50 rank-by-magnitude renderings right and never made this mile/km mix-up in the 25 other renderings with a radius in miles where it would have changed the answer. 'ranking' at low confidence is acceptable, but 'unit_conversion' (us68642pmo let in) is about equally likely."
+    }
+   }
+  },
+  "H15": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-058",
+   "variant": "v0",
+   "qid": "Q4",
+   "question_text": "How many distinct earthquakes that occurred between 2026-04-12 20:35 UTC and 2026-04-12 23:50 UTC are there?",
+   "answer_key": 4,
+   "model_answer": 3,
+   "cause": "time_conversion",
+   "label": "local time \u2192 UTC conversion",
+   "confidence": "low",
+   "agents": {
+    "classified": {
+     "miss_id": "H15",
+     "recomputed_answer": "4: ak97598259 (21:20 UTC), us6239x7p5 (23:23 UTC on 12 Apr), uu77659617 (23:46 UTC), ak12412301 (23:47:32 UTC)",
+     "key_is_correct": true,
+     "key_notes": "",
+     "cause": "time_conversion",
+     "culprit_events": [
+      "us6239x7p5"
+     ],
+     "culprit_lines": [
+      "[US] us6239x7p5 | 08:23 (UTC+09:00) 13 Apr 2026 | Honshu, Japan | 37\u00b000.12'N 141\u00b022.62'E | depth 39.3 km (24.4 mi) | MB 4.5 | reviewed"
+     ],
+     "explanation": "Most likely the model missed the backward date change: '08:23 (UTC+09:00) 13 Apr 2026' is 23:23 UTC on 12 Apr, but kept on 13 Apr (or shifted the wrong way to 17:23) it falls outside the window. Dropping any one of the other three in-window events (ak97598259, uu77659617, ak12412301) also gives 3, and the reply cannot tell which; the model converted a UTC-08:00 time in the same format correctly in Q5 and got this question right in the time-sorted v2.",
+     "reproduces_exact_answer": true,
+     "confidence": "low"
+    },
+    "skeptic": {
+     "miss_id": "H15",
+     "my_answer": "4",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "'between 2026-04-12 20:35 UTC and 2026-04-12 23:50 UTC' does not say whether the ends are included, but rule 6 settles it (start included, end excluded). No event falls on either boundary, so it does not affect the answer.",
+     "notes": "Times converted to UTC; four fall in [20:35, 23:50) on 12 Apr: ak97598259 '11:20 (UTC-10:00) 12 Apr 2026' = 21:20; us6239x7p5 '08:23 (UTC+09:00) 13 Apr 2026' = 23:23 on 12 Apr; uu77659617 '23:46 UTC on 12 April 2026'; ak12412301 'Sun, 12 Apr 2026 23:47:32 +0000'. The nearest events outside the window are us6794ad77 at 18:58 UTC and ci20056417 at 00:07 UTC on 13 Apr. The four are in different places (two Southern Alaska locations, Utah, Honshu) and none carries a duplicate note, so none can be merged. The digest's own duplicate pairs confirm the standard offset convention: ew66924271 'Sun, 12 Apr 2026 07:36:31 +0000' matches us7904tguf '4:36 PM local time (UTC+09:00)', and pt80424173 '03:16 UTC on 13 April 2026' matches us6330f32y '3:16 PM local time (UTC-12:00) on Apr 12'. A reversed-offset reading is therefore not defensible, and it would give 2, not 3. Getting 3 means dropping one event through a slip, most likely the date-crossing us6239x7p5 (local date 13 Apr) or the UTC-10 conversion of ak97598259. The same model got 4 on the v1 and v2 renderings."
+    },
+    "diagnosis": {
+     "miss_id": "H15",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "Checked against the snapshot: four events fall in the window (21:20:28, 23:23:33, 23:46:58 and 23:47:32 UTC). The nearest events outside it are us6794ad77 at 18:58 and ci20056417 at 00:07, so the key of 4 is correct. Haiku's Q5 answer of 6.9 mi can only be nc45177335 (6.91 mi), which requires converting '08:02 (UTC-08:00) 12 Apr 2026' to 16:02. So Haiku handles this offset format when no date change is involved. Its Q3 answer of 8 counts us6239x7p5 (M4.5), so it read that line, which fits a time error rather than a missed line for this event. us6239x7p5 is the only in-window event that needs a backward date change. In v1 all four events are given in UTC, and v2 lists the rollover line in time order between the 21:20 and 23:46 events; Haiku answered 4 in both. A missed AK or UU line is still possible, since no other answer shows Haiku read those lines, so low confidence is right."
+    }
+   }
+  },
+  "H16": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-063",
+   "variant": "v0",
+   "qid": "Q3",
+   "question_text": "What is the number of separate earthquakes with a depth of less than 11 miles and that were recorded from 07:55 UTC on 12 April 2026 up to 11:00 UTC on 12 April 2026?",
+   "answer_key": 1,
+   "model_answer": 2,
+   "cause": "duplicate_counted",
+   "label": "a re-report counted as a second quake",
+   "confidence": "high",
+   "agents": {
+    "classified": {
+     "miss_id": "H16",
+     "recomputed_answer": "1: only hv39242505 (10:52 UTC, 0.5 mi deep). us6895pxbk is 11.6 mi deep (not under 11). us6204stt7 (11:16 UTC) and us6988s2qz (11:23 UTC) fall at or after the 11:00 end. hv79832130 (07:22 UTC) and ci47025578 (07:37 UTC) are before the 07:55 start.",
+     "key_is_correct": true,
+     "key_notes": "",
+     "cause": "duplicate_counted",
+     "culprit_events": [
+      "at28505861",
+      "hv39242505"
+     ],
+     "culprit_lines": [
+      "10:52 UTC on 12 April 2026 ref=hv39242505 net=hv mag=1.6 type=md region=\"Hawaii\" loc=19.204,-155.100 depth=0.5 mi status=reviewed",
+      "AT WIRE [00:52 (UTC-10:00) 12 Apr 2026] MD 1.8 quake in Hawaii @ 19.194\u00b0N, 155.107\u00b0W; 1.3 mi deep. Ref at28505861, preliminary. Dup of hv39242505."
+     ],
+     "explanation": "The model most likely counted the AT re-report at28505861 ('Dup of hv39242505'; 00:52 UTC-10:00 is 10:52 UTC, 1.3 mi deep, so it passes both filters) as a second earthquake, giving 2. The 'Dup of' wording appears only in v0; v1 and v2 say 'same event as' and the model answered 1 there. In Q1 it handled the 'This is the same earthquake as' note correctly (68.2, not 71.0), and the rival edge case us6895pxbk (11.6 mi) appears identically in v2, which it got right.",
+     "reproduces_exact_answer": true,
+     "confidence": "high"
+    },
+    "skeptic": {
+     "miss_id": "H16",
+     "my_answer": "1",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "Q3 says 'recorded from 07:55 UTC on 12 April 2026 up to 11:00 UTC'. 'Recorded' (rather than 'occurred') and 'up to' (end included?) are loose wording. Rule 6 settles both: a report's time is when the earthquake occurred, and a window excludes its end. No event sits at 07:55 or 11:00, so it does not affect the answer. 'Dup of hv39242505' on the AT WIRE line is a terse abbreviation (v1/v2 say 'same event as hv39242505'), but rule 1's 'a note naming the event ID it duplicates' covers it, so it is not genuinely ambiguous.",
+     "notes": "Window is [07:55, 11:00) UTC on 12 Apr, depth < 11 mi. Events in the window: us7457rw3n at 10:06:30, depth 72.8 mi (fails depth); us6895pxbk at 10:16:54, depth 11.6 mi (fails depth); hv39242505 at '10:52 UTC on 12 April 2026', depth 0.5 mi (passes); and 'AT WIRE [00:52 (UTC-10:00) 12 Apr 2026] MD 1.8 quake in Hawaii @ 19.194\u00b0N, 155.107\u00b0W; 1.3 mi deep. Ref at28505861, preliminary. Dup of hv39242505.' That AT report is also at 10:52 UTC and is the same earthquake under rule 1. at28505861 has no reviewed report, so it cannot be an event ID of its own. Shallow events just outside the window: hv79832130 at 07:22:42Z (10.0 mi); ci47025578 at '11:37 PM local time (UTC-08:00) on Apr 11' = 07:37 UTC; us6204stt7 at '8:16 PM local time (UTC+09:00)' = 11:16 UTC (13.5 km = 8.4 mi); us6988s2qz at 11:23 UTC. Count = 1. The model's 2 needs either counting the AT duplicate separately (the documented trap) or a time or depth slip; no wording supports either. The same model got 1 on the v1 and v2 renderings."
+    },
+    "diagnosis": {
+     "miss_id": "H16",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "Checked against the snapshot: the window [07:55, 11:00) contains us7457rw3n (72.8 mi), us6895pxbk (11.56 mi), hv39242505 (0.5 mi) and the AT re-report (10:52 UTC, 1.3 mi). Counting at28505861 separately gives exactly 2. The other explanations are weaker. us6895pxbk has the same 11.6 mi depth and 11-mile threshold in v2, which Haiku answered 1. The us6988s2qz line is identical in v2. us6204stt7 ('8:16 PM local time (UTC+09:00)' = 11:16 UTC) would need an arithmetic slip, because misreading the 12-hour time puts it at 23:16 on 11 Apr, which is still outside the window. One correction to the supporting argument: 'Dup of' is not unique to v0. It also appears in v1 (pt82826741) and v2 ('Dup of ak91696148' on pt20360086), and Haiku handled the v2 note correctly in Q1 (68.2, not 71.0). So the wording is not a demonstrated blind spot; a lapse on this one line is more likely, and medium confidence fits better than high."
+    }
+   }
+  },
+  "H17": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-070",
+   "variant": "v0",
+   "qid": "Q1",
+   "question_text": "What was the largest magnitude among the earthquakes at least 5 miles deep?",
+   "answer_key": 5.2,
+   "model_answer": 4.6,
+   "cause": "overlooked_line",
+   "label": "a qualifying line overlooked",
+   "confidence": "low",
+   "agents": {
+    "classified": {
+     "miss_id": "H17",
+     "recomputed_answer": "5.2",
+     "key_is_correct": true,
+     "key_notes": "Key is right. 5 mi is 8.05 km. ak66973250's reviewed report gives M5.2 at 91.5 km (56.9 mi), which is the largest deep event. Its preliminary M6.0 is superseded by rule 2. No correction or retraction touches it.",
+     "cause": "overlooked_line",
+     "culprit_events": [
+      "ak66973250",
+      "us6084crko"
+     ],
+     "culprit_lines": [
+      "Sun, 12 Apr 2026 10:53:15 +0000 ref=ak66973250 net=ak mag=5.2 type=mw region=\"Southern Alaska\" loc=60.274,-153.031 depth=91.5 km status=reviewed",
+      "2026-04-12T10:53:15Z \u2014 A magnitude 6.0 (mw) earthquake struck Southern Alaska; epicentre 60.274\u00b0N, 153.031\u00b0W, depth 56.9 mi. The US network lists it as ak66973250 (preliminary).",
+      "US WIRE [2026-04-13 05:35:35 UTC] MB 4.6 quake in Central Chile @ (-33.655, -70.653); 28.6 km deep. Ref us6084crko, reviewed."
+     ],
+     "explanation": "The model left ak66973250 (reviewed M5.2, 91.5 km) out of the deep set and reported the next-largest deep event, us6084crko M4.6. In the same reply it ranked ak66973250 first in Q3, and the same model dropped the overall-largest event the same way in H02 (inst-004 v1) with no trap, so the adjacent conflicting M6.0 line is at most a contributing factor.",
+     "reproduces_exact_answer": true,
+     "confidence": "low"
+    },
+    "skeptic": {
+     "miss_id": "H17",
+     "my_answer": "5.2",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "",
+     "notes": "5 mi = 8.047 km; 17 deduped events pass (nc21730024 retracted). Top magnitudes: ak66973250 M5.2 (91.5 km), us6084crko M4.6 (28.6 km), us6330f32y M4.4. The reviewed line is 'Sun, 12 Apr 2026 10:53:15 +0000 ref=ak66973250 net=ak mag=5.2 type=mw region=\"Southern Alaska\" loc=60.274,-153.031 depth=91.5 km status=reviewed'. The only other line about this event is a preliminary re-report under the same ID: '2026-04-12T10:53:15Z \u2014 A magnitude 6.0 (mw) earthquake struck Southern Alaska; epicentre 60.274\u00b0N, 153.031\u00b0W, depth 56.9 mi. The US network lists it as ak66973250 (preliminary).' Rule 2 keeps 5.2, and both depths are far beyond 5 mi. Even wrongly using the preliminary would give 6.0, not 4.6. The model's 4.6 (us6084crko, 'US WIRE [2026-04-13 05:35:35 UTC] MB 4.6 quake in Central Chile ... 28.6 km deep') needs ak66973250 dropped, and no reading of 'at least 5 miles deep' drops 91.5 km while keeping 28.6 km. The model's own Q3 answer (ak17686963 third in Southern Alaska) only works with ak66973250 ranked first, so it treated that event as valid elsewhere. The same model answered 5.2 on v1 and v2. This is a slip."
+    },
+    "diagnosis": {
+     "miss_id": "H17",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "Checked: removing ak66973250 is the only single change that gives 4.6 (us6084crko). With it the max is 5.2, and taking its preliminary value would give 6.0, so this is not a reviewed-over-preliminary error. The model's other answers are right and show it had the event. Q3 = ak17686963 needs ak66973250 ranked first (without it, ak22964949 is third). Q2 = 57.8 shows reviewed values were used for us6779a0x9 (its PT preliminary of 95.0 km would give 59.0). So the event was not dropped everywhere, only in the Q1 scan. v0 is the only rendering where the M6.0 preliminary line sits directly under the reviewed M5.2 line; v1 and v2 separate them and the model answered 5.2 there, so the adjacent line may have contributed. The H02 claim checks out: us698159t5 (M5.6, the largest event in inst-004 v1) appears once with no trap and was dropped."
+    }
+   }
+  },
+  "H18": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-080",
+   "variant": "v1",
+   "qid": "Q2",
+   "question_text": "How many distinct earthquakes that occurred between 22:10 UTC on 12 April 2026 and 05:20 UTC on 13 April 2026 are there?",
+   "answer_key": 6,
+   "model_answer": 14,
+   "cause": "time_conversion",
+   "label": "an overnight window misread (dates and offsets ignored)",
+   "confidence": "low",
+   "agents": {
+    "classified": {
+     "miss_id": "H18",
+     "recomputed_answer": "6",
+     "key_is_correct": true,
+     "key_notes": "Key is right. In UTC the window holds 6 events: hv37933850 at 22:21:46, us67040hvn at 00:00:03, us7728oyth at 00:29, nc68289560 at 02:49, us6993xij9 at 02:52:57 and pr65354058 at 04:11:01. us6578tx3z (00:37 UTC) is retracted. The preliminary re-reports of hv37933850 and us6993xij9 are the same events.",
+     "cause": "time_conversion",
+     "culprit_events": [
+      "hv37933850",
+      "us67040hvn",
+      "us7728oyth",
+      "nc68289560",
+      "us6993xij9",
+      "pr65354058",
+      "ak28815435",
+      "hv57799647",
+      "ak41776882",
+      "ak62369123"
+     ],
+     "culprit_lines": [
+      "Sun, 12 Apr 2026 22:21:46 +0000 ref=hv37933850 net=hv mag=1.2 type=md region=\"Hawaii\"",
+      "AK WIRE [3:37 AM local time (UTC-10:00) on Apr 12, 2026] ML 1.4 quake in Southern Alaska ... Ref ak28815435, reviewed.",
+      "22:27 (UTC-10:00) 11 Apr 2026 \u2014 A magnitude 5.1 (mw) earthquake struck Hawaii; ... hv57799647 (reviewed).",
+      "23:16 (UTC-10:00) 11 Apr 2026 \u2014 A magnitude 0.8 (ml) earthquake struck Southern Alaska; ... ak41776882 (reviewed).",
+      "10:12 PM local time (UTC-10:00) on Apr 11, 2026 \u2014 A magnitude 1.2 (ml) earthquake struck Southern Alaska; ... ak62369123 (reviewed).",
+      "9:37 AM local time (UTC-05:00) on Apr 12, 2026 \u2014 A magnitude 4.2 (mb) earthquake struck Central Chile; ... us68032lh6 (reviewed).",
+      "19:38 (UTC+09:00) 12 Apr 2026 ref=us7480w6a1 net=us mag=4.3",
+      "10:30 UTC on 12 April 2026 \u2014 A magnitude 4.0 (mb) earthquake struck Central Chile; ... us6397z8cu (reviewed)."
+     ],
+     "explanation": "The model probably compared printed clock times only, ignoring dates and UTC offsets, so the overnight window became the daytime span 05:20-22:10. That span holds the 12 UTC-timed daytime events plus us68032lh6 (raw 09:37) and us7480w6a1 (raw 19:38), which is exactly 14; the four UTC-10:00 events and all six true events fall outside it. Confidence is low because 14 is also the number of distinct M<4.1 events, Q4's filter, so a slip between questions fits just as exactly.",
+     "reproduces_exact_answer": true,
+     "confidence": "low"
+    },
+    "skeptic": {
+     "miss_id": "H18",
+     "my_answer": "6",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "Minor and not decisive. (1) WIRE lines put the event time in brackets, styled like a notice timestamp, e.g. 'AK WIRE [3:37 AM local time (UTC-10:00) on Apr 12, 2026] ML 1.4 quake ... Ref ak28815435, reviewed.' A reader could take it for an issue time. Rule 6 makes it the occurrence time, and under either reading every WIRE event here stays on the same side of the window (us6993xij9's time comes from its reviewed report). (2) Some stated offsets are unrealistic: Southern Alaska at UTC-10:00 in April, Central Chile at UTC-05:00. 'Editor's note: entries are reproduced exactly as each network filed them, time conventions included.' carries no data under rule 9. The count is unchanged with realistic offsets.",
+     "notes": "Converted to UTC, 6 distinct events fall in [2026-04-12 22:10, 2026-04-13 05:20): hv37933850 22:21:46 (the preliminary '22:21 UTC on 12 April 2026 ref=hv37933850 net=us ... status=preliminary' is the same ID), us67040hvn 00:00:03, us7728oyth 00:29, nc68289560 02:49, us6993xij9 02:52:57 (preliminary '9:52 PM local time (UTC-05:00) on Apr 12' = 02:52 UTC, same ID), pr65354058 04:11:01. us6578tx3z ('19:37 (UTC-05:00) 12 Apr 2026' = 00:37 UTC 13 Apr) falls in the window but is removed by 'NOTICE [2026-04-13 01:28:11 UTC]: report us6578tx3z has been RETRACTED (automatic solution with no real event). Disregard it.' The digest has 24 distinct non-retracted events, 18 of them outside the window. Misreadings I tested: ignoring all offsets gives 6; flipping offset signs gives 7 (us7480w6a1 moves to 04:38); counting the retracted event gives 7; counting reports instead of events gives 8-9; the complement gives 18. None gives 14, so no coherent reading supports the model's answer. The same model answered 6 on v0 and v2."
+    },
+    "diagnosis": {
+     "miss_id": "H18",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "Recomputed over the 24 distinct non-retracted events. Correct UTC gives 6. Raw printed clock times (offsets ignored, 12-hour times converted) inside the 05:20-22:10 span give exactly 14: the 12 UTC-timed daytime events plus us68032lh6 and us7480w6a1. That also requires the reviewed 02:52:57 time for us6993xij9 and honouring the us6578tx3z retraction. Variants that do not reach 14: correct UTC with the inverted window gives 18; raw clock with the true overnight window gives 10; a flipped offset sign gives 7. So the story needs two slips at once: raw clock for the four UTC-10:00 events and an inverted window. The model avoided both in v0, where several in-window events were in local time, and in v2. The Q4 set (M<4.1) also has exactly 14 events, and nothing in the reply separates the two explanations, since Q1, Q3 and Q4 involve no times. The diagnosis is as plausible as any alternative found; confidence should stay low."
+    }
+   }
+  },
+  "H19": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-092",
+   "variant": "v2",
+   "qid": "Q3",
+   "question_text": "Count the distinct earthquakes of magnitude 1.6 or greater.",
+   "answer_key": 19,
+   "model_answer": 18,
+   "cause": "overlooked_line",
+   "label": "a qualifying line overlooked",
+   "confidence": "low",
+   "agents": {
+    "classified": {
+     "miss_id": "H19",
+     "recomputed_answer": "19",
+     "key_is_correct": true,
+     "key_notes": "Key is right. 19 distinct events have M>=1.6, including hv39242505 (MD 1.6), since \"1.6 or greater\" is inclusive. ci33454638 is retracted (mine blast). pt85987144 and the EW preliminary re-reports are duplicates, counted once under their reviewed IDs.",
+     "cause": "threshold_edge",
+     "culprit_events": [
+      "hv39242505"
+     ],
+     "culprit_lines": [
+      "[HV] hv39242505 | 2026-04-12T10:52:03Z | Hawaii | (19.204, -155.100) | depth 0.8 km | MD 1.6 | reviewed"
+     ],
+     "explanation": "The model most likely read \"1.6 or greater\" as strictly greater and dropped hv39242505 (MD 1.6), which gives 18. Dropping any other of the 19 qualifying events, or miscounting a long list, also gives 18, and nothing in this rendering points specifically at hv39242505; the model counted 19 on the other two renderings.",
+     "reproduces_exact_answer": true,
+     "confidence": "low"
+    },
+    "skeptic": {
+     "miss_id": "H19",
+     "my_answer": "19",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "",
+     "notes": "27 distinct non-retracted events, 19 of them M>=1.6: us7618kmw6 4.0, us71798svc 4.2, us6170jsos 4.5, us7880hiqn 4.2, us6204stt7 4.1, us7532aah7 4.2, us67040hvn 4.5, hv39242505 1.6, us698159t5 5.6, nn36171513 1.8, us7738n73z 4.7, us6794ad77 4.6, us67463e99 4.8, us7074p0wg 6.0, us7514ug3y 4.4, ci64760691 2.8, us68032lh6 4.2, us6695r8u3 4.3, nn32569624 2.6. Duplicates fold in correctly: the [EW] preliminaries of us698159t5, us7738n73z and us7074p0wg share IDs, and pt85987144 is marked 'same event as us67040hvn'. 'RETRACTION [Sun, 12 Apr 2026 18:23:39 +0000]: ci33454638 was not an earthquake (mine blast); ignore that report.' removes ci33454638 only. The likeliest drop is the boundary event '[HV] hv39242505 | 2026-04-12T10:52:03Z | Hawaii | (19.204, -155.100) | depth 0.8 km | MD 1.6 | reviewed', but '1.6 or greater' explicitly includes 1.6 and rule 7 compares plain numbers. Other possible drops break rules 1 or 4: confusing 'CI WIRE [8:22 AM local time (UTC-08:00) on Apr 12, 2026] ML 2.8 ... Ref ci64760691, reviewed.' with the retracted CI event, or merging us68032lh6 with us67040hvn because both sit at -33.834. The same model answered 19 on v0 and v1. This is a slip."
+    },
+    "diagnosis": {
+     "miss_id": "H19",
+     "diagnosis_holds": false,
+     "reproduces_exact_answer": true,
+     "better_cause": "overlooked_line",
+     "better_explanation": "Most likely the model missed one of the 19 qualifying events while counting a long list; the answer does not show which one. A strict reading of '1.6 or greater' has no support. The threshold is inclusive in all three renderings ('at least 1.6' in v0, '1.6 or more' in v1, '1.6 or greater' in v2), and the model counted 19 on v0 and v1. hv39242505's v2 line is an ordinary reviewed report. In H04 (inst-008 v2) the same model read '4.3 or greater' inclusively: excluding its three M4.3 events would have given at most 7, but it answered 9.",
+     "notes": "Dropping hv39242505 does give 18, but so does dropping any of the other 18 qualifying events. Nothing specific to v2 explains a lower count. The M4.1 EW preliminary of us7074p0wg next to us6204stt7 (also M4.1 at 20:xx UTC+09:00) appears the same way in v0, where the model counted 19. The ci33454638 retraction placed before its report appears only in v2, but ignoring it would raise the count, not lower it. Key 19 is correct."
+    }
+   }
+  },
+  "H20": {
+   "model": "anthropic:claude-haiku-5-5",
+   "instance_id": "inst-099",
+   "variant": "v1",
+   "qid": "Q2",
+   "question_text": "Count the distinct earthquakes with a depth of less than 12.1 miles and that occurred between 2026-04-12 15:20 UTC and 2026-04-13 01:25 UTC.",
+   "answer_key": 3,
+   "model_answer": 2,
+   "cause": "unit_conversion",
+   "label": "a km/mile conversion slip",
+   "confidence": "medium",
+   "agents": {
+    "classified": {
+     "miss_id": "H20",
+     "recomputed_answer": "3",
+     "key_is_correct": true,
+     "key_notes": "Key is right. 12.1 mi is 19.47 km. The qualifying events are ci58221750 (10:30 UTC-8, so 18:30 UTC, 5.4 km), hv48315658 (08:02 UTC-10, so 18:02 UTC, 1.3 km) and ci14318519 (13:06 UTC-8, so 21:06 UTC, 18.0 km = 11.19 mi). us6419sl99 (20.7 km = 12.86 mi) fails the depth test, and us6895pxbk (10:16 UTC) is outside the window.",
+     "cause": "unit_conversion",
+     "culprit_events": [
+      "ci14318519"
+     ],
+     "culprit_lines": [
+      "[CI] ci14318519 | 13:06 (UTC-08:00) 12 Apr 2026 | Southern California | (33.848, -118.035) | depth 18.0 km | M2.3 (ml) | reviewed"
+     ],
+     "explanation": "The model most likely compared ci14318519's 18.0 km directly with the 12.1-mile threshold, or converted the wrong way, so it dropped that event and counted only ci58221750 and hv48315658. In v0 and v2 this event's depth was printed as 11.2 mi and the model counted 3; its correct Q3 in this reply shows it was converting local times, so a time slip is less likely.",
+     "reproduces_exact_answer": true,
+     "confidence": "medium"
+    },
+    "skeptic": {
+     "miss_id": "H20",
+     "my_answer": "3",
+     "key_is_correct": true,
+     "model_answer_defensible": false,
+     "defensible_reading": "",
+     "ambiguity_found": "Not decisive. (1) Some stated offsets are unrealistic: '[US] us6695r8u3 | 12:33 (UTC+10:00) 13 Apr 2026 | Honshu, Japan ...' (Japan is UTC+9); '10:30 (UTC-08:00) 12 Apr 2026' and '13:06 (UTC-08:00) 12 Apr 2026' for Southern California in April (PDT is UTC-7); 'US WIRE [04:27 (UTC-12:00) 12 Apr 2026] ... Tonga'. Rule 6 says to use the stated offset, and with realistic offsets the count is unchanged: us6695r8u3 moves to 03:33 UTC, still out; the CI events stay inside; the Tonga event fails depth anyway. (2) WIRE bracket times look like notice timestamps, but every WIRE event in this digest fails the depth filter.",
+     "notes": "12.1 mi = 19.473 km; window [2026-04-12 15:20, 2026-04-13 01:25). Three events qualify. (a) hv48315658, '08:02 (UTC-10:00) 12 Apr 2026 \u2014 A magnitude 0.9 (md) earthquake struck Hawaii; ... depth 1.3 km. The HV network lists it as hv48315658 (reviewed).' = 18:02 UTC; the PT preliminary pt93128643 at 'Sun, 12 Apr 2026 18:02:29 +0000' agrees. (b) ci58221750, '10:30 (UTC-08:00) 12 Apr 2026 ... depth 5.4 km' = 18:30 UTC. (c) ci14318519, '[CI] ci14318519 | 13:06 (UTC-08:00) 12 Apr 2026 | Southern California | (33.848, -118.035) | depth 18.0 km | M2.3 (ml) | reviewed' = 21:06 UTC, 18.0 km = 11.18 mi. Near misses: us6419sl99 is 20.7 km = 12.86 mi (fails depth); us6895pxbk is 18.6 km but 10:16 UTC (fails time); us6695r8u3 is 10.4 km but 02:33 UTC 13 Apr (fails time); us7972msjn is at 01:19 but 29.4 km. The model's 2 most likely drops ci14318519 by comparing 18.0 (km) with 12.1 (miles) without converting. That is a unit slip: rule 5 covers units and the question states miles, and 18 km is under 12.1 mi even with rough conversion (18/1.6 = 11.25). Dropping hv48315658 or ci58221750 instead would need a wrong offset conversion, and ignoring all offsets gives 1, not 2. The same model answered 3 on v0 and v2."
+    },
+    "diagnosis": {
+     "miss_id": "H20",
+     "diagnosis_holds": true,
+     "reproduces_exact_answer": true,
+     "better_cause": "same",
+     "better_explanation": "",
+     "notes": "Checked: 18.0 km = 11.18 mi, so it passes the 12.1 mi limit, but 18.0 > 12.1 if the km figure is compared directly. ci14318519 is the only in-window event whose km depth lies between 12.1 and 19.47, so it is the only one a skipped conversion affects. In v0 and v2 its depth is printed as 11.2 mi and the model counted 3. A direct number comparison also gives 3 on those renderings, so one habit explains all three. Q3 = 1 is correct and would be 3 if offsets were ignored (us7480w6a1 at 219 km and us6826e0k5 at 7 km would fall in the window), so the model was converting times. A sign error on UTC-8/UTC-10 would also drop ci58221750 and hv48315658 (count 0), and hv48315658 also has a UTC PT re-report at 18:02:29. A one-off time slip on ci14318519's 13:06 (UTC-08:00), which is local time only in v1, cannot be fully ruled out, but ci58221750 in the same format was handled correctly. Confidence medium or higher."
+    }
+   }
+  }
+ }
+}

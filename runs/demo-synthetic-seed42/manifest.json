@@ -1,0 +1,485 @@
+{
+  "evalgen_version": "0.1.0",
+  "code_sha256": "277dab3e900e5e98398f2cf62b25118e1b1f18050289a3ef3ed0b1dfbf8e5882",
+  "run_id": "demo-synthetic-seed42",
+  "seed": 42,
+  "seed_commitment": "5a73024a42fc8355a4687c279553afdd4c7d31eef5b0ecdf33ba2ff71000e9cf",
+  "seed_nonce": "df2cdf0643f0281be75af8b6fe94f970",
+  "config": {
+    "seed": 42,
+    "instances": 20,
+    "source": "synthetic",
+    "feed": "day",
+    "snapshot_file": null,
+    "variants": 2,
+    "pool_size": 360,
+    "events_min": 20,
+    "events_max": 28,
+    "questions_min": 3,
+    "questions_max": 5,
+    "audit_rate": 0.02
+  },
+  "snapshot": {
+    "source": "synthetic",
+    "seed": 42,
+    "compiled_at": 1789452000,
+    "window_hours": 24,
+    "events_sha256": "2e5ff1139c47ef21e5501d3213f398544430b87e93a6e977a01c107fd42a219d",
+    "raw_sha256": null,
+    "url": null,
+    "fetched_at": null,
+    "note": null,
+    "n_events": 360
+  },
+  "replay": null,
+  "templates": {
+    "public": [
+      {
+        "template_id": "P01",
+        "pool": "public",
+        "filters": [
+          "mag_at_least"
+        ],
+        "terminal": "count",
+        "twin_of": null,
+        "skeleton": "dedupe → mag_at_least → count"
+      },
+      {
+        "template_id": "P02",
+        "pool": "public",
+        "filters": [
+          "within_distance"
+        ],
+        "terminal": "count",
+        "twin_of": null,
+        "skeleton": "dedupe → within_distance → count"
+      },
+      {
+        "template_id": "P03",
+        "pool": "public",
+        "filters": [
+          "in_region"
+        ],
+        "terminal": "argmax_mag",
+        "twin_of": null,
+        "skeleton": "dedupe → in_region → argmax_mag"
+      },
+      {
+        "template_id": "P04",
+        "pool": "public",
+        "filters": [
+          "mag_at_least"
+        ],
+        "terminal": "max_depth",
+        "twin_of": null,
+        "skeleton": "dedupe → mag_at_least → max_depth"
+      },
+      {
+        "template_id": "P05",
+        "pool": "public",
+        "filters": [
+          "mag_at_least"
+        ],
+        "terminal": "compare_regions",
+        "twin_of": null,
+        "skeleton": "dedupe → mag_at_least → compare_regions"
+      },
+      {
+        "template_id": "P06",
+        "pool": "public",
+        "filters": [
+          "depth_shallower_than",
+          "time_between"
+        ],
+        "terminal": "count",
+        "twin_of": null,
+        "skeleton": "dedupe → depth_shallower_than → time_between → count"
+      },
+      {
+        "template_id": "P07",
+        "pool": "public",
+        "filters": [
+          "in_region"
+        ],
+        "terminal": "nearest_to",
+        "twin_of": null,
+        "skeleton": "dedupe → in_region → nearest_to"
+      },
+      {
+        "template_id": "P08",
+        "pool": "public",
+        "filters": [
+          "in_region"
+        ],
+        "terminal": "time_of_largest",
+        "twin_of": null,
+        "skeleton": "dedupe → in_region → time_of_largest"
+      },
+      {
+        "template_id": "P09",
+        "pool": "public",
+        "filters": [
+          "within_distance"
+        ],
+        "terminal": "rank_mag",
+        "twin_of": null,
+        "skeleton": "dedupe → within_distance → rank_mag"
+      },
+      {
+        "template_id": "P10",
+        "pool": "public",
+        "filters": [
+          "depth_at_least"
+        ],
+        "terminal": "max_mag",
+        "twin_of": null,
+        "skeleton": "dedupe → depth_at_least → max_mag"
+      },
+      {
+        "template_id": "P11",
+        "pool": "public",
+        "filters": [
+          "time_between"
+        ],
+        "terminal": "min_depth",
+        "twin_of": null,
+        "skeleton": "dedupe → time_between → min_depth"
+      },
+      {
+        "template_id": "P12",
+        "pool": "public",
+        "filters": [
+          "mag_below"
+        ],
+        "terminal": "nearest_distance",
+        "twin_of": null,
+        "skeleton": "dedupe → mag_below → nearest_distance"
+      }
+    ],
+    "new": [
+      {
+        "template_id": "N01",
+        "pool": "new",
+        "filters": [
+          "time_between"
+        ],
+        "terminal": "count",
+        "twin_of": "P01",
+        "skeleton": "dedupe → time_between → count"
+      },
+      {
+        "template_id": "N02",
+        "pool": "new",
+        "filters": [
+          "in_region"
+        ],
+        "terminal": "count",
+        "twin_of": "P02",
+        "skeleton": "dedupe → in_region → count"
+      },
+      {
+        "template_id": "N03",
+        "pool": "new",
+        "filters": [
+          "within_distance"
+        ],
+        "terminal": "argmax_mag",
+        "twin_of": "P03",
+        "skeleton": "dedupe → within_distance → argmax_mag"
+      },
+      {
+        "template_id": "N04",
+        "pool": "new",
+        "filters": [
+          "time_between"
+        ],
+        "terminal": "max_depth",
+        "twin_of": "P04",
+        "skeleton": "dedupe → time_between → max_depth"
+      },
+      {
+        "template_id": "N05",
+        "pool": "new",
+        "filters": [
+          "depth_at_least"
+        ],
+        "terminal": "compare_regions",
+        "twin_of": "P05",
+        "skeleton": "dedupe → depth_at_least → compare_regions"
+      },
+      {
+        "template_id": "N06",
+        "pool": "new",
+        "filters": [
+          "mag_at_least",
+          "depth_at_least"
+        ],
+        "terminal": "count",
+        "twin_of": "P06",
+        "skeleton": "dedupe → mag_at_least → depth_at_least → count"
+      },
+      {
+        "template_id": "N07",
+        "pool": "new",
+        "filters": [
+          "depth_at_least"
+        ],
+        "terminal": "nearest_to",
+        "twin_of": "P07",
+        "skeleton": "dedupe → depth_at_least → nearest_to"
+      },
+      {
+        "template_id": "N08",
+        "pool": "new",
+        "filters": [
+          "time_between"
+        ],
+        "terminal": "time_of_largest",
+        "twin_of": "P08",
+        "skeleton": "dedupe → time_between → time_of_largest"
+      },
+      {
+        "template_id": "N09",
+        "pool": "new",
+        "filters": [
+          "mag_below"
+        ],
+        "terminal": "rank_mag",
+        "twin_of": "P09",
+        "skeleton": "dedupe → mag_below → rank_mag"
+      },
+      {
+        "template_id": "N10",
+        "pool": "new",
+        "filters": [
+          "within_distance"
+        ],
+        "terminal": "max_mag",
+        "twin_of": "P10",
+        "skeleton": "dedupe → within_distance → max_mag"
+      },
+      {
+        "template_id": "N11",
+        "pool": "new",
+        "filters": [
+          "mag_at_least"
+        ],
+        "terminal": "min_depth",
+        "twin_of": "P11",
+        "skeleton": "dedupe → mag_at_least → min_depth"
+      },
+      {
+        "template_id": "N12",
+        "pool": "new",
+        "filters": [
+          "mag_at_least"
+        ],
+        "terminal": "nearest_distance",
+        "twin_of": "P12",
+        "skeleton": "dedupe → mag_at_least → nearest_distance"
+      }
+    ]
+  },
+  "instances": [
+    "inst-000",
+    "inst-001",
+    "inst-002",
+    "inst-003",
+    "inst-004",
+    "inst-005",
+    "inst-006",
+    "inst-007",
+    "inst-008",
+    "inst-009",
+    "inst-010",
+    "inst-011",
+    "inst-012",
+    "inst-013",
+    "inst-014",
+    "inst-015",
+    "inst-016",
+    "inst-017",
+    "inst-018",
+    "inst-019"
+  ],
+  "self_check": {
+    "oracle_checks": 240,
+    "oracle_agreements": 240,
+    "resolution_invariant_instances": 20,
+    "problems": []
+  },
+  "audit": {
+    "population": 80,
+    "sampled": 2,
+    "rate": 0.02,
+    "file": "audit/audit_sample.jsonl"
+  },
+  "seeds": {
+    "snapshot/clock": 5059985036782762989,
+    "snapshot/synthetic": 16224792208690757057,
+    "templates/new": 2603211485466094148,
+    "instance/0/events": 10311173159908464650,
+    "instance/0/questions": 1130091660124333736,
+    "instance/0/traps": 8966190793659793664,
+    "instance/0/chatter": 4583164086006133402,
+    "instance/0/render/0": 10233972829229304177,
+    "instance/0/render/1": 3132763344905595957,
+    "instance/0/render/2": 3880182344896161357,
+    "instance/0": 2934961350003957684,
+    "instance/1/events": 3324102486923383748,
+    "instance/1/questions": 2556105189995723997,
+    "instance/1/traps": 3645657739516043575,
+    "instance/1/chatter": 3479928626039875884,
+    "instance/1/render/0": 11951640203513162956,
+    "instance/1/render/1": 455014957505829847,
+    "instance/1/render/2": 12533614892756187455,
+    "instance/1": 86377889777052402,
+    "instance/2/events": 15698200791150443182,
+    "instance/2/questions": 12267446566357570274,
+    "instance/2/traps": 5630871758243497453,
+    "instance/2/chatter": 7336586688988765901,
+    "instance/2/render/0": 6447497224922465526,
+    "instance/2/render/1": 16762963096985562430,
+    "instance/2/render/2": 17629913514724476675,
+    "instance/2": 4900479580267691037,
+    "instance/3/events": 13907849530296452850,
+    "instance/3/questions": 18002713122090953203,
+    "instance/3/traps": 1638669830796069104,
+    "instance/3/chatter": 12975522550144886112,
+    "instance/3/render/0": 3711487780075895035,
+    "instance/3/render/1": 213461737584095431,
+    "instance/3/render/2": 8483312676269301289,
+    "instance/3": 9532777633367025949,
+    "instance/4/events": 18199492872742556710,
+    "instance/4/questions": 16049147142427050453,
+    "instance/4/traps": 7521192605883796494,
+    "instance/4/chatter": 13388551496856286555,
+    "instance/4/render/0": 4890726740941630364,
+    "instance/4/render/1": 13053190357700832152,
+    "instance/4/render/2": 11656935333589081843,
+    "instance/4": 17763965350087845875,
+    "instance/5/events": 14734929293310043830,
+    "instance/5/questions": 10127169553892205196,
+    "instance/5/traps": 13396226515555230991,
+    "instance/5/chatter": 17671847509416092948,
+    "instance/5/render/0": 9448141618635067966,
+    "instance/5/render/1": 5128484487119382277,
+    "instance/5/render/2": 9625893547322366371,
+    "instance/5": 18286609509944851807,
+    "instance/6/events": 4470279616911034150,
+    "instance/6/questions": 13696639000937443235,
+    "instance/6/traps": 12872066345183693175,
+    "instance/6/chatter": 5280594991769792477,
+    "instance/6/render/0": 8225700860905435536,
+    "instance/6/render/1": 4468941268977191537,
+    "instance/6/render/2": 4247832512358884218,
+    "instance/6": 386553157278432651,
+    "instance/7/events": 6486541545282672192,
+    "instance/7/questions": 18423433527660591609,
+    "instance/7/traps": 14869771695795683542,
+    "instance/7/chatter": 698309507193508777,
+    "instance/7/render/0": 5449685169532817665,
+    "instance/7/render/1": 15298324947079985972,
+    "instance/7/render/2": 18208243747830035640,
+    "instance/7": 1304070124323139249,
+    "instance/8/events": 9822854168552532769,
+    "instance/8/questions": 7672119182651929858,
+    "instance/8/traps": 12283573411968259173,
+    "instance/8/chatter": 7166589269011856261,
+    "instance/8/render/0": 12101903423945501155,
+    "instance/8/render/1": 17873425453087469271,
+    "instance/8/render/2": 4127449759160596186,
+    "instance/8": 14856909989422079033,
+    "instance/9/events": 5395371768219488154,
+    "instance/9/questions": 1022220176828289793,
+    "instance/9/traps": 11540357742283619786,
+    "instance/9/chatter": 239181784217992676,
+    "instance/9/render/0": 16118661145999645067,
+    "instance/9/render/1": 18232741011076682554,
+    "instance/9/render/2": 17358355645467653881,
+    "instance/9": 8457685946411615317,
+    "instance/10/events": 7101028624748605273,
+    "instance/10/questions": 6444313316416424403,
+    "instance/10/traps": 13231623731919384765,
+    "instance/10/chatter": 1565592013186792191,
+    "instance/10/render/0": 15043369749853836458,
+    "instance/10/render/1": 18234487895981204795,
+    "instance/10/render/2": 8515878088394241328,
+    "instance/10": 15356848826112573395,
+    "instance/11/events": 4135496497863923490,
+    "instance/11/questions": 13096843861723251431,
+    "instance/11/traps": 16674904271085641925,
+    "instance/11/chatter": 4110812978090056411,
+    "instance/11/render/0": 1337174118160450833,
+    "instance/11/render/1": 14654864811537785680,
+    "instance/11/render/2": 4685174953536446654,
+    "instance/11": 9931454710145234402,
+    "instance/12/events": 11430642027113350874,
+    "instance/12/questions": 16836766800136434349,
+    "instance/12/traps": 15030439336798142432,
+    "instance/12/chatter": 12452911019562438375,
+    "instance/12/render/0": 11990583277679030873,
+    "instance/12/render/1": 8767616339090035473,
+    "instance/12/render/2": 126355396206112915,
+    "instance/12": 14577508101649894997,
+    "instance/13/events": 11817149875065959739,
+    "instance/13/questions": 17127353955765541840,
+    "instance/13/traps": 14603725518100867843,
+    "instance/13/chatter": 11405294408965542551,
+    "instance/13/render/0": 7398973758726210193,
+    "instance/13/render/1": 3129529842893595601,
+    "instance/13/render/2": 6859652163765431624,
+    "instance/13": 362097552066589226,
+    "instance/14/events": 9836825832398756202,
+    "instance/14/questions": 11409618852202249493,
+    "instance/14/traps": 9823017734162105113,
+    "instance/14/chatter": 5102922305149060519,
+    "instance/14/render/0": 6448682520859895822,
+    "instance/14/render/1": 6131514136675957006,
+    "instance/14/render/2": 4117272001270971028,
+    "instance/14": 4574365442110438537,
+    "instance/15/events": 6744707574587505374,
+    "instance/15/questions": 3363450717296692792,
+    "instance/15/traps": 14566971945569887026,
+    "instance/15/chatter": 9782008832121665259,
+    "instance/15/render/0": 6921201230840334109,
+    "instance/15/render/1": 15715356834054665246,
+    "instance/15/render/2": 2301473297812511814,
+    "instance/15": 3551149414603088514,
+    "instance/16/events": 8653321208351555174,
+    "instance/16/questions": 16154628575728641353,
+    "instance/16/traps": 17397833644036292950,
+    "instance/16/chatter": 8664203313538923580,
+    "instance/16/render/0": 17930856277213330235,
+    "instance/16/render/1": 15123467342047371929,
+    "instance/16/render/2": 7312359275453165377,
+    "instance/16": 8239973109885846416,
+    "instance/17/events": 9545400459058515280,
+    "instance/17/questions": 7143120652709082172,
+    "instance/17/traps": 14237743501834665719,
+    "instance/17/chatter": 1768505403968902950,
+    "instance/17/render/0": 3429752995261151167,
+    "instance/17/render/1": 1949643719920068171,
+    "instance/17/render/2": 5303911169532799030,
+    "instance/17": 1923538198518726159,
+    "instance/18/events": 13290507517469695097,
+    "instance/18/questions": 16746895734660815165,
+    "instance/18/traps": 7433931787499754858,
+    "instance/18/chatter": 10962835287800954466,
+    "instance/18/render/0": 2185703028638681960,
+    "instance/18/render/1": 3901010718565402937,
+    "instance/18/render/2": 9486307052571085614,
+    "instance/18": 7068243294735525147,
+    "instance/19/events": 5225801870146706814,
+    "instance/19/questions": 8787284048549164074,
+    "instance/19/traps": 8109840355268451275,
+    "instance/19/chatter": 16185961073627114388,
+    "instance/19/render/0": 13461536825767769909,
+    "instance/19/render/1": 15234187128640840517,
+    "instance/19/render/2": 11899544771590878211,
+    "instance/19": 17003404226791155202,
+    "audit": 13977809673794905483,
+    "mock": 11537102312849947793
+  },
+  "generated_at_utc": "2026-11-03T22:18:54Z"
+}

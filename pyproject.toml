@@ -1,0 +1,13 @@
+[project]
+name = "evalgen"
+version = "0.2.0"
+description = "Live, fine-tuning-resistant LLM evaluation: fresh seeded earthquake-digest instances with code-computed answer keys"
+requires-python = ">=3.10"
+dependencies = ["requests>=2.25"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

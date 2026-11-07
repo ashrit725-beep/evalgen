@@ -1,0 +1,2065 @@
+{
+  "run": {
+    "run_id": "usgs-live-seed5",
+    "seed": 5,
+    "seed_commitment": "7d766e00cd25e027a3e7f7da74a267c885aca86dfd621bc0aa0b34c402c3e289",
+    "source": "usgs",
+    "snapshot_sha256": "813b93566c1b728a7bb5cbef87284d8f63d894c2c8df9f1aa3177948f91ac672",
+    "raw_feed_sha256": "cef1e67615c9737ac1e413617a429938c0d36a1eb38d6d464dcfd2e41a376335",
+    "snapshot_note": "collapsed 3 duplicate feed solution(s) of the same quake (us7000tv2m, aka2026vtxzvj, aka2026vudyyh)",
+    "snapshot_url": "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson",
+    "pool_events": 202,
+    "compiled_at": "2026-11-03T22:18:53Z",
+    "window_hours": 24,
+    "instances": 20,
+    "questions": 82,
+    "questions_by_pool": {
+      "public": 41,
+      "new": 41
+    },
+    "renderings_per_instance": 3,
+    "prompts": 60,
+    "traps": {
+      "total": 93,
+      "by_kind": {
+        "duplicate": 53,
+        "retraction": 20,
+        "conflicting_magnitude": 20
+      },
+      "load_bearing": 87,
+      "affected_questions": 39,
+      "affected_question_pairs": 100
+    },
+    "code_sha256": "277dab3e900e5e98398f2cf62b25118e1b1f18050289a3ef3ed0b1dfbf8e5882",
+    "forecasts": {
+      "total": 20,
+      "resolved": 0
+    },
+    "templates": {
+      "public": [
+        {
+          "template_id": "P01",
+          "pool": "public",
+          "filters": [
+            "mag_at_least"
+          ],
+          "terminal": "count",
+          "twin_of": null,
+          "skeleton": "dedupe → mag_at_least → count"
+        },
+        {
+          "template_id": "P02",
+          "pool": "public",
+          "filters": [
+            "within_distance"
+          ],
+          "terminal": "count",
+          "twin_of": null,
+          "skeleton": "dedupe → within_distance → count"
+        },
+        {
+          "template_id": "P03",
+          "pool": "public",
+          "filters": [
+            "in_region"
+          ],
+          "terminal": "argmax_mag",
+          "twin_of": null,
+          "skeleton": "dedupe → in_region → argmax_mag"
+        },
+        {
+          "template_id": "P04",
+          "pool": "public",
+          "filters": [
+            "mag_at_least"
+          ],
+          "terminal": "max_depth",
+          "twin_of": null,
+          "skeleton": "dedupe → mag_at_least → max_depth"
+        },
+        {
+          "template_id": "P05",
+          "pool": "public",
+          "filters": [
+            "mag_at_least"
+          ],
+          "terminal": "compare_regions",
+          "twin_of": null,
+          "skeleton": "dedupe → mag_at_least → compare_regions"
+        },
+        {
+          "template_id": "P06",
+          "pool": "public",
+          "filters": [
+            "depth_shallower_than",
+            "time_between"
+          ],
+          "terminal": "count",
+          "twin_of": null,
+          "skeleton": "dedupe → depth_shallower_than → time_between → count"
+        },
+        {
+          "template_id": "P07",
+          "pool": "public",
+          "filters": [
+            "in_region"
+          ],
+          "terminal": "nearest_to",
+          "twin_of": null,
+          "skeleton": "dedupe → in_region → nearest_to"
+        },
+        {
+          "template_id": "P08",
+          "pool": "public",
+          "filters": [
+            "in_region"
+          ],
+          "terminal": "time_of_largest",
+          "twin_of": null,
+          "skeleton": "dedupe → in_region → time_of_largest"
+        },
+        {
+          "template_id": "P09",
+          "pool": "public",
+          "filters": [
+            "within_distance"
+          ],
+          "terminal": "rank_mag",
+          "twin_of": null,
+          "skeleton": "dedupe → within_distance → rank_mag"
+        },
+        {
+          "template_id": "P10",
+          "pool": "public",
+          "filters": [
+            "depth_at_least"
+          ],
+          "terminal": "max_mag",
+          "twin_of": null,
+          "skeleton": "dedupe → depth_at_least → max_mag"
+        },
+        {
+          "template_id": "P11",
+          "pool": "public",
+          "filters": [
+            "time_between"
+          ],
+          "terminal": "min_depth",
+          "twin_of": null,
+          "skeleton": "dedupe → time_between → min_depth"
+        },
+        {
+          "template_id": "P12",
+          "pool": "public",
+          "filters": [
+            "mag_below"
+          ],
+          "terminal": "nearest_distance",
+          "twin_of": null,
+          "skeleton": "dedupe → mag_below → nearest_distance"
+        }
+      ],
+      "new": [
+        {
+          "template_id": "N01",
+          "pool": "new",
+          "filters": [
+            "depth_shallower_than"
+          ],
+          "terminal": "count",
+          "twin_of": "P01",
+          "skeleton": "dedupe → depth_shallower_than → count"
+        },
+        {
+          "template_id": "N02",
+          "pool": "new",
+          "filters": [
+            "mag_below"
+          ],
+          "terminal": "count",
+          "twin_of": "P02",
+          "skeleton": "dedupe → mag_below → count"
+        },
+        {
+          "template_id": "N03",
+          "pool": "new",
+          "filters": [
+            "depth_shallower_than"
+          ],
+          "terminal": "argmax_mag",
+          "twin_of": "P03",
+          "skeleton": "dedupe → depth_shallower_than → argmax_mag"
+        },
+        {
+          "template_id": "N04",
+          "pool": "new",
+          "filters": [
+            "time_between"
+          ],
+          "terminal": "max_depth",
+          "twin_of": "P04",
+          "skeleton": "dedupe → time_between → max_depth"
+        },
+        {
+          "template_id": "N05",
+          "pool": "new",
+          "filters": [
+            "depth_at_least"
+          ],
+          "terminal": "compare_regions",
+          "twin_of": "P05",
+          "skeleton": "dedupe → depth_at_least → compare_regions"
+        },
+        {
+          "template_id": "N06",
+          "pool": "new",
+          "filters": [
+            "depth_at_least",
+            "mag_at_least"
+          ],
+          "terminal": "count",
+          "twin_of": "P06",
+          "skeleton": "dedupe → depth_at_least → mag_at_least → count"
+        },
+        {
+          "template_id": "N07",
+          "pool": "new",
+          "filters": [
+            "depth_at_least"
+          ],
+          "terminal": "nearest_to",
+          "twin_of": "P07",
+          "skeleton": "dedupe → depth_at_least → nearest_to"
+        },
+        {
+          "template_id": "N08",
+          "pool": "new",
+          "filters": [
+            "mag_below"
+          ],
+          "terminal": "time_of_largest",
+          "twin_of": "P08",
+          "skeleton": "dedupe → mag_below → time_of_largest"
+        },
+        {
+          "template_id": "N09",
+          "pool": "new",
+          "filters": [
+            "mag_below"
+          ],
+          "terminal": "rank_mag",
+          "twin_of": "P09",
+          "skeleton": "dedupe → mag_below → rank_mag"
+        },
+        {
+          "template_id": "N10",
+          "pool": "new",
+          "filters": [
+            "in_region"
+          ],
+          "terminal": "max_mag",
+          "twin_of": "P10",
+          "skeleton": "dedupe → in_region → max_mag"
+        },
+        {
+          "template_id": "N11",
+          "pool": "new",
+          "filters": [
+            "depth_at_least"
+          ],
+          "terminal": "min_depth",
+          "twin_of": "P11",
+          "skeleton": "dedupe → depth_at_least → min_depth"
+        },
+        {
+          "template_id": "N12",
+          "pool": "new",
+          "filters": [
+            "depth_shallower_than"
+          ],
+          "terminal": "nearest_distance",
+          "twin_of": "P12",
+          "skeleton": "dedupe → depth_shallower_than → nearest_distance"
+        }
+      ]
+    }
+  },
+  "code_changed": false,
+  "models": [
+    {
+      "model": "oracle",
+      "kind": "reference",
+      "accuracy": {
+        "k": 82,
+        "n": 82,
+        "rate": 1.0,
+        "ci95": [
+          0.9552478052599207,
+          1.0
+        ]
+      },
+      "accuracy_all_renderings": {
+        "k": 246,
+        "n": 246,
+        "rate": 1.0,
+        "ci95": [
+          0.9846238576762238,
+          1.0
+        ]
+      },
+      "per_instance": {
+        "inst-000": 1.0,
+        "inst-001": 1.0,
+        "inst-002": 1.0,
+        "inst-003": 1.0,
+        "inst-004": 1.0,
+        "inst-005": 1.0,
+        "inst-006": 1.0,
+        "inst-007": 1.0,
+        "inst-008": 1.0,
+        "inst-009": 1.0,
+        "inst-010": 1.0,
+        "inst-011": 1.0,
+        "inst-012": 1.0,
+        "inst-013": 1.0,
+        "inst-014": 1.0,
+        "inst-015": 1.0,
+        "inst-016": 1.0,
+        "inst-017": 1.0,
+        "inst-018": 1.0,
+        "inst-019": 1.0
+      },
+      "instance_mean": 1.0,
+      "pools": {
+        "public": {
+          "k": 41,
+          "n": 41,
+          "rate": 1.0,
+          "ci95": [
+            0.9143295511310926,
+            1.0
+          ]
+        },
+        "new": {
+          "k": 41,
+          "n": 41,
+          "rate": 1.0,
+          "ci95": [
+            0.9143295511310926,
+            1.0
+          ]
+        }
+      },
+      "gap": {
+        "public_minus_new": 0.0,
+        "ci95": [
+          0.0,
+          0.0
+        ],
+        "adjusted": {
+          "public_minus_new": 0.0,
+          "ci95": [
+            -0.11509676089884158,
+            0.11509676089884158
+          ],
+          "coverage": 1.0
+        },
+        "flagged": false
+      },
+      "by_answer_type": {
+        "count": {
+          "k": 26,
+          "n": 26,
+          "rate": 1.0,
+          "ci95": [
+            0.8712669561953784,
+            1.0
+          ]
+        },
+        "event_id": {
+          "k": 20,
+          "n": 20,
+          "rate": 1.0,
+          "ci95": [
+            0.8388698745050667,
+            1.0
+          ]
+        },
+        "magnitude": {
+          "k": 7,
+          "n": 7,
+          "rate": 1.0,
+          "ci95": [
+            0.6456611570247934,
+            1.0
+          ]
+        },
+        "depth": {
+          "k": 12,
+          "n": 12,
+          "rate": 1.0,
+          "ci95": [
+            0.7574992425007574,
+            1.0
+          ]
+        },
+        "distance": {
+          "k": 9,
+          "n": 9,
+          "rate": 1.0,
+          "ci95": [
+            0.7008472464490407,
+            1.0
+          ]
+        },
+        "region": {
+          "k": 5,
+          "n": 5,
+          "rate": 1.0,
+          "ci95": [
+            0.5655085052479191,
+            1.0
+          ]
+        },
+        "utc_time": {
+          "k": 3,
+          "n": 3,
+          "rate": 1.0,
+          "ci95": [
+            0.43849391955098227,
+            1.0
+          ]
+        }
+      },
+      "by_template": {
+        "N01": {
+          "k": 5,
+          "n": 5,
+          "rate": 1.0,
+          "ci95": [
+            0.5655085052479191,
+            1.0
+          ]
+        },
+        "N02": {
+          "k": 3,
+          "n": 3,
+          "rate": 1.0,
+          "ci95": [
+            0.43849391955098227,
+            1.0
+          ]
+        },
+        "N03": {
+          "k": 5,
+          "n": 5,
+          "rate": 1.0,
+          "ci95": [
+            0.5655085052479191,
+            1.0
+          ]
+        },
+        "N04": {
+          "k": 4,
+          "n": 4,
+          "rate": 1.0,
+          "ci95": [
+            0.5100999795960008,
+            1.0
+          ]
+        },
+        "N05": {
+          "k": 3,
+          "n": 3,
+          "rate": 1.0,
+          "ci95": [
+            0.43849391955098227,
+            1.0
+          ]
+        },
+        "N06": {
+          "k": 4,
+          "n": 4,
+          "rate": 1.0,
+          "ci95": [
+            0.5100999795960008,
+            1.0
+          ]
+        },
+        "N07": {
+          "k": 2,
+          "n": 2,
+          "rate": 1.0,
+          "ci95": [
+            0.34237195288961925,
+            1.0
+          ]
+        },
+        "N08": {
+          "k": 1,
+          "n": 1,
+          "rate": 1.0,
+          "ci95": [
+            0.20654329147389294,
+            1.0
+          ]
+        },
+        "N09": {
+          "k": 2,
+          "n": 2,
+          "rate": 1.0,
+          "ci95": [
+            0.34237195288961925,
+            1.0
+          ]
+        },
+        "N10": {
+          "k": 4,
+          "n": 4,
+          "rate": 1.0,
+          "ci95": [
+            0.5100999795960008,
+            1.0
+          ]
+        },
+        "N11": {
+          "k": 3,
+          "n": 3,
+          "rate": 1.0,
+          "ci95": [
+            0.43849391955098227,
+            1.0
+          ]
+        },
+        "N12": {
+          "k": 5,
+          "n": 5,
+          "rate": 1.0,
+          "ci95": [
+            0.5655085052479191,
+            1.0
+          ]
+        },
+        "P01": {
+          "k": 5,
+          "n": 5,
+          "rate": 1.0,
+          "ci95": [
+            0.5655085052479191,
+            1.0
+          ]
+        },
+        "P02": {
+          "k": 4,
+          "n": 4,
+          "rate": 1.0,
+          "ci95": [
+            0.5100999795960008,
+            1.0
+          ]
+        },
+        "P03": {
+          "k": 5,
+          "n": 5,
+          "rate": 1.0,
+          "ci95": [
+            0.5655085052479191,
+            1.0
+          ]
+        },
+        "P04": {
+          "k": 4,
+          "n": 4,
+          "rate": 1.0,
+          "ci95": [
+            0.5100999795960008,
+            1.0
+          ]
+        },
+        "P05": {
+          "k": 2,
+          "n": 2,
+          "rate": 1.0,
+          "ci95": [
+            0.34237195288961925,
+            1.0
+          ]
+        },
+        "P06": {
+          "k": 5,
+          "n": 5,
+          "rate": 1.0,
+          "ci95": [
+            0.5655085052479191,
+            1.0
+          ]
+        },
+        "P07": {
+          "k": 3,
+          "n": 3,
+          "rate": 1.0,
+          "ci95": [
+            0.43849391955098227,
+            1.0
+          ]
+        },
+        "P08": {
+          "k": 2,
+          "n": 2,
+          "rate": 1.0,
+          "ci95": [
+            0.34237195288961925,
+            1.0
+          ]
+        },
+        "P09": {
+          "k": 3,
+          "n": 3,
+          "rate": 1.0,
+          "ci95": [
+            0.43849391955098227,
+            1.0
+          ]
+        },
+        "P10": {
+          "k": 3,
+          "n": 3,
+          "rate": 1.0,
+          "ci95": [
+            0.43849391955098227,
+            1.0
+          ]
+        },
+        "P11": {
+          "k": 1,
+          "n": 1,
+          "rate": 1.0,
+          "ci95": [
+            0.20654329147389294,
+            1.0
+          ]
+        },
+        "P12": {
+          "k": 4,
+          "n": 4,
+          "rate": 1.0,
+          "ci95": [
+            0.5100999795960008,
+            1.0
+          ]
+        }
+      },
+      "consistency": {
+        "k": 164,
+        "n": 164,
+        "rate": 1.0,
+        "ci95": [
+          0.9771117529861488,
+          1.0
+        ],
+        "questions_fully_consistent": {
+          "k": 82,
+          "n": 82,
+          "rate": 1.0,
+          "ci95": [
+            0.9552478052599207,
+            1.0
+          ]
+        }
+      },
+      "traps": {
+        "caught": {
+          "k": 300,
+          "n": 300,
+          "rate": 1.0,
+          "ci95": [
+            0.9873565700022643,
+            0.9999999999999999
+          ]
+        },
+        "fell_for_trap": {
+          "k": 0,
+          "n": 300,
+          "rate": 0.0,
+          "ci95": [
+            0.0,
+            0.012643429997735661
+          ]
+        },
+        "by_kind": {
+          "duplicate": {
+            "k": 171,
+            "n": 171,
+            "rate": 1.0,
+            "ci95": [
+              0.978028112302793,
+              1.0
+            ],
+            "fell": 0,
+            "other_error": 0
+          },
+          "retraction": {
+            "k": 66,
+            "n": 66,
+            "rate": 1.0,
+            "ci95": [
+              0.9449955327483907,
+              1.0
+            ],
+            "fell": 0,
+            "other_error": 0
+          },
+          "conflicting_magnitude": {
+            "k": 63,
+            "n": 63,
+            "rate": 1.0,
+            "ci95": [
+              0.9425268096514744,
+              0.9999999999999999
+            ],
+            "fell": 0,
+            "other_error": 0
+          }
+        }
+      },
+      "format": {
+        "replies": 60,
+        "strict": 60,
+        "lenient": 0,
+        "failed": 0,
+        "api_errors": 0
+      },
+      "forecast": {
+        "asked": 20,
+        "answered": 20,
+        "resolved": 0,
+        "brier": null
+      }
+    },
+    {
+      "model": "naive",
+      "kind": "reference",
+      "accuracy": {
+        "k": 45,
+        "n": 82,
+        "rate": 0.5487804878048781,
+        "ci95": [
+          0.44130583571145193,
+          0.6518890721187844
+        ]
+      },
+      "accuracy_all_renderings": {
+        "k": 135,
+        "n": 246,
+        "rate": 0.5487804878048781,
+        "ci95": [
+          0.4863213559221156,
+          0.6097395082414185
+        ]
+      },
+      "per_instance": {
+        "inst-000": 0.5,
+        "inst-001": 0.6,
+        "inst-002": 0.6,
+        "inst-003": 0.5,
+        "inst-004": 0.3333333333333333,
+        "inst-005": 0.6666666666666666,
+        "inst-006": 0.25,
+        "inst-007": 0.6666666666666666,
+        "inst-008": 0.75,
+        "inst-009": 0.6666666666666666,
+        "inst-010": 0.5,
+        "inst-011": 0.5,
+        "inst-012": 0.4,
+        "inst-013": 0.8,
+        "inst-014": 0.6,
+        "inst-015": 0.75,
+        "inst-016": 0.4,
+        "inst-017": 0.6666666666666666,
+        "inst-018": 0.25,
+        "inst-019": 0.6
+      },
+      "instance_mean": 0.55,
+      "pools": {
+        "public": {
+          "k": 25,
+          "n": 41,
+          "rate": 0.6097560975609756,
+          "ci95": [
+            0.45726583898692563,
+            0.7434406478467289
+          ]
+        },
+        "new": {
+          "k": 20,
+          "n": 41,
+          "rate": 0.4878048780487805,
+          "ci95": [
+            0.3425418723993569,
+            0.6351574068413481
+          ]
+        }
+      },
+      "gap": {
+        "public_minus_new": 0.12195121951219512,
+        "ci95": [
+          -0.09183869443412626,
+          0.3357411334585165
+        ],
+        "adjusted": {
+          "public_minus_new": 0.013008130081300811,
+          "ci95": [
+            -0.11182518005889583,
+            0.13784144022149744
+          ],
+          "coverage": 1.0
+        },
+        "flagged": false
+      },
+      "by_answer_type": {
+        "count": {
+          "k": 4,
+          "n": 26,
+          "rate": 0.15384615384615385,
+          "ci95": [
+            0.06149933998929477,
+            0.33531584418313565
+          ]
+        },
+        "event_id": {
+          "k": 13,
+          "n": 20,
+          "rate": 0.65,
+          "ci95": [
+            0.43285051021946463,
+            0.8188104521320554
+          ]
+        },
+        "magnitude": {
+          "k": 5,
+          "n": 7,
+          "rate": 0.7142857142857143,
+          "ci95": [
+            0.35892909014821267,
+            0.9177828342909844
+          ]
+        },
+        "depth": {
+          "k": 9,
+          "n": 12,
+          "rate": 0.75,
+          "ci95": [
+            0.46768966087934005,
+            0.9110599603710386
+          ]
+        },
+        "distance": {
+          "k": 6,
+          "n": 9,
+          "rate": 0.6666666666666666,
+          "ci95": [
+            0.35419734749908977,
+            0.879418401317257
+          ]
+        },
+        "region": {
+          "k": 5,
+          "n": 5,
+          "rate": 1.0,
+          "ci95": [
+            0.5655085052479191,
+            1.0
+          ]
+        },
+        "utc_time": {
+          "k": 3,
+          "n": 3,
+          "rate": 1.0,
+          "ci95": [
+            0.43849391955098227,
+            1.0
+          ]
+        }
+      },
+      "by_template": {
+        "N01": {
+          "k": 0,
+          "n": 5,
+          "rate": 0.0,
+          "ci95": [
+            0.0,
+            0.43449149475208104
+          ]
+        },
+        "N02": {
+          "k": 0,
+          "n": 3,
+          "rate": 0.0,
+          "ci95": [
+            0.0,
+            0.5615060804490177
+          ]
+        },
+        "N03": {
+          "k": 3,
+          "n": 5,
+          "rate": 0.6,
+          "ci95": [
+            0.23071993220883708,
+            0.8823817688407467
+          ]
+        },
+        "N04": {
+          "k": 3,
+          "n": 4,
+          "rate": 0.75,
+          "ci95": [
+            0.3006360524426366,
+            0.9544139373553637
+          ]
+        },
+        "N05": {
+          "k": 3,
+          "n": 3,
+          "rate": 1.0,
+          "ci95": [
+            0.43849391955098227,
+            1.0
+          ]
+        },
+        "N06": {
+          "k": 0,
+          "n": 4,
+          "rate": 0.0,
+          "ci95": [
+            0.0,
+            0.48990002040399916
+          ]
+        },
+        "N07": {
+          "k": 2,
+          "n": 2,
+          "rate": 1.0,
+          "ci95": [
+            0.34237195288961925,
+            1.0
+          ]
+        },
+        "N08": {
+          "k": 1,
+          "n": 1,
+          "rate": 1.0,
+          "ci95": [
+            0.20654329147389294,
+            1.0
+          ]
+        },
+        "N09": {
+          "k": 0,
+          "n": 2,
+          "rate": 0.0,
+          "ci95": [
+            0.0,
+            0.6576280471103807
+          ]
+        },
+        "N10": {
+          "k": 3,
+          "n": 4,
+          "rate": 0.75,
+          "ci95": [
+            0.3006360524426366,
+            0.9544139373553637
+          ]
+        },
+        "N11": {
+          "k": 1,
+          "n": 3,
+          "rate": 0.3333333333333333,
+          "ci95": [
+            0.0614903152761605,
+            0.7923450448735121
+          ]
+        },
+        "N12": {
+          "k": 4,
+          "n": 5,
+          "rate": 0.8,
+          "ci95": [
+            0.3755282641185388,
+            0.9637768390302125
+          ]
+        },
+        "P01": {
+          "k": 1,
+          "n": 5,
+          "rate": 0.2,
+          "ci95": [
+            0.03622316096978745,
+            0.6244717358814613
+          ]
+        },
+        "P02": {
+          "k": 2,
+          "n": 4,
+          "rate": 0.5,
+          "ci95": [
+            0.15003570882017148,
+            0.8499642911798285
+          ]
+        },
+        "P03": {
+          "k": 5,
+          "n": 5,
+          "rate": 1.0,
+          "ci95": [
+            0.5655085052479191,
+            1.0
+          ]
+        },
+        "P04": {
+          "k": 4,
+          "n": 4,
+          "rate": 1.0,
+          "ci95": [
+            0.5100999795960008,
+            1.0
+          ]
+        },
+        "P05": {
+          "k": 2,
+          "n": 2,
+          "rate": 1.0,
+          "ci95": [
+            0.34237195288961925,
+            1.0
+          ]
+        },
+        "P06": {
+          "k": 1,
+          "n": 5,
+          "rate": 0.2,
+          "ci95": [
+            0.03622316096978745,
+            0.6244717358814613
+          ]
+        },
+        "P07": {
+          "k": 1,
+          "n": 3,
+          "rate": 0.3333333333333333,
+          "ci95": [
+            0.0614903152761605,
+            0.7923450448735121
+          ]
+        },
+        "P08": {
+          "k": 2,
+          "n": 2,
+          "rate": 1.0,
+          "ci95": [
+            0.34237195288961925,
+            1.0
+          ]
+        },
+        "P09": {
+          "k": 2,
+          "n": 3,
+          "rate": 0.6666666666666666,
+          "ci95": [
+            0.2076549551264879,
+            0.9385096847238394
+          ]
+        },
+        "P10": {
+          "k": 2,
+          "n": 3,
+          "rate": 0.6666666666666666,
+          "ci95": [
+            0.2076549551264879,
+            0.9385096847238394
+          ]
+        },
+        "P11": {
+          "k": 1,
+          "n": 1,
+          "rate": 1.0,
+          "ci95": [
+            0.20654329147389294,
+            1.0
+          ]
+        },
+        "P12": {
+          "k": 2,
+          "n": 4,
+          "rate": 0.5,
+          "ci95": [
+            0.15003570882017148,
+            0.8499642911798285
+          ]
+        }
+      },
+      "consistency": {
+        "k": 164,
+        "n": 164,
+        "rate": 1.0,
+        "ci95": [
+          0.9771117529861488,
+          1.0
+        ],
+        "questions_fully_consistent": {
+          "k": 82,
+          "n": 82,
+          "rate": 1.0,
+          "ci95": [
+            0.9552478052599207,
+            1.0
+          ]
+        }
+      },
+      "traps": {
+        "caught": {
+          "k": 6,
+          "n": 300,
+          "rate": 0.02,
+          "ci95": [
+            0.009197506067771085,
+            0.042940186730055147
+          ]
+        },
+        "fell_for_trap": {
+          "k": 294,
+          "n": 300,
+          "rate": 0.98,
+          "ci95": [
+            0.9570598132699448,
+            0.9908024939322289
+          ]
+        },
+        "by_kind": {
+          "duplicate": {
+            "k": 0,
+            "n": 171,
+            "rate": 0.0,
+            "ci95": [
+              0.0,
+              0.021971887697207072
+            ],
+            "fell": 171,
+            "other_error": 0
+          },
+          "retraction": {
+            "k": 0,
+            "n": 66,
+            "rate": 0.0,
+            "ci95": [
+              0.0,
+              0.05500446725160935
+            ],
+            "fell": 66,
+            "other_error": 0
+          },
+          "conflicting_magnitude": {
+            "k": 6,
+            "n": 63,
+            "rate": 0.09523809523809523,
+            "ci95": [
+              0.0443828799438878,
+              0.19261922652872804
+            ],
+            "fell": 57,
+            "other_error": 0
+          }
+        }
+      },
+      "format": {
+        "replies": 60,
+        "strict": 60,
+        "lenient": 0,
+        "failed": 0,
+        "api_errors": 0
+      },
+      "forecast": {
+        "asked": 20,
+        "answered": 20,
+        "resolved": 0,
+        "brier": null
+      }
+    },
+    {
+      "model": "mock",
+      "kind": "simulated",
+      "accuracy": {
+        "k": 58,
+        "n": 82,
+        "rate": 0.7073170731707317,
+        "ci95": [
+          0.6013403571873552,
+          0.7947380010911484
+        ]
+      },
+      "accuracy_all_renderings": {
+        "k": 171,
+        "n": 246,
+        "rate": 0.6951219512195121,
+        "ci95": [
+          0.6349585620966948,
+          0.7492848945574412
+        ]
+      },
+      "per_instance": {
+        "inst-000": 0.75,
+        "inst-001": 0.6,
+        "inst-002": 0.6,
+        "inst-003": 0.5,
+        "inst-004": 0.6666666666666666,
+        "inst-005": 0.6666666666666666,
+        "inst-006": 0.75,
+        "inst-007": 0.6666666666666666,
+        "inst-008": 1.0,
+        "inst-009": 0.6666666666666666,
+        "inst-010": 0.75,
+        "inst-011": 0.75,
+        "inst-012": 0.8,
+        "inst-013": 0.6,
+        "inst-014": 0.8,
+        "inst-015": 0.75,
+        "inst-016": 0.6,
+        "inst-017": 1.0,
+        "inst-018": 0.5,
+        "inst-019": 0.8
+      },
+      "instance_mean": 0.7108333333333333,
+      "pools": {
+        "public": {
+          "k": 36,
+          "n": 41,
+          "rate": 0.8780487804878049,
+          "ci95": [
+            0.7445549235115514,
+            0.9467674200265919
+          ]
+        },
+        "new": {
+          "k": 22,
+          "n": 41,
+          "rate": 0.5365853658536586,
+          "ci95": [
+            0.38746215345974366,
+            0.6794400088181413
+          ]
+        }
+      },
+      "gap": {
+        "public_minus_new": 0.3414634146341463,
+        "ci95": [
+          0.1588927997340649,
+          0.5240340295342277
+        ],
+        "adjusted": {
+          "public_minus_new": 0.3389449134875965,
+          "ci95": [
+            0.13754322442746836,
+            0.5403466025477246
+          ],
+          "coverage": 1.0
+        },
+        "flagged": true
+      },
+      "by_answer_type": {
+        "count": {
+          "k": 20,
+          "n": 26,
+          "rate": 0.7692307692307693,
+          "ci95": [
+            0.5794807424804321,
+            0.8896630031632332
+          ]
+        },
+        "event_id": {
+          "k": 12,
+          "n": 20,
+          "rate": 0.6,
+          "ci95": [
+            0.3865779423152061,
+            0.7811960325858074
+          ]
+        },
+        "magnitude": {
+          "k": 6,
+          "n": 7,
+          "rate": 0.8571428571428571,
+          "ci95": [
+            0.48686549668097007,
+            0.9743210440510253
+          ]
+        },
+        "depth": {
+          "k": 10,
+          "n": 12,
+          "rate": 0.8333333333333334,
+          "ci95": [
+            0.5519636426153274,
+            0.9530358523851776
+          ]
+        },
+        "distance": {
+          "k": 6,
+          "n": 9,
+          "rate": 0.6666666666666666,
+          "ci95": [
+            0.35419734749908977,
+            0.879418401317257
+          ]
+        },
+        "region": {
+          "k": 3,
+          "n": 5,
+          "rate": 0.6,
+          "ci95": [
+            0.23071993220883708,
+            0.8823817688407467
+          ]
+        },
+        "utc_time": {
+          "k": 1,
+          "n": 3,
+          "rate": 0.3333333333333333,
+          "ci95": [
+            0.0614903152761605,
+            0.7923450448735121
+          ]
+        }
+      },
+      "by_template": {
+        "N01": {
+          "k": 3,
+          "n": 5,
+          "rate": 0.6,
+          "ci95": [
+            0.23071993220883708,
+            0.8823817688407467
+          ]
+        },
+        "N02": {
+          "k": 3,
+          "n": 3,
+          "rate": 1.0,
+          "ci95": [
+            0.43849391955098227,
+            1.0
+          ]
+        },
+        "N03": {
+          "k": 2,
+          "n": 5,
+          "rate": 0.4,
+          "ci95": [
+            0.1176182311592533,
+            0.769280067791163
+          ]
+        },
+        "N04": {
+          "k": 3,
+          "n": 4,
+          "rate": 0.75,
+          "ci95": [
+            0.3006360524426366,
+            0.9544139373553637
+          ]
+        },
+        "N05": {
+          "k": 1,
+          "n": 3,
+          "rate": 0.3333333333333333,
+          "ci95": [
+            0.0614903152761605,
+            0.7923450448735121
+          ]
+        },
+        "N06": {
+          "k": 2,
+          "n": 4,
+          "rate": 0.5,
+          "ci95": [
+            0.15003570882017148,
+            0.8499642911798285
+          ]
+        },
+        "N07": {
+          "k": 1,
+          "n": 2,
+          "rate": 0.5,
+          "ci95": [
+            0.09452865480086614,
+            0.9054713451991339
+          ]
+        },
+        "N08": {
+          "k": 0,
+          "n": 1,
+          "rate": 0.0,
+          "ci95": [
+            0.0,
+            0.7934567085261071
+          ]
+        },
+        "N09": {
+          "k": 0,
+          "n": 2,
+          "rate": 0.0,
+          "ci95": [
+            0.0,
+            0.6576280471103807
+          ]
+        },
+        "N10": {
+          "k": 3,
+          "n": 4,
+          "rate": 0.75,
+          "ci95": [
+            0.3006360524426366,
+            0.9544139373553637
+          ]
+        },
+        "N11": {
+          "k": 2,
+          "n": 3,
+          "rate": 0.6666666666666666,
+          "ci95": [
+            0.2076549551264879,
+            0.9385096847238394
+          ]
+        },
+        "N12": {
+          "k": 2,
+          "n": 5,
+          "rate": 0.4,
+          "ci95": [
+            0.1176182311592533,
+            0.769280067791163
+          ]
+        },
+        "P01": {
+          "k": 3,
+          "n": 5,
+          "rate": 0.6,
+          "ci95": [
+            0.23071993220883708,
+            0.8823817688407467
+          ]
+        },
+        "P02": {
+          "k": 4,
+          "n": 4,
+          "rate": 1.0,
+          "ci95": [
+            0.5100999795960008,
+            1.0
+          ]
+        },
+        "P03": {
+          "k": 3,
+          "n": 5,
+          "rate": 0.6,
+          "ci95": [
+            0.23071993220883708,
+            0.8823817688407467
+          ]
+        },
+        "P04": {
+          "k": 4,
+          "n": 4,
+          "rate": 1.0,
+          "ci95": [
+            0.5100999795960008,
+            1.0
+          ]
+        },
+        "P05": {
+          "k": 2,
+          "n": 2,
+          "rate": 1.0,
+          "ci95": [
+            0.34237195288961925,
+            1.0
+          ]
+        },
+        "P06": {
+          "k": 5,
+          "n": 5,
+          "rate": 1.0,
+          "ci95": [
+            0.5655085052479191,
+            1.0
+          ]
+        },
+        "P07": {
+          "k": 3,
+          "n": 3,
+          "rate": 1.0,
+          "ci95": [
+            0.43849391955098227,
+            1.0
+          ]
+        },
+        "P08": {
+          "k": 1,
+          "n": 2,
+          "rate": 0.5,
+          "ci95": [
+            0.09452865480086614,
+            0.9054713451991339
+          ]
+        },
+        "P09": {
+          "k": 3,
+          "n": 3,
+          "rate": 1.0,
+          "ci95": [
+            0.43849391955098227,
+            1.0
+          ]
+        },
+        "P10": {
+          "k": 3,
+          "n": 3,
+          "rate": 1.0,
+          "ci95": [
+            0.43849391955098227,
+            1.0
+          ]
+        },
+        "P11": {
+          "k": 1,
+          "n": 1,
+          "rate": 1.0,
+          "ci95": [
+            0.20654329147389294,
+            1.0
+          ]
+        },
+        "P12": {
+          "k": 4,
+          "n": 4,
+          "rate": 1.0,
+          "ci95": [
+            0.5100999795960008,
+            1.0
+          ]
+        }
+      },
+      "consistency": {
+        "k": 91,
+        "n": 164,
+        "rate": 0.5548780487804879,
+        "ci95": [
+          0.4784241859718629,
+          0.6288197869168608
+        ],
+        "questions_fully_consistent": {
+          "k": 31,
+          "n": 82,
+          "rate": 0.3780487804878049,
+          "ci95": [
+            0.28078209931893033,
+            0.4862306311054793
+          ]
+        }
+      },
+      "traps": {
+        "caught": {
+          "k": 215,
+          "n": 300,
+          "rate": 0.7166666666666667,
+          "ci95": [
+            0.6631845423956875,
+            0.7646699712719605
+          ]
+        },
+        "fell_for_trap": {
+          "k": 67,
+          "n": 300,
+          "rate": 0.22333333333333333,
+          "ci95": [
+            0.1798706282757476,
+            0.27379206965633285
+          ]
+        },
+        "by_kind": {
+          "duplicate": {
+            "k": 123,
+            "n": 171,
+            "rate": 0.7192982456140351,
+            "ci95": [
+              0.6477001892187417,
+              0.7812595091596763
+            ],
+            "fell": 36,
+            "other_error": 12
+          },
+          "retraction": {
+            "k": 48,
+            "n": 66,
+            "rate": 0.7272727272727273,
+            "ci95": [
+              0.6095754555973323,
+              0.8199679683792089
+            ],
+            "fell": 16,
+            "other_error": 2
+          },
+          "conflicting_magnitude": {
+            "k": 44,
+            "n": 63,
+            "rate": 0.6984126984126984,
+            "ci95": [
+              0.5763939457458815,
+              0.7976246295126401
+            ],
+            "fell": 15,
+            "other_error": 4
+          }
+        }
+      },
+      "format": {
+        "replies": 60,
+        "strict": 46,
+        "lenient": 14,
+        "failed": 0,
+        "api_errors": 0
+      },
+      "forecast": {
+        "asked": 20,
+        "answered": 20,
+        "resolved": 0,
+        "brier": null
+      }
+    }
+  ],
+  "generator_audit": {
+    "self_check": {
+      "oracle_checks": 246,
+      "oracle_agreements": 246,
+      "resolution_invariant_instances": 20,
+      "problems": []
+    },
+    "human_sample": {
+      "population": 82,
+      "sampled": 2,
+      "rate": 0.02,
+      "file": "audit/audit_sample.jsonl"
+    },
+    "verdicts": {
+      "sampled": 2,
+      "reviewed": 0,
+      "errors": 0
+    }
+  },
+  "forecasts": [
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": 33.833,
+        "lon": -116.331,
+        "radius_km": 250,
+        "label": "point CI-F71",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-000"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": 60.714,
+        "lon": -151.506,
+        "radius_km": 400,
+        "label": "point AK-F99",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-001"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": 34.332,
+        "lon": 26.583,
+        "radius_km": 400,
+        "label": "point US-F84",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-002"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": -35.292,
+        "lon": 78.267,
+        "radius_km": 250,
+        "label": "point US-F56",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-003"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": -35.584,
+        "lon": 78.39,
+        "radius_km": 600,
+        "label": "point US-F93",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-004"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": 3.868,
+        "lon": -75.747,
+        "radius_km": 250,
+        "label": "point US-F95",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-005"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": 38.539,
+        "lon": -113.139,
+        "radius_km": 600,
+        "label": "point UU-F51",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-006"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": 60.405,
+        "lon": -152.803,
+        "radius_km": 600,
+        "label": "point AK-F45",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-007"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": 34.346,
+        "lon": 26.595,
+        "radius_km": 400,
+        "label": "point US-F85",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-008"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": -19.124,
+        "lon": -69.421,
+        "radius_km": 600,
+        "label": "point US-F11",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-009"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": 32.152,
+        "lon": 93.749,
+        "radius_km": 600,
+        "label": "point US-F76",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-010"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": -35.359,
+        "lon": 78.374,
+        "radius_km": 600,
+        "label": "point US-F30",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-011"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": 32.477,
+        "lon": -115.19,
+        "radius_km": 150,
+        "label": "point CI-F34",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-012"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": 31.882,
+        "lon": -116.098,
+        "radius_km": 400,
+        "label": "point CI-F14",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-013"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": 38.464,
+        "lon": -113.15,
+        "radius_km": 400,
+        "label": "point UU-F78",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-014"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": 18.889,
+        "lon": -66.528,
+        "radius_km": 250,
+        "label": "point PR-F45",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-015"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": 18.814,
+        "lon": -66.353,
+        "radius_km": 250,
+        "label": "point PR-F81",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-016"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": 17.788,
+        "lon": -66.677,
+        "radius_km": 600,
+        "label": "point PR-F75",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-017"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": -25.22,
+        "lon": 179.665,
+        "radius_km": 150,
+        "label": "point US-F15",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-018"
+    },
+    {
+      "qid": "F1",
+      "answer_type": "probability",
+      "rule": {
+        "min_mag": 4.5,
+        "lat": -0.055,
+        "lon": 122.994,
+        "radius_km": 250,
+        "label": "point US-F25",
+        "start": 1793744333,
+        "end": 1793830733,
+        "digest_window_hours": 24,
+        "source": "https://earthquake.usgs.gov/fdsnws/event/1/query"
+      },
+      "status": "pending",
+      "outcome": null,
+      "resolved_at": null,
+      "evidence": [],
+      "instance_id": "inst-019"
+    }
+  ],
+  "examples": [
+    "inst-001",
+    "inst-002"
+  ]
+}

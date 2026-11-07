@@ -1,0 +1,503 @@
+{
+  "evalgen_version": "0.1.0",
+  "code_sha256": "277dab3e900e5e98398f2cf62b25118e1b1f18050289a3ef3ed0b1dfbf8e5882",
+  "run_id": "usgs-live-seed5",
+  "seed": 5,
+  "seed_commitment": "7d766e00cd25e027a3e7f7da74a267c885aca86dfd621bc0aa0b34c402c3e289",
+  "seed_nonce": "0cb24ba146ec29357f987589fc72a8fa",
+  "config": {
+    "seed": 5,
+    "instances": 20,
+    "source": "usgs",
+    "feed": "day",
+    "snapshot_file": null,
+    "variants": 2,
+    "pool_size": 360,
+    "events_min": 20,
+    "events_max": 28,
+    "questions_min": 3,
+    "questions_max": 5,
+    "audit_rate": 0.02
+  },
+  "snapshot": {
+    "source": "usgs",
+    "seed": 5,
+    "compiled_at": 1793744333,
+    "window_hours": 24,
+    "events_sha256": "813b93566c1b728a7bb5cbef87284d8f63d894c2c8df9f1aa3177948f91ac672",
+    "raw_sha256": "cef1e67615c9737ac1e413617a429938c0d36a1eb38d6d464dcfd2e41a376335",
+    "url": "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson",
+    "fetched_at": "2026-11-03T22:19:04Z",
+    "note": "collapsed 3 duplicate feed solution(s) of the same quake (us7000tv2m, aka2026vtxzvj, aka2026vudyyh)",
+    "n_events": 202
+  },
+  "replay": null,
+  "templates": {
+    "public": [
+      {
+        "template_id": "P01",
+        "pool": "public",
+        "filters": [
+          "mag_at_least"
+        ],
+        "terminal": "count",
+        "twin_of": null,
+        "skeleton": "dedupe → mag_at_least → count"
+      },
+      {
+        "template_id": "P02",
+        "pool": "public",
+        "filters": [
+          "within_distance"
+        ],
+        "terminal": "count",
+        "twin_of": null,
+        "skeleton": "dedupe → within_distance → count"
+      },
+      {
+        "template_id": "P03",
+        "pool": "public",
+        "filters": [
+          "in_region"
+        ],
+        "terminal": "argmax_mag",
+        "twin_of": null,
+        "skeleton": "dedupe → in_region → argmax_mag"
+      },
+      {
+        "template_id": "P04",
+        "pool": "public",
+        "filters": [
+          "mag_at_least"
+        ],
+        "terminal": "max_depth",
+        "twin_of": null,
+        "skeleton": "dedupe → mag_at_least → max_depth"
+      },
+      {
+        "template_id": "P05",
+        "pool": "public",
+        "filters": [
+          "mag_at_least"
+        ],
+        "terminal": "compare_regions",
+        "twin_of": null,
+        "skeleton": "dedupe → mag_at_least → compare_regions"
+      },
+      {
+        "template_id": "P06",
+        "pool": "public",
+        "filters": [
+          "depth_shallower_than",
+          "time_between"
+        ],
+        "terminal": "count",
+        "twin_of": null,
+        "skeleton": "dedupe → depth_shallower_than → time_between → count"
+      },
+      {
+        "template_id": "P07",
+        "pool": "public",
+        "filters": [
+          "in_region"
+        ],
+        "terminal": "nearest_to",
+        "twin_of": null,
+        "skeleton": "dedupe → in_region → nearest_to"
+      },
+      {
+        "template_id": "P08",
+        "pool": "public",
+        "filters": [
+          "in_region"
+        ],
+        "terminal": "time_of_largest",
+        "twin_of": null,
+        "skeleton": "dedupe → in_region → time_of_largest"
+      },
+      {
+        "template_id": "P09",
+        "pool": "public",
+        "filters": [
+          "within_distance"
+        ],
+        "terminal": "rank_mag",
+        "twin_of": null,
+        "skeleton": "dedupe → within_distance → rank_mag"
+      },
+      {
+        "template_id": "P10",
+        "pool": "public",
+        "filters": [
+          "depth_at_least"
+        ],
+        "terminal": "max_mag",
+        "twin_of": null,
+        "skeleton": "dedupe → depth_at_least → max_mag"
+      },
+      {
+        "template_id": "P11",
+        "pool": "public",
+        "filters": [
+          "time_between"
+        ],
+        "terminal": "min_depth",
+        "twin_of": null,
+        "skeleton": "dedupe → time_between → min_depth"
+      },
+      {
+        "template_id": "P12",
+        "pool": "public",
+        "filters": [
+          "mag_below"
+        ],
+        "terminal": "nearest_distance",
+        "twin_of": null,
+        "skeleton": "dedupe → mag_below → nearest_distance"
+      }
+    ],
+    "new": [
+      {
+        "template_id": "N01",
+        "pool": "new",
+        "filters": [
+          "depth_shallower_than"
+        ],
+        "terminal": "count",
+        "twin_of": "P01",
+        "skeleton": "dedupe → depth_shallower_than → count"
+      },
+      {
+        "template_id": "N02",
+        "pool": "new",
+        "filters": [
+          "mag_below"
+        ],
+        "terminal": "count",
+        "twin_of": "P02",
+        "skeleton": "dedupe → mag_below → count"
+      },
+      {
+        "template_id": "N03",
+        "pool": "new",
+        "filters": [
+          "depth_shallower_than"
+        ],
+        "terminal": "argmax_mag",
+        "twin_of": "P03",
+        "skeleton": "dedupe → depth_shallower_than → argmax_mag"
+      },
+      {
+        "template_id": "N04",
+        "pool": "new",
+        "filters": [
+          "time_between"
+        ],
+        "terminal": "max_depth",
+        "twin_of": "P04",
+        "skeleton": "dedupe → time_between → max_depth"
+      },
+      {
+        "template_id": "N05",
+        "pool": "new",
+        "filters": [
+          "depth_at_least"
+        ],
+        "terminal": "compare_regions",
+        "twin_of": "P05",
+        "skeleton": "dedupe → depth_at_least → compare_regions"
+      },
+      {
+        "template_id": "N06",
+        "pool": "new",
+        "filters": [
+          "depth_at_least",
+          "mag_at_least"
+        ],
+        "terminal": "count",
+        "twin_of": "P06",
+        "skeleton": "dedupe → depth_at_least → mag_at_least → count"
+      },
+      {
+        "template_id": "N07",
+        "pool": "new",
+        "filters": [
+          "depth_at_least"
+        ],
+        "terminal": "nearest_to",
+        "twin_of": "P07",
+        "skeleton": "dedupe → depth_at_least → nearest_to"
+      },
+      {
+        "template_id": "N08",
+        "pool": "new",
+        "filters": [
+          "mag_below"
+        ],
+        "terminal": "time_of_largest",
+        "twin_of": "P08",
+        "skeleton": "dedupe → mag_below → time_of_largest"
+      },
+      {
+        "template_id": "N09",
+        "pool": "new",
+        "filters": [
+          "mag_below"
+        ],
+        "terminal": "rank_mag",
+        "twin_of": "P09",
+        "skeleton": "dedupe → mag_below → rank_mag"
+      },
+      {
+        "template_id": "N10",
+        "pool": "new",
+        "filters": [
+          "in_region"
+        ],
+        "terminal": "max_mag",
+        "twin_of": "P10",
+        "skeleton": "dedupe → in_region → max_mag"
+      },
+      {
+        "template_id": "N11",
+        "pool": "new",
+        "filters": [
+          "depth_at_least"
+        ],
+        "terminal": "min_depth",
+        "twin_of": "P11",
+        "skeleton": "dedupe → depth_at_least → min_depth"
+      },
+      {
+        "template_id": "N12",
+        "pool": "new",
+        "filters": [
+          "depth_shallower_than"
+        ],
+        "terminal": "nearest_distance",
+        "twin_of": "P12",
+        "skeleton": "dedupe → depth_shallower_than → nearest_distance"
+      }
+    ]
+  },
+  "instances": [
+    "inst-000",
+    "inst-001",
+    "inst-002",
+    "inst-003",
+    "inst-004",
+    "inst-005",
+    "inst-006",
+    "inst-007",
+    "inst-008",
+    "inst-009",
+    "inst-010",
+    "inst-011",
+    "inst-012",
+    "inst-013",
+    "inst-014",
+    "inst-015",
+    "inst-016",
+    "inst-017",
+    "inst-018",
+    "inst-019"
+  ],
+  "self_check": {
+    "oracle_checks": 246,
+    "oracle_agreements": 246,
+    "resolution_invariant_instances": 20,
+    "problems": []
+  },
+  "audit": {
+    "population": 82,
+    "sampled": 2,
+    "rate": 0.02,
+    "file": "audit/audit_sample.jsonl"
+  },
+  "seeds": {
+    "templates/new": 2668872486521119011,
+    "instance/0/events": 13027620912444993541,
+    "instance/0/questions": 9992776719340980987,
+    "instance/0/traps": 17159577480651248694,
+    "instance/0/chatter": 4874546484331230790,
+    "instance/0/forecast": 7583864502491876967,
+    "instance/0/render/0": 3103497614415999273,
+    "instance/0/render/1": 3340236795212276039,
+    "instance/0/render/2": 14912389001075108231,
+    "instance/0": 16552714506852064837,
+    "instance/1/events": 17602963116769225068,
+    "instance/1/questions": 13858072457457296517,
+    "instance/1/traps": 12485269851519874895,
+    "instance/1/chatter": 7974299303784341633,
+    "instance/1/forecast": 15763938757220125283,
+    "instance/1/render/0": 10681736201590741497,
+    "instance/1/render/1": 1968459086302565568,
+    "instance/1/render/2": 11276688606609727081,
+    "instance/1": 1057697983302953043,
+    "instance/2/events": 11280242515837010218,
+    "instance/2/questions": 8519470059963534075,
+    "instance/2/traps": 11928195493104608063,
+    "instance/2/chatter": 13406777855375910717,
+    "instance/2/forecast": 6582573767740696159,
+    "instance/2/render/0": 10112291922593184777,
+    "instance/2/render/1": 6734988149905344184,
+    "instance/2/render/2": 14262118800076883561,
+    "instance/2": 12825392155563912449,
+    "instance/3/events": 3233755704420593616,
+    "instance/3/questions": 9224142807240114673,
+    "instance/3/traps": 9263715229665643956,
+    "instance/3/chatter": 9297993794810991808,
+    "instance/3/forecast": 3429605383593111836,
+    "instance/3/render/0": 12651297395256641623,
+    "instance/3/render/1": 13236190192107770798,
+    "instance/3/render/2": 15562891135289918681,
+    "instance/3": 827630886075135892,
+    "instance/4/events": 7539142604963315244,
+    "instance/4/questions": 10911357218460485052,
+    "instance/4/traps": 933202779322056716,
+    "instance/4/chatter": 3934940580199199296,
+    "instance/4/forecast": 10388004884888959239,
+    "instance/4/render/0": 9838058888196734310,
+    "instance/4/render/1": 648347538361837449,
+    "instance/4/render/2": 11838325562799127275,
+    "instance/4": 4448132466487062850,
+    "instance/5/events": 16662530257069250794,
+    "instance/5/questions": 12515828187407647513,
+    "instance/5/traps": 15560583018070952690,
+    "instance/5/chatter": 10566161833044082747,
+    "instance/5/forecast": 16301819840569992614,
+    "instance/5/render/0": 12997739273852821286,
+    "instance/5/render/1": 12273951540969683690,
+    "instance/5/render/2": 8093851236653880490,
+    "instance/5": 7482664884706942080,
+    "instance/6/events": 8606753129631192958,
+    "instance/6/questions": 16309450367282681689,
+    "instance/6/traps": 14876880582790732286,
+    "instance/6/chatter": 8232579399933645747,
+    "instance/6/forecast": 9452146392689396331,
+    "instance/6/render/0": 9647272705772560522,
+    "instance/6/render/1": 13652600027594890717,
+    "instance/6/render/2": 3902808403022857315,
+    "instance/6": 8433787785015475056,
+    "instance/7/events": 17550467907372817609,
+    "instance/7/questions": 6567873157339709440,
+    "instance/7/traps": 18293172658988709147,
+    "instance/7/chatter": 5118376380888714965,
+    "instance/7/forecast": 1005295678785610349,
+    "instance/7/render/0": 8222364186429302884,
+    "instance/7/render/1": 15730437119217552201,
+    "instance/7/render/2": 12193984188545781457,
+    "instance/7": 10230076430867887349,
+    "instance/8/events": 11661481083492205491,
+    "instance/8/questions": 3777369210301149850,
+    "instance/8/traps": 204626464599242268,
+    "instance/8/chatter": 16946207072965832798,
+    "instance/8/forecast": 534400446448411042,
+    "instance/8/render/0": 3453946120453510869,
+    "instance/8/render/1": 10610884372503944785,
+    "instance/8/render/2": 15313610730552566799,
+    "instance/8": 11852828148033386535,
+    "instance/9/events": 256049967126671186,
+    "instance/9/questions": 212682986417807964,
+    "instance/9/traps": 16076092413852645674,
+    "instance/9/chatter": 1471213933155725580,
+    "instance/9/forecast": 8433645453705627640,
+    "instance/9/render/0": 5914808180272669061,
+    "instance/9/render/1": 3090359623174387352,
+    "instance/9/render/2": 18367995464458024468,
+    "instance/9": 10070364508263335327,
+    "instance/10/events": 12233330475868415406,
+    "instance/10/questions": 15704763163895814386,
+    "instance/10/traps": 7805496746970674311,
+    "instance/10/chatter": 17456790604304746752,
+    "instance/10/forecast": 1311990904582371593,
+    "instance/10/render/0": 6317813355122042979,
+    "instance/10/render/1": 5374556738213774294,
+    "instance/10/render/2": 17789398278436730932,
+    "instance/10": 14702973919964915934,
+    "instance/11/events": 1152892493104236312,
+    "instance/11/questions": 16385878879934820214,
+    "instance/11/traps": 12619179003837515737,
+    "instance/11/chatter": 8927221785164143013,
+    "instance/11/forecast": 10721139445117849260,
+    "instance/11/render/0": 16701078382757563741,
+    "instance/11/render/1": 7652938762414949979,
+    "instance/11/render/2": 3528982013630281953,
+    "instance/11": 11826422350634547176,
+    "instance/12/events": 14429977986469175109,
+    "instance/12/questions": 3511280314887608746,
+    "instance/12/traps": 578249286109161204,
+    "instance/12/chatter": 2099871972416838398,
+    "instance/12/forecast": 18342898785012274481,
+    "instance/12/render/0": 12836507370496867694,
+    "instance/12/render/1": 5840250115393287999,
+    "instance/12/render/2": 9353853745403495214,
+    "instance/12": 15528004917572462737,
+    "instance/13/events": 1475780474315044039,
+    "instance/13/questions": 5505393877581137481,
+    "instance/13/traps": 17614809759756417693,
+    "instance/13/chatter": 15284749689943606065,
+    "instance/13/forecast": 17839116810423834166,
+    "instance/13/render/0": 4592566119866057039,
+    "instance/13/render/1": 313649260333082530,
+    "instance/13/render/2": 5951658807863656457,
+    "instance/13": 10989000391545091377,
+    "instance/14/events": 9287964067775955809,
+    "instance/14/questions": 16715678897912791399,
+    "instance/14/traps": 12785905813268834028,
+    "instance/14/chatter": 11494784416451535166,
+    "instance/14/forecast": 18021980120700201744,
+    "instance/14/render/0": 13329960623366876105,
+    "instance/14/render/1": 13078866715338130921,
+    "instance/14/render/2": 3924734703542728884,
+    "instance/14": 5911137403896025989,
+    "instance/15/events": 8078430637975261188,
+    "instance/15/questions": 16438314045653886612,
+    "instance/15/traps": 2880872397157429679,
+    "instance/15/chatter": 12659583886109924505,
+    "instance/15/forecast": 12089928800922209098,
+    "instance/15/render/0": 17596993006584856553,
+    "instance/15/render/1": 3191428774293531444,
+    "instance/15/render/2": 8799627361236041355,
+    "instance/15": 9597959708732649362,
+    "instance/16/events": 16111503303394243572,
+    "instance/16/questions": 8972170789935160658,
+    "instance/16/traps": 7214928534742911269,
+    "instance/16/chatter": 4612040732005470518,
+    "instance/16/forecast": 18167705330501243411,
+    "instance/16/render/0": 17457848665647128381,
+    "instance/16/render/1": 5544147547497256973,
+    "instance/16/render/2": 14390066382722618409,
+    "instance/16": 6600981094028851078,
+    "instance/17/events": 16777861159658514318,
+    "instance/17/questions": 7992456640250054489,
+    "instance/17/traps": 12486497046724778845,
+    "instance/17/chatter": 11022302612709307112,
+    "instance/17/forecast": 1468415006476776323,
+    "instance/17/render/0": 5262221970264855962,
+    "instance/17/render/1": 9378860539969718075,
+    "instance/17/render/2": 6630154495414067615,
+    "instance/17": 16096094121210563881,
+    "instance/18/events": 12427144561122944366,
+    "instance/18/questions": 11426757603824281682,
+    "instance/18/traps": 9283634265929282168,
+    "instance/18/chatter": 12319917204996187386,
+    "instance/18/forecast": 1086704766168092098,
+    "instance/18/render/0": 9857645152832304538,
+    "instance/18/render/1": 7308932435190565243,
+    "instance/18/render/2": 4544104590642582269,
+    "instance/18": 16953873738153059540,
+    "instance/19/events": 18110492127703721168,
+    "instance/19/questions": 2521377920089249121,
+    "instance/19/traps": 2687278432867670326,
+    "instance/19/chatter": 8757664964513446932,
+    "instance/19/forecast": 5544881995211494337,
+    "instance/19/render/0": 198132804119394154,
+    "instance/19/render/1": 18307987637805718656,
+    "instance/19/render/2": 17834369403044661619,
+    "instance/19": 3733450665695481414,
+    "audit": 9030448125768965518,
+    "mock": 12566805256909943146
+  },
+  "generated_at_utc": "2026-11-03T22:19:04Z"
+}

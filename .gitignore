@@ -1,0 +1,30 @@
+# Secrets: never commit API keys
+.env
+.env.*
+!.env.example
+
+# Python and tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# OS and editor files
+.DS_Store
+
+# Run outputs. Keep each run's report, miss analysis and manifest (seed, config, code fingerprint).
+# Ignore the bulky raw files: frozen snapshots, generated instances and prompts, raw model replies
+# (transcripts), scores and audit samples. A 0.2.0 run regenerates byte for byte from its manifest seed.
+runs/**
+!runs/*/
+!runs/*/report.md
+!runs/*/report.json
+!runs/*/miss_analysis.md
+!runs/*/miss_analysis.json
+!runs/*/manifest.json
