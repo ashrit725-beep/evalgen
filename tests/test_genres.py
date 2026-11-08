@@ -18,10 +18,13 @@ from evalgen.domains.earthquakes import EARTHQUAKES
 from evalgen.genres import DEFAULT_GENRE, Registry, all_genres, detect_genre, get_genre
 from evalgen.genres.base import RenderContext, parse_glossary
 from evalgen.genres.classic import CLASSIC, GENRE
-from evalgen.pipeline import question_specs
+from evalgen.pipeline import build_instance, question_specs
+from evalgen.questions import Context, compose_new_templates
 from evalgen.report import load_instances
+from evalgen.seeds import SeedLog
 from evalgen.solver import forecast_estimate, parse_digest, read_digest, solve
-from evalgen.util import read_json
+from evalgen.sources import build_snapshot
+from evalgen.util import read_json, write_json
 
 from conftest import quiet
 
@@ -181,10 +184,23 @@ def quoted(tmp_path, monkeypatch):
 
 @pytest.fixture
 def quoted_run(quoted, tmp_path):
-    """The first instances of the small run, with their first variant in the quoted genre."""
-    run_dir = tmp_path / "quoted-run"
-    pipeline.generate(pipeline.GenerateConfig(seed=7, instances=3), run_dir, log=quiet,
-                      genre_plan=(CLASSIC, quoted, CLASSIC))
+    """The first instances of the small run, with their first variant in the quoted genre: a legacy run
+    whose instances are built again by a genre plan, on the same seed paths, then run, scored and
+    reported. (A mix renders all of an instance's renderings in its genre until the mix draws of plan
+    phase 4 give the variants genres of their own.)"""
+    cfg = pipeline.GenerateConfig(seed=7, instances=3)
+    run_dir = pipeline.generate(cfg, tmp_path / "quoted-run", log=quiet)
+    seedlog = SeedLog(cfg.seed)
+    snapshot, _ = build_snapshot(cfg.source, seedlog)
+    new = compose_new_templates(seedlog.rng("templates", "new"))
+    ctx, used, usage = Context(snapshot.compiled_at, snapshot.window_hours), set(), {}
+    for index in range(cfg.instances):
+        inst = build_instance(index, snapshot, new, seedlog, cfg, ctx, used, usage,
+                              genre_plan=(CLASSIC, quoted, CLASSIC))
+        write_json(run_dir / "instances" / f"{inst.instance_id}.json", inst.to_dict())
+        for rendering in inst.renderings:
+            (run_dir / "prompts" / inst.instance_id / f"{rendering.variant}.txt").write_text(rendering.prompt,
+                                                                                            encoding="utf-8")
     pipeline.run_models(run_dir, ["oracle", "naive", "mock"], log=quiet)
     pipeline.score_run(run_dir, log=quiet)
     pipeline.build_report(run_dir, log=quiet)
@@ -227,7 +243,7 @@ def test_a_genre_plan_renders_variants_in_other_genres(quoted_run, instances):
 
 
 def test_the_oracle_reads_every_genre_of_a_plan(quoted_run):
-    check = read_json(quoted_run / "manifest.json")["self_check"]
+    check = pipeline.generator_self_check(load_instances(quoted_run))
     assert check["oracle_agreements"] == check["oracle_checks"] > 0 and check["problems"] == []
     for inst in load_instances(quoted_run):
         specs = question_specs(inst)

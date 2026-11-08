@@ -57,10 +57,13 @@ def test_new_options_are_recorded_only_when_set_and_refused_until_phase_4(tmp_pa
     assert not (tmp_path / "run").exists()
 
 
-def test_generation_refuses_what_it_cannot_render_yet(tmp_path):
-    with pytest.raises(NotImplementedError, match="phase 1b"):
-        pipeline.generate(GenerateConfig(seed=1, instances=1), tmp_path / "toy", log=quiet, domain=Toy())
-    assert not (tmp_path / "toy").exists()
+def test_generation_refuses_a_mix_it_cannot_follow_before_writing_anything(tmp_path):
+    for cfg, error in ((GenerateConfig(seed=1, mix="nowhere:classic"), KeyError),
+                       (GenerateConfig(seed=1, mix="earthquakes:sonnet"), KeyError),
+                       (GenerateConfig(seed=1, mix="earthquakes:classic", feed="hour"), ValueError)):
+        with pytest.raises(error):
+            pipeline.generate(cfg, tmp_path / "run", log=quiet)
+    assert not (tmp_path / "run").exists()
     seedlog = SeedLog(1)
     snapshot, _ = build_snapshot("synthetic", seedlog)
     args = (0, snapshot, compose_new_templates(seedlog.rng("templates", "new")), seedlog, GenerateConfig(seed=1),
@@ -194,7 +197,7 @@ def test_forecasts_are_resolved_by_the_forecaster_of_the_domain_that_asked_them(
     feed.write_bytes(raw)
     cfg = GenerateConfig(seed=11, instances=2, source="usgs", snapshot_file=str(feed))
     legacy = pipeline.generate(cfg, tmp_path / "legacy", log=quiet)
-    planned = pipeline.generate(cfg, tmp_path / "planned", log=quiet, genre_plan=(CLASSIC,) * 3)
+    planned = pipeline.generate(replace(cfg, mix="earthquakes:classic"), tmp_path / "planned", log=quiet)
     asked = read_json(legacy / "forecasts.json")
     assert read_json(planned / "forecasts.json") == [dict(f, domain="earthquakes") for f in asked]
 

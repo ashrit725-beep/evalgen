@@ -13,9 +13,10 @@ import itertools
 from collections import Counter
 from pathlib import Path
 from statistics import mean, median
-from typing import Any
+from typing import Any, Iterable
 
 from .audit import audit_status
+from .domains import get_domain
 from .models import Instance
 from .ops import describe
 from .scoring import (brier, difference_ci, equivalent, mcnemar_exact, normalize, paired_difference_ci,
@@ -24,13 +25,31 @@ from .util import read_json, utc_iso, write_json
 
 PACKAGE_DIR = Path(__file__).resolve().parent  # the evalgen sources that code_fingerprint covers
 GAP_FLAG = 0.10  # flag a public-minus-new gap above 10 points whose 95% CI excludes zero
-TRAP_KINDS = ("duplicate", "retraction", "conflicting_magnitude")
+TRAP_KINDS = ("duplicate", "retraction", "conflicting_magnitude")  # the 0.2.0 kinds, in their 0.2.0 order
 ANSWER_TYPE_ORDER = ("count", "event_id", "magnitude", "depth", "distance", "region", "utc_time")
 MODEL_ORDER = {"oracle": 0, "naive": 1, "mock": 2}
 
 
 def load_instances(run_dir: Path) -> list[Instance]:
     return [Instance.from_dict(read_json(p)) for p in sorted((Path(run_dir) / "instances").glob("inst-*.json"))]
+
+
+def trap_kinds(instances: Iterable[Instance]) -> tuple[str, ...]:
+    """The trap kinds a report counts. A legacy report lists the 0.2.0 kinds, planted or not; any
+    other run lists the kinds it planted (a generic domain's conflicts are "conflicting_value"), the
+    0.2.0 kinds in their order first and then the others by name."""
+    instances = list(instances)
+    if all(inst.domain is None for inst in instances):
+        return TRAP_KINDS
+    planted = {t.kind for inst in instances for t in inst.traps}
+    return tuple(k for k in TRAP_KINDS if k in planted) + tuple(sorted(planted - set(TRAP_KINDS)))
+
+
+def answer_type_order(answer_types: Iterable[str]) -> list[str]:
+    """The answer types that occur, in report order: the 0.2.0 types in their 0.2.0 order, then a
+    domain's own types (temperatures, record IDs, groups) by name."""
+    present = set(answer_types)
+    return [t for t in ANSWER_TYPE_ORDER if t in present] + sorted(present - set(ANSWER_TYPE_ORDER))
 
 
 def code_fingerprint(root: Path = PACKAGE_DIR) -> str:
@@ -88,10 +107,9 @@ def model_metrics(score: dict, instances: list[Instance], forecasts: list[dict])
                   "flagged": bool(adjusted is not None and adjusted[0] > GAP_FLAG and adjusted[1] > 0)}
 
     out["by_answer_type"] = {}
-    for answer_type in ANSWER_TYPE_ORDER:
+    for answer_type in answer_type_order(r["answer_type"] for r in original):
         chosen = [r for r in original if r["answer_type"] == answer_type]
-        if chosen:
-            out["by_answer_type"][answer_type] = _rate(sum(r["correct"] for r in chosen), len(chosen))
+        out["by_answer_type"][answer_type] = _rate(sum(r["correct"] for r in chosen), len(chosen))
     out["by_template"] = {}
     for template_id in sorted({r["template_id"] for r in original}):
         chosen = [r for r in original if r["template_id"] == template_id]
@@ -121,7 +139,7 @@ def model_metrics(score: dict, instances: list[Instance], forecasts: list[dict])
 
     # Trap catch rate over (load-bearing trap, affected question, rendering) triples. "fell" means the
     # answer is one a reader produces by misreading this trap, alone or together with other traps.
-    tally = {kind: Counter() for kind in TRAP_KINDS}
+    tally = {kind: Counter() for kind in trap_kinds(instances)}
     for inst in instances:
         for trap in inst.traps:
             for qid in trap.affected:
@@ -226,7 +244,7 @@ def run_summary(manifest: dict, instances: list[Instance], forecasts: list[dict]
         "prompts": sum(len(inst.renderings) for inst in instances),
         "traps": {
             "total": len(traps),
-            "by_kind": {kind: sum(1 for t in traps if t.kind == kind) for kind in TRAP_KINDS},
+            "by_kind": {kind: sum(1 for t in traps if t.kind == kind) for kind in trap_kinds(instances)},
             "load_bearing": sum(1 for t in traps if t.affected),
             "affected_questions": len({(inst.instance_id, qid) for inst in instances for t in inst.traps
                                        for qid in t.affected}),
@@ -300,6 +318,17 @@ def _cell(value: Any) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
+def _words(name: str) -> str:
+    """A key as words: "conflicting_magnitude" -> "conflicting magnitude"."""
+    return name.replace("_", " ")
+
+
+def _nouns(inst: Instance) -> tuple[str, str]:
+    """What an instance calls one of its records and several (its domain's words, or its surface's)."""
+    domain = get_domain(inst.domain).bind(inst.surface)
+    return domain.noun, domain.plural
+
+
 def _table(headers: list[str], rows: list[list[Any]]) -> list[str]:
     out = ["| " + " | ".join(headers) + " |", "|" + "|".join("---" for _ in headers) + "|"]
     out += ["| " + " | ".join(_cell(c) for c in row) + " |" for row in rows]
@@ -315,6 +344,7 @@ def render_markdown(data: dict, run_dir: Path) -> str:
     instances = {inst.instance_id: inst for inst in load_instances(run_dir)}
     scores = {s["model"]: s for s in (read_json(p) for p in sorted((Path(run_dir) / "scores").glob("*.json")))}
     t = run["traps"]
+    planted = ", ".join(f"{_words(kind)} {n}" for kind, n in t["by_kind"].items())
     pools = run["questions_by_pool"]
     md = [f"# Live evaluation report: `{run['run_id']}`", "",
           "Every instance in this run was generated fresh from the seed below, every answer key was computed by "
@@ -341,8 +371,7 @@ def render_markdown(data: dict, run_dir: Path) -> str:
         f"templates, {pools.get('new', 0)} from new-this-run templates); **renderings per instance:** "
         f"{run['renderings_per_instance']} (original + {run['renderings_per_instance'] - 1} metamorphic variants); "
         f"**prompts:** {run['prompts']}.",
-        f"- **Traps planted:** {t['total']} (duplicate {t['by_kind']['duplicate']}, retraction {t['by_kind']['retraction']}, "
-        f"conflicting magnitude {t['by_kind']['conflicting_magnitude']}); {t['load_bearing']} are load-bearing: "
+        f"- **Traps planted:** {t['total']} ({planted}); {t['load_bearing']} are load-bearing: "
         f"mishandling them changes the answers of {t['affected_questions']} of the {run['questions']} questions "
         f"({t['affected_question_pairs']} trap–question pairs). The rest stay in as plain noise.", ""]
 
@@ -427,12 +456,13 @@ def render_markdown(data: dict, run_dir: Path) -> str:
     md += ["## Trap catch rate", "",
            "Counted over (load-bearing trap, affected question, rendering) triples. *Caught* = answered correctly; "
            "*fell* = gave exactly an answer a reader produces by missing that trap (alone or together with other traps).", ""]
-    md += _table(["model", "caught (overall)", "duplicate", "retraction", "conflicting magnitude", "fell for the trap"],
+    kinds = list(t["by_kind"])
+    md += _table(["model", "caught (overall)", *(_words(k) for k in kinds), "fell for the trap"],
                  [[m["model"], _frac(m["traps"]["caught"])]
-                  + [_pct(m["traps"]["by_kind"][k]["rate"]) for k in TRAP_KINDS]
+                  + [_pct(m["traps"]["by_kind"][k]["rate"]) for k in kinds]
                   + [_frac(m["traps"]["fell_for_trap"])] for m in models])
 
-    types = [a for a in ANSWER_TYPE_ORDER if any(a in m["by_answer_type"] for m in models)]
+    types = answer_type_order(a for m in models for a in m["by_answer_type"])
     md += ["## Accuracy by answer type (original renderings)", ""]
     md += _table(["model"] + types, [[m["model"]] + [_frac(m["by_answer_type"][a]) if a in m["by_answer_type"] else "—"
                                                     for a in types] for m in models])
@@ -493,10 +523,11 @@ def render_markdown(data: dict, run_dir: Path) -> str:
 def _example(number: int, inst: Instance, scores: dict, model_names: list[str]) -> list[str]:
     v0 = inst.renderings[0]
     rows_by_model = {name: {(r["instance_id"], r["variant"], r["qid"]): r for r in scores[name]["rows"]} for name in model_names}
-    def count(n: int, word: str) -> str:
-        return f"{n} {word}{'' if n == 1 else 's'}"
+    def count(n: int, word: str, plural: str | None = None) -> str:
+        return f"{n} {word if n == 1 else plural or word + 's'}"
 
-    md = [f"### Example {number}: `{inst.instance_id}` ({count(len(inst.event_ids), 'earthquake')}, "
+    records = ("earthquake", "earthquakes") if inst.domain is None else _nouns(inst)
+    md = [f"### Example {number}: `{inst.instance_id}` ({count(len(inst.event_ids), *records)}, "
           f"{count(len(inst.reports), 'report line')}, {count(len(inst.notices), 'notice')}, "
           f"{count(len(inst.questions), 'question')})", "",
           "**Digest (original rendering `v0`, exactly as sent to the models):**", "", "```text", v0.digest, "```", "",

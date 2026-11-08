@@ -102,7 +102,7 @@ class Notice:
 @dataclass
 class Trap:
     trap_id: str
-    kind: str  # duplicate | retraction | conflicting_magnitude
+    kind: str  # duplicate | retraction | conflicting_magnitude (earthquakes) | conflicting_value (other domains)
     form: str  # same_id | cross_ref | phantom | correction | second_report
     target: str
     description: str
@@ -173,13 +173,15 @@ class Instance:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Instance":
+        """An instance as to_dict wrote it. Its reports are earthquake Reports, or the RecordReports of
+        a generic domain (whose lines carry their values by field key)."""
         return cls(
             instance_id=d["instance_id"],
             seed=d["seed"],
             compiled_at=d["compiled_at"],
             window_hours=d["window_hours"],
             event_ids=list(d["event_ids"]),
-            reports=[Report(**r) for r in d["reports"]],
+            reports=[_report(r) for r in d["reports"]],
             notices=[Notice(**n) for n in d["notices"]],
             chatter=list(d["chatter"]),
             traps=[Trap(**t) for t in d["traps"]],
@@ -199,3 +201,12 @@ class Instance:
 def _without_unset(d: dict[str, Any], optional: tuple[str, ...]) -> dict[str, Any]:
     """`d` without the optional keys whose value is None, in the same order."""
     return {k: v for k, v in d.items() if v is not None or k not in optional}
+
+
+def _report(d: dict[str, Any]) -> Any:
+    """A digest line from its JSON: a generic RecordReport (it has values), else an earthquake Report."""
+    if "values" not in d:
+        return Report(**d)
+    from .domains.base import RecordReport  # imported here: evalgen.domains imports this module
+
+    return RecordReport(**d)

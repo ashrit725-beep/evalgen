@@ -15,10 +15,11 @@ between the pools points at overfitting to the public skeletons rather than at d
 Templates are role-based. P01-P12 are written for the fields a domain puts in the *primary* and
 *secondary* roles (earthquake magnitude and depth, see ``Domain.roles``) and take the domain's own op
 names, so the earthquake templates are exactly the 0.2.0 ones; a domain whose records have no
-location has no spatial templates. Parameters, guards and wording come from the domain: its field
-specs (quantiles, jitter, rounding, margins, rank gaps), its spatial spec (radii, distance guards)
-and its lexicon. Every function takes the domain as a keyword that defaults to earthquakes, which
-draws, guards and words exactly as 0.2.0 did.
+location has no spatial templates (nor their twins). Parameters, guards and wording come from the
+domain: its field specs (quantiles, jitter, unit steps, margins, rank gaps), its spatial spec (radii,
+distance guards) and its lexicon (its own, or ``standard_lexicon``); time windows and their guard
+scale with the length of the instance's window (Context). Every function takes the domain as a
+keyword that defaults to earthquakes, which draws, guards and words exactly as 0.2.0 did.
 """
 from __future__ import annotations
 
@@ -38,6 +39,10 @@ from .ops import ALIASES, Step, answer_spec, distance_km, execute, role, rows_af
 from .util import plain_number
 
 TIME_MARGIN_S = 120  # no record within 2 minutes of a time window's ends (digests print times to the minute)
+TIME_STEP_S = 300  # a time window's ends lie on 5-minute marks
+# Time windows over a longer span scale both, per day (see Context): their ends lie on the first of
+# these marks that is at least 5 minutes a day.
+TIME_STEPS_S = (300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400)
 RANKS = (2, 3)  # rank questions ask for the second or the third largest
 FLOAT_SLACK = 1e-9  # rank gaps: values exactly `rank_gap` apart pass despite float error
 SPATIAL_KINDS = ("within_distance", "nearest_to", "nearest_distance")
@@ -219,8 +224,31 @@ def compose_new_templates(rng: random.Random, domain: Domain = EARTHQUAKES) -> l
 
 @dataclass(frozen=True)
 class Context:
+    """The time window an instance's records lie in, which time-window questions are drawn from.
+
+    A window of a day or less (every earthquake digest) is asked about on 5-minute marks, and no
+    record may lie within 2 minutes of a window's ends. A longer window (weeks of close approaches)
+    scales both by its length in days: a month is asked about on 3-hour marks and kept an hour clear
+    of every record, so that, for its span, its windows are as coarse and as clear as a day's."""
+
     compiled_at: int
     window_hours: int
+
+    @property
+    def days(self) -> int:
+        """The window's length in days, rounded up; at least 1."""
+        return max(1, -(-self.window_hours // 24))
+
+    @property
+    def time_step(self) -> int:
+        """Seconds between the marks a time window's ends lie on."""
+        wanted = TIME_STEP_S * self.days
+        return next((step for step in TIME_STEPS_S if step >= wanted), -(-wanted // 86400) * 86400)
+
+    @property
+    def time_margin(self) -> int:
+        """No record may lie within this many seconds of a time window's ends."""
+        return TIME_MARGIN_S * self.days
 
 
 def _spatial(domain: Domain) -> Spatial:
@@ -251,19 +279,22 @@ def round_to_step(value: float, step: float) -> float:
 
 def _draw_threshold(spec: FieldSpec, records: Sequence[ResolvedRecord], rng: random.Random) -> dict | None:
     """A threshold on a field: a quantile of the records' values, jittered, converted to a drawn unit
-    and rounded to the field's step (or, on a coin flip, to its coarse step). Its parameters, or
-    None when it must be positive and is not; every draw is made either way."""
-    unit = _pick_unit(spec.units, rng) if spec.units else None
+    (affinely, for °F) and rounded to that unit's step (or, on a coin flip, to the field's coarse
+    step). Its parameters, or None when it must be positive and is not; every draw is made either way.
+    A threshold of zero is +0, never -0, so that it is written as the question states it."""
+    symbol = _pick_unit(spec.units, rng) if spec.units else None
+    unit = None if symbol is None else find_unit(spec.units, symbol)
     value = _quantile_pick([r.values[spec.key] for r in records], rng, *spec.quantiles)
     if spec.jitter:
         value += rng.uniform(-spec.jitter, spec.jitter)
     if unit is not None:
-        value = find_unit(spec.units, unit).from_canonical(value)
+        value = unit.from_canonical(value)
     coarse = spec.coarse_step is not None and rng.random() < 0.5
-    value = round_to_step(value, spec.coarse_step if coarse else spec.threshold_step)
+    step = spec.threshold_step if unit is None or unit.step is None else unit.step
+    value = round_to_step(value, spec.coarse_step if coarse else step) + 0.0
     if spec.positive_threshold and value <= 0:
         return None
-    return {"value": value} if unit is None else {"value": value, "unit": unit}
+    return {"value": value} if symbol is None else {"value": value, "unit": symbol}
 
 
 def _group_counts(records: Sequence[ResolvedRecord]) -> list[tuple[str, int]]:
@@ -285,14 +316,16 @@ def _draw_point(records: Sequence[ResolvedRecord], rng: random.Random, taken_lab
 
 
 def _draw_window(rng: random.Random, ctx: Context) -> dict | None:
+    """A window an eighth to a half of the instance's window long, its ends on the context's marks."""
     total_min = ctx.window_hours * 60
+    step = ctx.time_step
     duration = rng.randint(max(10, total_min // 8), max(20, total_min // 2))
-    duration -= duration % 5
-    first = -(-(ctx.compiled_at - total_min * 60) // 300) * 300  # first 5-minute mark in the window
+    duration -= duration % (step // 60)
+    first = -(-(ctx.compiled_at - total_min * 60) // step) * step  # first mark in the window
     latest = ctx.compiled_at - duration * 60
     if latest <= first:
         return None
-    start = first + 300 * rng.randrange(0, max(1, (latest - first) // 300))
+    start = first + step * rng.randrange(0, max(1, (latest - first) // step))
     return {"start": start, "end": start + duration * 60}
 
 
@@ -356,8 +389,11 @@ def _canonical_threshold(s: Step) -> float:
     return s["value"] if symbol is None else s.unit(symbol).to_canonical(s["value"])
 
 
-def guards_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *, domain: Domain = EARTHQUAKES) -> bool:
-    """Reject parameters that sit too close to any record, or answers that are not unique."""
+def guards_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *, domain: Domain = EARTHQUAKES,
+              time_margin: int = TIME_MARGIN_S) -> bool:
+    """Reject parameters that sit too close to any record, or answers that are not unique. Thresholds
+    keep their field's margin, radii the domain's distance margin and time windows `time_margin`
+    seconds (the instance's window's, Context.time_margin)."""
     units = domain.units
     for raw in chain:
         s = Step(raw, units)
@@ -374,7 +410,7 @@ def guards_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *, domai
             if any(abs(distance_km(raw, r) - radius) < margin for r in records):
                 return False
         elif s.kind == "time_between":
-            if any(abs(r.time - edge) < TIME_MARGIN_S for r in records for edge in (s["start"], s["end"])):
+            if any(abs(r.time - edge) < time_margin for r in records for edge in (s["start"], s["end"])):
                 return False
     rows = rows_after_filters(chain, records, units=units)
     term = Step(terminal_step(chain), units)
@@ -435,7 +471,8 @@ def instantiate(template: Template, records: Sequence[ResolvedRecord], rng: rand
         if tail is None:
             continue
         chain.extend(tail)
-        if fingerprint(chain) in used_chains or not guards_ok(chain, records, domain=domain):
+        if fingerprint(chain) in used_chains or not guards_ok(chain, records, domain=domain,
+                                                              time_margin=ctx.time_margin):
             continue
         value = execute(chain, records, units=domain.units)
         if value is None or not _interesting(chain, records, value, rng):
@@ -553,6 +590,16 @@ def _join(clauses: list[str]) -> str:
     return ", ".join(clauses[:-1]) + " and " + clauses[-1]
 
 
+def rounding_text(chain: Sequence[Mapping[str, Any]]) -> str:
+    """The rounding a chain asks for, as a sentence ("Round to 1 decimal place."); "" without one."""
+    places = next((step["ndigits"] for step in chain if step["op"] == "round"), None)
+    if places is None:
+        return ""
+    if places == 0:
+        return "Round to a whole number."
+    return f"Round to {places} decimal place{'' if places == 1 else 's'}."
+
+
 def phrase_question(question: Question, rng: random.Random, alt_units: bool = False, *,
                     domain: Domain = EARTHQUAKES) -> str:
     """Wording for a question. Different RNG draws give paraphrases with the same meaning."""
@@ -562,7 +609,8 @@ def phrase_question(question: Question, rng: random.Random, alt_units: bool = Fa
     term = terminal_step(question.chain)
     s = Step(term, domain.units)
     values = {"records": f"{lexicon.records} {_join(clauses)}" if clauses else lexicon.all_records,
-              "unit": s.unit(question.unit).words if question.unit else ""}
+              "unit": s.unit(question.unit).words if question.unit else "",
+              "rounding": rounding_text(question.chain)}
     if s.kind == "rank":
         values["nth"] = ORDINALS[s["k"]]
     elif s.kind in ("nearest_to", "nearest_distance"):

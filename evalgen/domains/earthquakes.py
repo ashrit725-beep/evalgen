@@ -8,17 +8,23 @@ question wording, the trap vocabulary is the one the 0.2.0 digests print, and th
 
 Magnitude plays the *primary* role of the role-based templates (thresholds, rankings, the largest
 value and its time) and depth the *secondary* one (thresholds, the deepest and the shallowest value).
+
+A legacy run fetches, freezes and replays the USGS feed through ``sources.build_snapshot``. Off the
+legacy path the day feed is this domain's live source (``UsgsFeed``), used by the generic snapshot.
 """
 from __future__ import annotations
 
+import json
 import random
 from typing import Sequence
 
+from ..digest import CHATTER
 from ..forecast import forecast_text, make_forecast, resolve_forecasts
 from ..models import EVENT_ID_PATTERN, Event, Notice, Report
 from ..ops import ALIASES
 from ..rules import READING_RULES, Mishandle, resolve
-from ..sources import generate_synthetic, mimic_event_id, new_event_id
+from ..sources import (MIN_POOL_EVENTS, USER_AGENT, fetch_usgs, generate_synthetic, mimic_event_id, new_event_id,
+                       parse_usgs_geojson)
 from .base import LENGTH, Domain, FieldSpec, Forecaster, Lexicon, Spatial, TrapVocab
 
 # Margin guards: no event may sit this close to a threshold, so that display rounding (0.1 km or mi,
@@ -49,6 +55,7 @@ DEPTH = FieldSpec(
     quantiles=(0.25, 0.8), threshold_step=0.1, coarse_step=1.0, jitter=1.5, positive_threshold=True,
     filters=("below", "at_least"),  # shallower-than first: the 0.2.0 order of ops.FILTER_OPS
     terminals=("max", "min"), signed=True,
+    tolerance_scales=False,  # 0.2.0 scores 0.3 km and 0.3 miles alike
 )
 
 SPATIAL = Spatial(
@@ -113,6 +120,27 @@ TRAP_VOCAB = TrapVocab(
 FORECASTER = Forecaster(source="usgs", make=make_forecast, text=forecast_text, resolve=resolve_forecasts)
 
 
+class UsgsFeed:
+    """The USGS day feed as this domain's live source (a LiveAdapter), for runs off the legacy path.
+    A legacy run reaches the same feed through sources.build_snapshot, which can also widen the hour
+    feed to the day feed."""
+
+    source = "usgs"
+    raw_filename = "raw_feed.geojson"
+    user_agent = USER_AGENT
+    min_records = MIN_POOL_EVENTS
+
+    def fetch(self) -> tuple[bytes, str]:
+        return fetch_usgs("day")
+
+    def parse(self, raw: bytes) -> tuple[list[Event], int, int]:
+        """One Event per earthquake (duplicate solutions collapsed), the feed's generation time, and its
+        window: an hour for the hour feed (as its metadata names it), else a day."""
+        events, generated, _ = parse_usgs_geojson(raw)
+        url = str((json.loads(raw.decode("utf-8")).get("metadata") or {}).get("url") or "")
+        return events, generated, 1 if "_hour" in url else 24
+
+
 class Earthquakes(Domain):
     name = "earthquakes"
     noun = "earthquake"
@@ -126,15 +154,18 @@ class Earthquakes(Domain):
     spatial = SPATIAL
     lexicon = LEXICON
     op_names = {(alias.kind, alias.field): name for name, alias in ALIASES.items()}
-    # The USGS feed is still fetched, frozen and replayed by sources.build_snapshot; it becomes this
-    # domain's LiveAdapter with the generic snapshot (plan phase 1b).
-    live = None
+    live = UsgsFeed()
     forecaster = FORECASTER
 
     id_pattern = EVENT_ID_PATTERN
     id_answer_type = "event_id"
     group_answer_type = "region"
     trap_vocab = TRAP_VOCAB
+    chatter = CHATTER
+
+    def sample_weight(self, record: Event) -> float:
+        """Larger quakes are likelier to be in a digest (the 0.2.0 weights: 1.5 ** magnitude)."""
+        return 1.5 ** record.mag
 
     def synthetic(self, rng: random.Random, n: int, compiled_at: int, window_hours: int) -> list[Event]:
         return generate_synthetic(rng, n, compiled_at, window_hours)

@@ -12,19 +12,23 @@ import json
 import math
 import random
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
+from .domains import get_domain
+from .domains.base import Domain, Record
 from .models import Event, Instance
 from .ops import describe
 from .scoring import wilson
-from .util import utc_iso
+from .util import plain_number, utc_iso
 
 OK_WORDS = {"ok", "correct", "pass", "fine"}
 ERROR_WORDS = {"error", "wrong", "ambiguous", "fail", "bad"}
 
 
-def write_audit_sample(run_dir: Path, instances: Sequence[Instance], events_by_id: dict[str, Event],
+def write_audit_sample(run_dir: Path, instances: Sequence[Instance], records: Mapping[str, Mapping[str, Any]],
                        rng: random.Random, rate: float = 0.02) -> dict:
+    """Sample about `rate` of the run's questions for a human to check. `records` gives each
+    instance's records by ID, by instance ID: the snapshot's records, as the instance names them."""
     items = [(inst, q) for inst in instances for q in inst.questions]
     n = min(len(items), max(1, math.ceil(rate * len(items)))) if items else 0
     picks = sorted(rng.sample(range(len(items)), n)) if n else []
@@ -42,7 +46,7 @@ def write_audit_sample(run_dir: Path, instances: Sequence[Instance], events_by_i
             "unit": q.unit,
             "operation_chain": describe(q.chain),
             "answer_key": inst.answer_key[q.qid],
-            "evidence": [_event_row(events_by_id[eid]) for eid in q.evidence],
+            "evidence": [_event_row(records[inst.instance_id][eid]) for eid in q.evidence],
             "traps_affecting": [
                 {"trap_id": t.trap_id, "kind": t.kind, "description": t.description, "fallen_answer": t.affected[q.qid]}
                 for t in inst.traps if q.qid in t.affected
@@ -61,9 +65,27 @@ def write_audit_sample(run_dir: Path, instances: Sequence[Instance], events_by_i
     return {"population": len(items), "sampled": n, "rate": rate, "file": "audit/audit_sample.jsonl"}
 
 
-def _event_row(e: Event) -> dict:
+def _event_row(e: Event | Record) -> dict:
+    """An evidence row: an earthquake as 0.2.0 listed it, or a generic record with its values by field
+    key (canonical units) and its qualifiers."""
+    if isinstance(e, Record):
+        return {"id": e.id, "time_utc": utc_iso(e.time), "lat": e.lat, "lon": e.lon, "values": dict(e.values),
+                "qualifiers": dict(e.qualifiers), "group": e.group, "source": e.source}
     return {"id": e.id, "time_utc": utc_iso(e.time), "lat": e.lat, "lon": e.lon, "depth_km": e.depth_km,
             "mag": e.mag, "mag_type": e.mag_type, "region": e.region}
+
+
+def _row_text(row: dict, domain: Domain | None) -> str:
+    """An evidence row in the checklist: an earthquake as 0.2.0 wrote it, or a generic record with
+    each field's label, value and canonical unit as its instance words them (`domain`, bound)."""
+    if "values" not in row:
+        return (f"- {row['id']} {row['time_utc']} M{row['mag']:g} {row['mag_type']}, depth {row['depth_km']:g} km, "
+                f"({row['lat']:.3f}, {row['lon']:.3f}), {row['region']}")
+    values = ", ".join(f"{spec.label} {plain_number(row['values'][spec.key])}"
+                       + ("" if spec.canonical_unit is None else f" {spec.canonical_unit}") for spec in domain.fields)
+    qualifiers = "".join(f", {key} {value}" for key, value in row["qualifiers"].items())
+    where = "" if row["lat"] is None else f", ({row['lat']:.3f}, {row['lon']:.3f})"
+    return f"- {row['id']} {row['time_utc']} {values}{qualifiers}{where}, {row['group']} ({row['source']})"
 
 
 def _markdown(entries: list[dict], instances: Sequence[Instance]) -> str:
@@ -73,19 +95,21 @@ def _markdown(entries: list[dict], instances: Sequence[Instance]) -> str:
            "digest and the reading rules, and that any trap is fair. Record the verdict (`ok` or `error`) in",
            "`audit_sample.jsonl`; the report turns verdicts into an estimated generator error rate.", ""]
     for entry in entries:
+        inst = by_id[entry["instance_id"]]
+        domain = None if inst.domain is None else get_domain(inst.domain).bind(inst.surface)
         out += [f"## {entry['item']} ({entry['template_id']}, {entry['pool']} template)", "",
                 f"**Question:** {entry['question']}", "",
                 f"**Operation chain:** `{entry['operation_chain']}`", "",
                 f"**Answer key:** `{entry['answer_key']}` ({entry['answer_type']}{', ' + entry['unit'] if entry['unit'] else ''})", "",
-                "**Evidence (events passing the filters, canonical values):**", ""]
-        out += [f"- {row['id']} {row['time_utc']} M{row['mag']:g} {row['mag_type']}, depth {row['depth_km']:g} km, "
-                f"({row['lat']:.3f}, {row['lon']:.3f}), {row['region']}" for row in entry["evidence"]] or ["- (none)"]
+                f"**Evidence ({'events' if domain is None else domain.plural} passing the filters, canonical values):**",
+                ""]
+        out += [_row_text(row, domain) for row in entry["evidence"]] or ["- (none)"]
         if entry["traps_affecting"]:
             out += ["", "**Traps that change this answer if mishandled:**", ""]
             out += [f"- {t['trap_id']} {t['kind']}: {t['description']} → fallen answer `{t['fallen_answer']}`"
                     for t in entry["traps_affecting"]]
         out += ["", "<details><summary>Digest (original rendering)</summary>", "", "```text",
-                by_id[entry["instance_id"]].renderings[0].digest, "```", "", "</details>", "",
+                inst.renderings[0].digest, "```", "", "</details>", "",
                 "- [ ] verdict: ok / error", ""]
     return "\n".join(out)
 

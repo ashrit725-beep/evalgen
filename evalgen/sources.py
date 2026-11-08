@@ -3,6 +3,12 @@
 Either way the result is a ``Snapshot``: a list of canonical events plus its SHA-256 hash and the
 seed. Everything downstream (digests, questions, answer key) is computed from the snapshot, so
 re-using a saved snapshot with the same seed reproduces a run exactly, even for live USGS data.
+
+A legacy run builds its earthquake snapshot with ``build_snapshot``, as 0.2.0 did. A run off the
+legacy path builds the snapshot of its domain with ``build_domain_snapshot``: the domain's synthetic
+records, drawn on seed paths of their own, or its live source, fetched once, frozen, hashed and
+replayable, with the synthetic records as the fallback. Its records are the domain's own (Records,
+or Events for earthquakes), and ``save_snapshot`` and ``load_snapshot`` handle either.
 """
 from __future__ import annotations
 
@@ -13,11 +19,12 @@ import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Sequence
 
 import requests
 
 from . import __version__
+from .domains.base import Domain, Record
 from .geo import destination, haversine_km
 from .models import EVENT_ID_RE, Event
 from .seeds import SeedLog
@@ -40,25 +47,29 @@ ALNUM = "abcdefghijklmnopqrstuvwxyz0123456789"
 
 @dataclass
 class Snapshot:
-    source: str  # "synthetic" or "usgs"
+    source: str  # "synthetic", or a live source: "usgs"
     seed: int
     compiled_at: int  # end of the covered window (Unix seconds); digests are "compiled" here
     window_hours: int
-    events: list[Event]
+    events: list[Any]  # the records: Events in a legacy run, else the domain's own (Records)
     events_sha256: str
-    raw_sha256: str | None = None  # hash of the frozen feed bytes (usgs only)
+    raw_sha256: str | None = None  # hash of the frozen feed bytes (live sources only)
     url: str | None = None
     fetched_at: str | None = None
     note: str | None = None  # e.g. why we fell back to synthetic data
+    domain: str | None = None  # the domain of a snapshot off the legacy path; unset (and unrecorded) in legacy runs
 
     def meta(self) -> dict:
         d = asdict(self)
         d.pop("events")
+        if self.domain is None:
+            d.pop("domain")
         d["n_events"] = len(self.events)
         return d
 
 
-def events_sha256(events: list[Event]) -> str:
+def events_sha256(events: Sequence[Any]) -> str:
+    """SHA-256 of the records (Events or Records) as canonical JSON, in ID order."""
     return sha256_hex(canonical_json([asdict(e) for e in sorted(events, key=lambda e: e.id)]))
 
 
@@ -308,6 +319,21 @@ def _synthetic_snapshot(seedlog: SeedLog, pool_size: int, note: str | None = Non
     )
 
 
+def _replayed(path: Path, raw: bytes, window_hours: int) -> tuple[int, str, str]:
+    """(window_hours, url, note) for frozen feed bytes read from `path`. Replaying a run's own frozen
+    snapshot keeps its window and origin, from the snapshot.json beside it, and checks its hash."""
+    url, note = f"file:{path.name}", f"frozen feed file {path.name}"
+    sidecar = path.with_name("snapshot.json")
+    if sidecar.exists():
+        meta = read_json(sidecar)
+        window_hours, url = meta.get("window_hours", window_hours), meta.get("url") or url
+        if meta.get("raw_sha256") and meta["raw_sha256"] != sha256_hex(raw):
+            note += " -- WARNING: bytes do not match the raw_sha256 recorded in snapshot.json"
+        else:
+            note = f"replay of frozen feed {path.name} (SHA-256 verified)"
+    return window_hours, url, note
+
+
 def build_snapshot(source: str, seedlog: SeedLog, *, feed: str = "day", pool_size: int = 360,
                    snapshot_file: str | None = None,
                    fetch: Callable[[str], tuple[bytes, str]] = fetch_usgs) -> tuple[Snapshot, bytes | None]:
@@ -315,15 +341,7 @@ def build_snapshot(source: str, seedlog: SeedLog, *, feed: str = "day", pool_siz
     if snapshot_file:
         path = Path(snapshot_file)
         raw = path.read_bytes()
-        window, url, note = (1 if "hour" in path.name else 24), f"file:{path.name}", f"frozen feed file {path.name}"
-        sidecar = path.with_name("snapshot.json")
-        if sidecar.exists():  # replaying a run's own frozen snapshot: keep its window and origin
-            meta = read_json(sidecar)
-            window, url = meta.get("window_hours", window), meta.get("url") or url
-            if meta.get("raw_sha256") and meta["raw_sha256"] != sha256_hex(raw):
-                note += " -- WARNING: bytes do not match the raw_sha256 recorded in snapshot.json"
-            else:
-                note = f"replay of frozen feed {path.name} (SHA-256 verified)"
+        window, url, note = _replayed(path, raw, 1 if "hour" in path.name else 24)
         return _usgs_snapshot(raw, seedlog.master, url, window, note=note), raw
     if source == "usgs":
         try:
@@ -344,18 +362,127 @@ def build_snapshot(source: str, seedlog: SeedLog, *, feed: str = "day", pool_siz
     return _synthetic_snapshot(seedlog, pool_size), None
 
 
-def save_snapshot(snapshot: Snapshot, raw: bytes | None, directory: Path) -> None:
+# ------------------------------------------------------------------ any domain, off the legacy path
+
+LIVE = "live"  # the source that names a domain's own live source, whichever it is
+
+
+def build_domain_snapshot(domain: Domain, source: str, seedlog: SeedLog, *, pool_size: int = 360,
+                          snapshot_file: str | None = None,
+                          fetch: Callable[[], tuple[bytes, str]] | None = None) -> tuple[Snapshot, bytes | None]:
+    """The snapshot of a run about `domain` off the legacy path, and its frozen raw bytes (None for
+    synthetic records).
+
+    "synthetic" draws the domain's synthetic records over its synthetic window, from seed paths that
+    name the domain ("snapshot", <domain>, "clock" and "synthetic"), so no legacy path ever moves.
+    "live", or the name of the domain's live source ("usgs"), fetches that source once (`fetch` stands
+    in for the adapter's own) and falls back to synthetic records, with a note, when it cannot be
+    reached, cannot be read or gives fewer records than its minimum; a domain without a live source
+    gets synthetic records. A snapshot file holds frozen bytes of the live source, which are replayed.
+    The records must suit the domain (record_problems), or ValueError is raised."""
+    live = domain.live
+    if snapshot_file:
+        if live is None:
+            raise ValueError(f"{domain.name} has no live source whose frozen bytes could be replayed")
+        path = Path(snapshot_file)
+        raw = path.read_bytes()
+        records, compiled_at, window = live.parse(raw)
+        window, url, note = _replayed(path, raw, window)
+        return _live_domain_snapshot(domain, seedlog, raw, records, compiled_at, window, url, note), raw
+    if source == "synthetic":
+        return _synthetic_domain_snapshot(domain, seedlog, pool_size), None
+    if source != LIVE and (live is None or source != live.source):
+        raise ValueError(f"unknown source {source!r} for {domain.name}: use synthetic, {LIVE}"
+                         + ("" if live is None else f" or {live.source}"))
+    if live is None:
+        note = f"{domain.name} has no live source; synthetic data"
+        return _synthetic_domain_snapshot(domain, seedlog, pool_size, note=note), None
+    try:
+        raw, url = (fetch or live.fetch)()
+        records, compiled_at, window = live.parse(raw)
+        if len(records) < live.min_records:
+            raise ValueError(f"only {len(records)} usable records in the feed")
+    except (requests.RequestException, ValueError, KeyError) as exc:
+        note = f"{live.source} unavailable ({type(exc).__name__}: {exc}); fell back to synthetic data"
+        return _synthetic_domain_snapshot(domain, seedlog, pool_size, note=note), None
+    return _live_domain_snapshot(domain, seedlog, raw, records, compiled_at, window, url, None), raw
+
+
+def _synthetic_domain_snapshot(domain: Domain, seedlog: SeedLog, pool_size: int, note: str | None = None) -> Snapshot:
+    compiled_at = synthetic_compiled_at(seedlog.rng("snapshot", domain.name, "clock"))
+    window = domain.synthetic_window_hours
+    records = _checked(domain, domain.synthetic(seedlog.rng("snapshot", domain.name, "synthetic"), pool_size,
+                                                compiled_at, window))
+    return Snapshot(source="synthetic", seed=seedlog.master, compiled_at=compiled_at, window_hours=window,
+                    events=records, events_sha256=events_sha256(records), note=note, domain=domain.name)
+
+
+def _live_domain_snapshot(domain: Domain, seedlog: SeedLog, raw: bytes, records: Sequence[Any], compiled_at: int,
+                          window_hours: int, url: str, note: str | None) -> Snapshot:
+    records = _checked(domain, records)
+    return Snapshot(source=domain.live.source, seed=seedlog.master, compiled_at=compiled_at,
+                    window_hours=window_hours, events=records, events_sha256=events_sha256(records),
+                    raw_sha256=sha256_hex(raw), url=url,
+                    fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), note=note,
+                    domain=domain.name)
+
+
+def _checked(domain: Domain, records: Sequence[Any]) -> list[Any]:
+    """The records in time order (then ID order), once record_problems finds nothing wrong."""
+    problems = record_problems(domain, records)
+    if problems:
+        more = f"; and {len(problems) - 5} more" if len(problems) > 5 else ""
+        raise ValueError(f"{domain.name} records do not suit the domain: " + "; ".join(problems[:5]) + more)
+    return sorted(records, key=lambda r: (r.time, r.id))
+
+
+def record_problems(domain: Domain, records: Sequence[Any]) -> list[str]:
+    """What is wrong with snapshot records of `domain`. Each record needs an ID of its own that the
+    scorer can pick out of an answer (the domain's id_pattern), a time in whole seconds, a group, a
+    value for exactly the domain's fields, each stored to its field's places (so that every printed
+    form of it reads back exactly), and a location exactly when the domain's records have one."""
+    problems: list[str] = []
+    keys = sorted(spec.key for spec in domain.fields)
+    seen: set[str] = set()
+    for r in records:
+        if r.id in seen:
+            problems.append(f"two records are {r.id}")
+        seen.add(r.id)
+        if not re.fullmatch(domain.id_pattern, r.id.casefold()):
+            problems.append(f"{r.id} does not match the ID pattern {domain.id_pattern}")
+        if not isinstance(r.time, int) or isinstance(r.time, bool):
+            problems.append(f"{r.id} is timed {r.time!r}, not in whole seconds")
+        if not r.group:
+            problems.append(f"{r.id} has no {domain.group_label}")
+        if sorted(r.values) != keys:
+            problems.append(f"{r.id} has values for {', '.join(sorted(r.values))}, not for {', '.join(keys)}")
+        for spec in domain.fields:
+            value = r.values.get(spec.key)
+            if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool)
+                                      or round(value, spec.decimals) != value):
+                problems.append(f"{r.id} has {spec.key} {value!r}, not a number to {spec.decimals} decimal places")
+        if (r.lat is None) != (r.lon is None) or (r.lat is not None) != domain.has_location:
+            problems.append(f"{r.id} is at ({r.lat}, {r.lon}), but {domain.name} records "
+                            + ("have a location" if domain.has_location else "have none"))
+    return problems
+
+
+def save_snapshot(snapshot: Snapshot, raw: bytes | None, directory: Path, *,
+                  raw_filename: str = "raw_feed.geojson") -> None:
+    """events.json (the records), snapshot.json (the metadata) and, for a live source, its frozen raw
+    bytes under `raw_filename` (the live adapter's)."""
     directory = Path(directory)
     write_json(directory / "events.json", [asdict(e) for e in snapshot.events])
     if raw is not None:
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / "raw_feed.geojson").write_bytes(raw)
+        (directory / raw_filename).write_bytes(raw)
     write_json(directory / "snapshot.json", snapshot.meta())
 
 
 def load_snapshot(directory: Path) -> Snapshot:
+    """A saved snapshot, its records as they were: Events, or the Records of a generic domain."""
     directory = Path(directory)
     meta = read_json(directory / "snapshot.json")
     meta.pop("n_events", None)
-    events = [Event(**e) for e in read_json(directory / "events.json")]
+    events = [Record(**e) if "values" in e else Event(**e) for e in read_json(directory / "events.json")]
     return Snapshot(events=events, **meta)

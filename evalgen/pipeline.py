@@ -6,9 +6,12 @@
     report    accuracy, consistency, seen-vs-new gap, trap catch rate, audit -> report.md / .json
     resolve   later: grade pending forecast questions against the USGS catalogue
 
+A run's mix (GenerateConfig.mix, see evalgen.mix) says which domain and genres its instances come
+from; the default, legacy, is the 0.2.0 run: earthquakes in the classic genre.
+
 Run directory layout:
     manifest.json          seeds, config, snapshot hash, templates, generator self-check
-    snapshot/              events.json, snapshot.json (+ raw_feed.geojson in USGS mode)
+    snapshot/              events.json, snapshot.json (+ the frozen feed of a live source, raw_feed.geojson for USGS)
     instances/inst-*.json  full instance: reports, notices, traps, questions, key, renderings
     prompts/inst-*/v*.txt  the exact prompt texts sent to models
     responses/<model>/     raw replies         scores/<model>.json  graded rows
@@ -40,7 +43,8 @@ from .domains.base import Domain
 from .domains.earthquakes import EARTHQUAKES
 from .genres.base import Genre, RenderContext
 from .genres.classic import CLASSIC
-from .models import Event, Instance, Rendering
+from .mix import single_choice
+from .models import Instance, Question, Rendering
 from .ops import execute, role
 from .prompt import build_prompt
 from .questions import Context, Template, compose_new_templates, compose_questions, phrase_question, public_templates
@@ -48,7 +52,7 @@ from .report import code_fingerprint, load_instances, write_report
 from .scoring import is_correct, normalize, same_answer
 from .seeds import SeedLog, derive_seed, fresh_nonce, seed_commitment
 from .solver import solve
-from .sources import Snapshot, build_snapshot, save_snapshot
+from .sources import Snapshot, build_domain_snapshot, build_snapshot, save_snapshot
 from .traps import TrapConfig, inject_traps
 from .util import read_json, sha256_hex, slugify, write_json
 
@@ -61,19 +65,21 @@ Log = Callable[[str], None]
 class GenerateConfig:
     seed: int
     instances: int = 20
-    source: str = "synthetic"
-    feed: str = "day"
+    source: str = "synthetic"  # or a live source: "usgs" (legacy), "live" or the domain's own (any other mix)
+    feed: str = "day"  # the USGS feed of a legacy run: "hour" or "day"
     snapshot_file: str | None = None
     variants: int = 2  # metamorphic re-renderings per instance (besides the original)
     pool_size: int = 360  # synthetic snapshot size
-    events_min: int = 20  # earthquakes per digest
+    events_min: int = 20  # records per digest
     events_max: int = 28
     questions_min: int = 3
     questions_max: int = 5
     audit_rate: float = 0.02
-    # How each instance's domain and genres are drawn, and the evaluator's private run config (held-out
-    # domains and genres, plugins). The mix draws of plan phase 4 read them.
-    mix: str = "legacy"  # "legacy" (0.2.0: earthquakes, classic), "random", or a list: "weather,neo:email"
+    # Which domain and genres the instances come from (evalgen.mix): "legacy" (0.2.0: earthquakes,
+    # classic), a list such as "toy:classic" or "weather,neo:email", or "random"; and the evaluator's
+    # private run config (held-out domains and genres, plugins). The per-instance draws over a mix
+    # that leaves a choice, and the private config, come with plan phase 4.
+    mix: str = "legacy"
     private_config: str | None = None  # path of the private run config (JSON)
 
     OPTIONAL_KEYS: ClassVar[tuple[str, ...]] = ("mix", "private_config")  # recorded only when not default
@@ -88,25 +94,30 @@ class GenerateConfig:
 # ------------------------------------------------------------------------------ generate
 
 
-def _weighted_sample(items: Sequence[Event], k: int, rng: random.Random) -> list[Event]:
-    """Weighted sampling without replacement (Efraimidis-Spirakis); larger quakes are likelier."""
-    keyed = sorted(((rng.random() ** (1.0 / 1.5 ** e.mag), i) for i, e in enumerate(items)), reverse=True)
+def _weighted_sample(items: Sequence[Any], k: int, rng: random.Random, weight: Callable[[Any], float]) -> list[Any]:
+    """Weighted sampling without replacement (Efraimidis-Spirakis): heavier records are likelier."""
+    keyed = sorted(((rng.random() ** (1.0 / weight(e)), i) for i, e in enumerate(items)), reverse=True)
     return [items[i] for _, i in keyed[:k]]
 
 
-def sample_events(pool: Sequence[Event], rng: random.Random, n_min: int, n_max: int) -> list[Event]:
-    """The earthquakes for one digest: mostly from 3-4 focus regions, so questions have substance."""
+def sample_events(pool: Sequence[Any], rng: random.Random, n_min: int, n_max: int, *,
+                  domain: Domain = EARTHQUAKES) -> list[Any]:
+    """The records for one digest: mostly from 3-4 focus groups, so questions have substance. The
+    domain says what a record's group is and how heavily it weighs (Domain.sample_group and
+    sample_weight; earthquakes: its region, and 1.5 ** magnitude, so larger quakes are likelier)."""
+    group, weight = domain.sample_group, domain.sample_weight
     n = min(len(pool), rng.randint(n_min, n_max))
-    counts = Counter(e.region for e in pool)
+    counts = Counter(group(e) for e in pool)
     eligible = sorted(r for r, c in counts.items() if c >= 4)
     focus = set(rng.sample(eligible, min(len(eligible), rng.randint(3, 4)))) if eligible else set()
-    in_focus = [e for e in pool if e.region in focus]
-    others = [e for e in pool if e.region not in focus]
+    in_focus = [e for e in pool if group(e) in focus]
+    others = [e for e in pool if group(e) not in focus]
     n_focus = min(len(in_focus), round(n * 0.8))
-    chosen = _weighted_sample(in_focus, n_focus, rng) + _weighted_sample(others, min(len(others), n - n_focus), rng)
+    chosen = (_weighted_sample(in_focus, n_focus, rng, weight)
+              + _weighted_sample(others, min(len(others), n - n_focus), rng, weight))
     if len(chosen) < n:
         chosen_ids = {e.id for e in chosen}
-        chosen += _weighted_sample([e for e in pool if e.id not in chosen_ids], n - len(chosen), rng)
+        chosen += _weighted_sample([e for e in pool if e.id not in chosen_ids], n - len(chosen), rng, weight)
     return sorted(chosen, key=lambda e: (e.time, e.id))
 
 
@@ -126,10 +137,46 @@ def _recorded(**labels: str | None) -> dict[str, str]:
     return {name: value for name, value in labels.items() if value is not None}
 
 
+@dataclass
+class Composition:
+    """What an instance is about, before its traps and renderings: its domain as the instance words it
+    (bound to the instance's surface words, when the domain draws them), those words, the instance's
+    records (the snapshot's, as the instance names them) and its questions with their answer key."""
+
+    domain: Domain
+    surface: dict[str, Any] | None
+    events: list[Any]
+    questions: list[Question]
+    answer_key: dict[str, Any]
+
+
+def compose_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Template], seedlog: SeedLog,
+                     cfg: GenerateConfig, ctx: Context, used_chains: set[str], usage: dict[str, int], *,
+                     domain: Domain = EARTHQUAKES, legacy: bool = True) -> Composition:
+    """An instance's records, questions and answer key. Off the legacy path, a domain with surface
+    words draws them first (seed path "instance", i, "surface", which legacy runs never create) and
+    the bound domain renames the sampled records (Domain.dress); everything after uses the bound
+    domain and the renamed records. The key is code over the snapshot's records."""
+    surface = None
+    if not legacy and domain.has_surface:
+        surface = domain.draw_surface(seedlog.rng("instance", index, "surface"))
+        domain = domain.bind(surface)
+    sample = sample_events(snapshot.events, seedlog.rng("instance", index, "events"), cfg.events_min,
+                           cfg.events_max, domain=domain)
+    events = [domain.dress(e) for e in sample]
+    q_rng = seedlog.rng("instance", index, "questions")
+    questions = compose_questions(events, public_templates(domain), new_templates, q_rng, ctx,
+                                  q_rng.randint(cfg.questions_min, cfg.questions_max), used_chains, usage,
+                                  domain=domain)
+    answer_key = {q.qid: execute(q.chain, events, units=domain.units) for q in questions}
+    return Composition(domain, surface, events, questions, answer_key)
+
+
 def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Template], seedlog: SeedLog,
                    cfg: GenerateConfig, ctx: Context, used_chains: set[str], usage: dict[str, int], *,
                    domain: Domain = EARTHQUAKES, genre_plan: Sequence[Genre] | None = None) -> Instance:
-    """One test item about `domain`: its records, questions, answer key, traps and renderings.
+    """One test item about `domain`: its records, questions, answer key (compose_instance), traps and
+    renderings.
 
     `genre_plan` gives the genre of each rendering, the original first. None is the legacy path:
     classic everywhere, with the 0.2.0 calls, random draws and output. Otherwise the instance records
@@ -140,17 +187,10 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
         raise ValueError(f"only earthquakes have a legacy rendering: {domain.name} needs a genre plan")
     if genre_plan is not None and len(genre_plan) != cfg.variants + 1:
         raise ValueError(f"the genre plan names {len(genre_plan)} genres for {cfg.variants + 1} renderings")
-    surface = None
-    if genre_plan is not None and domain.has_surface:
-        surface = domain.draw_surface(seedlog.rng("instance", index, "surface"))
-        domain = domain.bind(surface)
-    events = sample_events(snapshot.events, seedlog.rng("instance", index, "events"), cfg.events_min, cfg.events_max)
-    q_rng = seedlog.rng("instance", index, "questions")
-    questions = compose_questions(events, public_templates(domain), new_templates, q_rng, ctx,
-                                  q_rng.randint(cfg.questions_min, cfg.questions_max), used_chains, usage,
-                                  domain=domain)
+    composed = compose_instance(index, snapshot, new_templates, seedlog, cfg, ctx, used_chains, usage,
+                                domain=domain, legacy=genre_plan is None)
+    domain, events, questions, answer_key = composed.domain, composed.events, composed.questions, composed.answer_key
     units = domain.units
-    answer_key = {q.qid: execute(q.chain, events, units=units) for q in questions}  # the key: code over the snapshot
     trap_config = TrapConfig(id_style="sequence" if snapshot.source == "usgs" else "random")
     reports, notices, traps = inject_traps(events, questions, seedlog.rng("instance", index, "traps"),
                                            compiled_at=snapshot.compiled_at, window_hours=snapshot.window_hours,
@@ -163,7 +203,7 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
                                               answer_key[q.qid], unit=q.unit),
         }
     chatter = make_chatter(seedlog.rng("instance", index, "chatter"), snapshot.compiled_at,
-                           sorted({e.network for e in events}))
+                           sorted({e.source for e in events}), domain.chatter, domain.words)
     forecaster = domain.forecaster
     forecast = None
     if forecaster is not None and snapshot.source == forecaster.source:
@@ -196,7 +236,7 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
         instance_id=f"inst-{index:03d}", seed=seedlog.seed("instance", index), compiled_at=snapshot.compiled_at,
         window_hours=snapshot.window_hours, event_ids=[e.id for e in events], reports=reports, notices=notices,
         chatter=chatter, traps=traps, questions=questions, answer_key=answer_key, renderings=renderings,
-        forecast=forecast, domain=None if genre_plan is None else domain.name, surface=surface,
+        forecast=forecast, domain=None if genre_plan is None else domain.name, surface=composed.surface,
     )
 
 
@@ -234,6 +274,14 @@ def is_run_dir(path: Path) -> bool:
     return isinstance(manifest, dict) and {"evalgen_version", "run_id", "self_check"} <= set(manifest)
 
 
+def _instance_records(instances: Sequence[Instance], snapshot: Snapshot, domain: Domain) -> dict[str, dict[str, Any]]:
+    """Each instance's records by ID: the snapshot's records, as the instance names them (renamed by
+    its surface words, when it has them)."""
+    by_id = {e.id: e for e in snapshot.events}
+    return {inst.instance_id: by_id if inst.surface is None else
+            {r.id: r for r in map(domain.bind(inst.surface).dress, snapshot.events)} for inst in instances}
+
+
 def _replay_check(snapshot_file: str | None, log: Log) -> dict | None:
     """When replaying another run's frozen feed, note whether that run used the same code."""
     if not snapshot_file:
@@ -248,16 +296,16 @@ def _replay_check(snapshot_file: str | None, log: Log) -> dict | None:
     return {"source_run": str(source_run), "same_code": same}
 
 
-def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = False, log: Log = print,
-             domain: Domain = EARTHQUAKES, genre_plan: Sequence[Genre] | None = None) -> Path:
+def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = False, log: Log = print) -> Path:
     """Write a run: snapshot, instances, prompts, the generator's self-check, the audit sample and
-    the manifest. Every instance is about `domain` and rendered by `genre_plan` (see build_instance);
-    the defaults make the legacy (0.2.0) run."""
-    if cfg.mix != "legacy" or cfg.private_config is not None:
-        raise NotImplementedError("the mix draws and the private run config come with plan phase 4")
-    if domain.name != EARTHQUAKES.name:
-        raise NotImplementedError(f"snapshots of {domain.name} records come with the generic record path "
-                                  "(plan phase 1b)")
+    the manifest. The run's mix (cfg.mix) names its domain and genre; the default is the legacy (0.2.0)
+    run, and any other mix is generated on seed paths of its own (see evalgen.mix)."""
+    if cfg.private_config is not None:
+        raise NotImplementedError("the private run config comes with plan phase 4")
+    choice = single_choice(cfg.mix)
+    if choice is not None and cfg.feed != GenerateConfig.feed:
+        raise ValueError("the USGS feed is chosen in legacy runs only: off the legacy path its live source is the "
+                         "day feed")
     run_dir = Path(run_dir) if run_dir else RUNS_DIR / f"{cfg.source}-seed{cfg.seed}"
     if run_dir.exists() and any(run_dir.iterdir()):
         if not force:
@@ -272,15 +320,27 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
     nonce = fresh_nonce()
     commitment = seed_commitment(cfg.seed, nonce)
     log(f"[generate] master seed {cfg.seed} (publishable commitment {commitment[:16]}…)")
-    snapshot, raw = build_snapshot(cfg.source, seedlog, feed=cfg.feed, pool_size=cfg.pool_size,
-                                   snapshot_file=cfg.snapshot_file)
-    save_snapshot(snapshot, raw, run_dir / "snapshot")
+    if choice is None:  # legacy: the 0.2.0 snapshot and seed paths
+        domain, genre_plan = EARTHQUAKES, None
+        snapshot, raw = build_snapshot(cfg.source, seedlog, feed=cfg.feed, pool_size=cfg.pool_size,
+                                       snapshot_file=cfg.snapshot_file)
+        save_snapshot(snapshot, raw, run_dir / "snapshot")
+    else:
+        domain, genre = choice
+        genre_plan = (genre,) * (cfg.variants + 1)
+        snapshot, raw = build_domain_snapshot(domain, cfg.source, seedlog, pool_size=cfg.pool_size,
+                                              snapshot_file=cfg.snapshot_file)
+        if raw is None:
+            save_snapshot(snapshot, raw, run_dir / "snapshot")
+        else:  # frozen bytes of the domain's live source
+            save_snapshot(snapshot, raw, run_dir / "snapshot", raw_filename=domain.live.raw_filename)
     if snapshot.note:
         log(f"[generate] note: {snapshot.note}")
     log(f"[generate] snapshot: {snapshot.source}, {len(snapshot.events)} events, sha256 {snapshot.events_sha256[:16]}…")
 
     replay = _replay_check(cfg.snapshot_file, log)
-    new_templates = compose_new_templates(seedlog.rng("templates", "new"), domain)
+    template_seeds = ("templates", "new") if choice is None else ("templates", "new", domain.name)
+    new_templates = compose_new_templates(seedlog.rng(*template_seeds), domain)
     ctx = Context(snapshot.compiled_at, snapshot.window_hours)
     used_chains: set[str] = set()  # no concrete question is ever asked twice in a run
     usage: dict[str, int] = {}  # questions per template so far; keeps each public/twin pair in step
@@ -296,8 +356,8 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
             path.write_text(rendering.prompt, encoding="utf-8")
 
     self_check = generator_self_check(instances)
-    audit = write_audit_sample(run_dir, instances, {e.id: e for e in snapshot.events}, seedlog.rng("audit"),
-                               cfg.audit_rate)
+    audit = write_audit_sample(run_dir, instances, _instance_records(instances, snapshot, domain),
+                               seedlog.rng("audit"), cfg.audit_rate)
     forecasts = [dict(inst.forecast, instance_id=inst.instance_id, **_recorded(domain=inst.domain))
                  for inst in instances if inst.forecast]
     if forecasts:
