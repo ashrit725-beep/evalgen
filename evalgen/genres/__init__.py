@@ -1,9 +1,10 @@
 """Genres: the kinds of document a digest can be written as (see ``base`` for the interface).
 
 Every public module of this package is one built-in genre and exports ``GENRE``, an instance of
-``base.Genre``; ``classic`` is the 0.2.0 digest. Modules are discovered on the first lookup, in
-sorted order, and private plugins (held-out genres kept outside the public repository) are loaded by
-path with ``load_plugin``, exactly as domains are (see evalgen.registry).
+``base.Genre``; ``classic`` is the 0.2.0 digest, and its version for the records of every other
+domain. Modules are discovered on the first lookup, in sorted order, and private plugins (held-out
+genres kept outside the public repository) are loaded by path with ``load_plugin``, exactly as
+domains are (see evalgen.registry).
 
 A reader of a prompt picks the parser of the genre that wrote it with ``detect_genre``: the first
 other genre whose ``sniff`` recognises the digest, or else classic, so a legacy digest is always read

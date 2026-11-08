@@ -21,7 +21,7 @@ import requests
 from .domains import get_domain
 from .models import Instance
 from .ops import Step, terminal_step
-from .scoring import get_answer_type
+from .scoring import AnswerType, get_answer_type
 from .seeds import derive_seed
 from .solver import forecast_estimate, solve
 from .util import sha256_hex
@@ -157,12 +157,20 @@ def _perturb(q: dict, value: Any, rng: random.Random, task: Task) -> Any:
         return _other_group(q, value, rng)
     if known.kind == "clock":
         return _other_clock(value, rng)
-    if known.kind == "number":  # as a depth or a distance, but never within the type's tolerance
-        abs_tol, rel_tol = known.tolerance_in(q["unit"])
-        edge = max(abs_tol, rel_tol * abs(value))
-        wrong = value + rng.choice((-1, 1)) * max(2.0, 3 * edge, abs(value) * rng.uniform(0.2, 0.4))
-        return round(wrong, _places(q, task))
+    if known.kind == "number":
+        return _other_number(q, value, known, rng, task)
     raise ValueError(f"the mock cannot get a {known.kind} answer ({answer_type}) wrong")
+
+
+def _other_number(q: dict, value: float, known: AnswerType, rng: random.Random, task: Task) -> float:
+    """A wrong number in the question's unit and to its places, as a depth or a distance is got wrong
+    (a fifth to two fifths off) but scaled to the unit: at least three times the type's tolerance and
+    two steps of the places away, so that it is scored wrong even after rounding, in au as in km."""
+    places = _places(q, task)
+    abs_tol, rel_tol = known.tolerance_in(q["unit"])
+    sign = rng.choice((-1, 1))
+    shift = max(3 * max(abs_tol, rel_tol * abs(value)), 2 * 10.0 ** -places, abs(value) * rng.uniform(0.2, 0.4))
+    return round(value + sign * shift, places)
 
 
 def _other_count(value: int, rng: random.Random) -> int:

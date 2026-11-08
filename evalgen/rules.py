@@ -168,9 +168,9 @@ def _corrected(record: Event | Record, fix: Notice, qualifiers: Mapping[str, str
     return replace(record, mag=fix.new_mag, mag_type=fix.mag_type or record.mag_type)
 
 
-# ---------------------------------------------------------------- generic records (phase 1b)
-# The generic record path of plan phase 1b resolves RecordReports into Records here. A correction
-# revises one field; phase 1b extends this if its domains need more.
+# --------------------------------------------------------------------------- generic records
+# The RecordReports of a generic domain resolve into Records here. A correction revises the value of one
+# field, and that field's qualifier when it gives one.
 
 
 def _generic_record(report: RecordReport, record_id: str) -> Record:

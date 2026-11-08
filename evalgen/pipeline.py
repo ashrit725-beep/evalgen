@@ -41,17 +41,18 @@ from .digest import make_chatter
 from .domains import get_domain
 from .domains.base import Domain
 from .domains.earthquakes import EARTHQUAKES
+from .genres import detect_genre
 from .genres.base import Genre, RenderContext
 from .genres.classic import CLASSIC
 from .mix import single_choice
 from .models import Instance, Question, Rendering
 from .ops import execute, role
-from .prompt import build_prompt
+from .prompt import build_prompt, domain_prompt
 from .questions import Context, Template, compose_new_templates, compose_questions, phrase_question, public_templates
 from .report import code_fingerprint, load_instances, write_report
 from .scoring import is_correct, normalize, same_answer
 from .seeds import SeedLog, derive_seed, fresh_nonce, seed_commitment
-from .solver import solve
+from .solver import extract_digest, solve
 from .sources import Snapshot, build_domain_snapshot, build_snapshot, save_snapshot
 from .traps import TrapConfig, inject_traps
 from .util import read_json, sha256_hex, slugify, write_json
@@ -180,9 +181,11 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
 
     `genre_plan` gives the genre of each rendering, the original first. None is the legacy path:
     classic everywhere, with the 0.2.0 calls, random draws and output. Otherwise the instance records
-    its domain and each rendering its genre, and a variant avoids the original's style only when it
-    is in the original's genre. A domain with surface words draws them for the instance (only off
-    the legacy path, so the legacy seed paths never change), and every step uses the bound domain."""
+    its domain and each rendering its genre, a variant avoids the original's style only when it is in
+    the original's genre, and every prompt is a non-legacy one (prompt.domain_prompt), with the
+    domain's glossary, which the genre renders the records through. A domain with surface words draws
+    them for the instance (only off the legacy path, so the legacy seed paths never change), and every
+    step uses the bound domain."""
     if genre_plan is None and domain.name != EARTHQUAKES.name:
         raise ValueError(f"only earthquakes have a legacy rendering: {domain.name} needs a genre plan")
     if genre_plan is not None and len(genre_plan) != cfg.variants + 1:
@@ -191,6 +194,7 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
                                 domain=domain, legacy=genre_plan is None)
     domain, events, questions, answer_key = composed.domain, composed.events, composed.questions, composed.answer_key
     units = domain.units
+    glossary = None if genre_plan is None else domain.glossary()
     trap_config = TrapConfig(id_style="sequence" if snapshot.source == "usgs" else "random")
     reports, notices, traps = inject_traps(events, questions, seedlog.rng("instance", index, "traps"),
                                            compiled_at=snapshot.compiled_at, window_hours=snapshot.window_hours,
@@ -219,14 +223,17 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
         avoid = original[1] if original is not None and original[0] == genre.name else None
         style = genre.choose_style(rng, domain, avoid=avoid)
         digest = genre.render(RenderContext(reports, notices, chatter, compiled_at=snapshot.compiled_at,
-                                            window_hours=snapshot.window_hours, style=style, rng=rng, domain=domain))
+                                            window_hours=snapshot.window_hours, style=style, rng=rng, domain=domain,
+                                            glossary=glossary))
         texts = {q.qid: phrase_question(q, rng, alt_units=v > 0 and rng.random() < 0.5, domain=domain)
                  for q in questions}
         items = [(q.qid, texts[q.qid], q.answer_type, q.unit) for q in questions]
         if forecast:
             items.append((forecast["qid"], forecaster.text(forecast), "probability", None))
-        # Non-legacy prompts will also print the domain's glossary (prompt assembly, plan phase 1b).
-        prompt = build_prompt(digest, items, rules=domain.rules_text())
+        if glossary is None:
+            prompt = build_prompt(digest, items, rules=domain.rules_text())
+        else:
+            prompt = domain_prompt(domain, digest, items, glossary)
         renderings.append(Rendering(variant=f"v{v}", seed=seed, style=style, digest=digest, question_text=texts,
                                     prompt=prompt, prompt_sha256=sha256_hex(prompt),
                                     genre=None if genre_plan is None else genre.name))
@@ -241,15 +248,21 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
 
 
 def generator_self_check(instances: Sequence[Instance]) -> dict:
-    """The generator audits itself: a solver that sees ONLY the digest text must reproduce the key.
-    Each rendering is read in the domain and genre the run recorded for it (none in a legacy run,
-    whose prompts are read as 0.2.0 read them)."""
+    """The generator audits itself: a solver that sees ONLY the prompt text must reproduce the key.
+    Each rendering is read in the domain the run recorded for its instance (a legacy run records none,
+    and its prompts are read as 0.2.0 read them), by the genre that recognises the digest, which must
+    be the genre it was rendered in; through the glossary the prompt prints, for a non-legacy run."""
     checks = agreements = 0
     problems: list[str] = []
     for inst in instances:
         specs = question_specs(inst)
         for rendering in inst.renderings:
-            got = solve(rendering.prompt, specs, mode="oracle", domain=inst.domain, genre=rendering.genre)
+            got = solve(rendering.prompt, specs, mode="oracle", domain=inst.domain)
+            if rendering.genre is not None:
+                sniffed = detect_genre(extract_digest(rendering.prompt)).name
+                if sniffed != rendering.genre:
+                    problems.append(f"{inst.instance_id}/{rendering.variant}: a {rendering.genre} digest is "
+                                    f"recognised as {sniffed}")
             for q in inst.questions:
                 checks += 1
                 if same_answer(q.answer_type, got[q.qid], inst.answer_key[q.qid], unit=q.unit):

@@ -440,9 +440,13 @@ def record_problems(domain: Domain, records: Sequence[Any]) -> list[str]:
     """What is wrong with snapshot records of `domain`. Each record needs an ID of its own that the
     scorer can pick out of an answer (the domain's id_pattern), a time in whole seconds, a group, a
     value for exactly the domain's fields, each stored to its field's places (so that every printed
-    form of it reads back exactly), and a location exactly when the domain's records have one."""
+    form of it reads back exactly), a location exactly when the domain's records have one, stored to
+    the places of its coordinates, and qualifiers only under the keys of its fields' qualifiers (a
+    digest prints each qualifier with its field's value)."""
     problems: list[str] = []
     keys = sorted(spec.key for spec in domain.fields)
+    qualifier_keys = set(domain.qualifier_keys.values())
+    coord_decimals = None if domain.spatial is None else domain.spatial.coord_decimals
     seen: set[str] = set()
     for r in records:
         if r.id in seen:
@@ -464,6 +468,12 @@ def record_problems(domain: Domain, records: Sequence[Any]) -> list[str]:
         if (r.lat is None) != (r.lon is None) or (r.lat is not None) != domain.has_location:
             problems.append(f"{r.id} is at ({r.lat}, {r.lon}), but {domain.name} records "
                             + ("have a location" if domain.has_location else "have none"))
+        elif coord_decimals is not None and (round(r.lat, coord_decimals) != r.lat
+                                             or round(r.lon, coord_decimals) != r.lon):
+            problems.append(f"{r.id} is at ({r.lat}, {r.lon}), not to {coord_decimals} decimal places")
+        if isinstance(r, Record) and set(r.qualifiers) - qualifier_keys:
+            problems.append(f"{r.id} has qualifiers {', '.join(sorted(set(r.qualifiers) - qualifier_keys))}, "
+                            "which no field has")
     return problems
 
 

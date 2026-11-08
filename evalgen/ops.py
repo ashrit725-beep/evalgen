@@ -36,10 +36,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from .domains.base import LENGTH, Domain, RecordLike, ResolvedRecord, Unit, find_unit
+from .domains.base import Domain, RecordLike, ResolvedRecord
 from .geo import haversine_km
 from .models import Notice, Report
 from .rules import Mishandle, Resolver, naive_events, resolve
+from .units import LENGTH, Unit, find_unit
 from .util import plain_number, utc_iso
 
 EPS = 1e-9
@@ -168,19 +169,19 @@ def by_field(rows: Iterable[ResolvedRecord], field: str) -> list[ResolvedRecord]
 # Each builds the predicate for one step, so thresholds are converted once per step.
 
 
-def _threshold(s: Step) -> float:
-    """A filter's value in its field's canonical unit (a value without a unit is canonical)."""
+def canonical_threshold(s: Step) -> float:
+    """A threshold filter's value in its field's canonical unit (a value without a unit is canonical)."""
     symbol = s.get("unit")
     return s["value"] if symbol is None else s.unit(symbol).to_canonical(s["value"])
 
 
 def _at_least(s: Step) -> Predicate:
-    field, limit = s.field, _threshold(s) - EPS
+    field, limit = s.field, canonical_threshold(s) - EPS
     return lambda r: r.values[field] >= limit
 
 
 def _below(s: Step) -> Predicate:
-    field, limit = s.field, _threshold(s) - EPS
+    field, limit = s.field, canonical_threshold(s) - EPS
     return lambda r: r.values[field] < limit
 
 

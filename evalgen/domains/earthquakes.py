@@ -25,7 +25,8 @@ from ..ops import ALIASES
 from ..rules import READING_RULES, Mishandle, resolve
 from ..sources import (MIN_POOL_EVENTS, USER_AGENT, fetch_usgs, generate_synthetic, mimic_event_id, new_event_id,
                        parse_usgs_geojson)
-from .base import LENGTH, Domain, FieldSpec, Forecaster, Lexicon, Spatial, TrapVocab
+from ..units import LENGTH
+from .base import Domain, FieldSpec, Forecaster, Lexicon, Spatial, TrapVocab
 
 # Margin guards: no event may sit this close to a threshold, so that display rounding (0.1 km or mi,
 # 0.001 degrees, minute-precision times) can never change a correct answer. Magnitudes need no

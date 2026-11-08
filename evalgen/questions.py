@@ -31,11 +31,13 @@ from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
 from .digest import MONTHS_LONG
-from .domains.base import LENGTH, Domain, FieldSpec, ResolvedRecord, Spatial, Unit, find_unit
+from .domains.base import Domain, FieldSpec, ResolvedRecord, Spatial
 from .domains.earthquakes import EARTHQUAKES
 from .geo import destination
 from .models import Question
-from .ops import ALIASES, Step, answer_spec, distance_km, execute, role, rows_after_filters, terminal_step
+from .ops import (ALIASES, Step, answer_spec, canonical_threshold, distance_km, execute, role, rows_after_filters,
+                  terminal_step)
+from .units import LENGTH, Unit, find_unit
 from .util import plain_number
 
 TIME_MARGIN_S = 120  # no record within 2 minutes of a time window's ends (digests print times to the minute)
@@ -384,11 +386,6 @@ def draw_terminal(op: str, records: Sequence[ResolvedRecord], rng: random.Random
     raise ValueError(f"unknown terminal {op!r}")
 
 
-def _canonical_threshold(s: Step) -> float:
-    symbol = s.get("unit")
-    return s["value"] if symbol is None else s.unit(symbol).to_canonical(s["value"])
-
-
 def guards_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *, domain: Domain = EARTHQUAKES,
               time_margin: int = TIME_MARGIN_S) -> bool:
     """Reject parameters that sit too close to any record, or answers that are not unique. Thresholds
@@ -399,7 +396,7 @@ def guards_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *, domai
         s = Step(raw, units)
         if s.kind in ("at_least", "below"):
             spec = domain.field(s.field)
-            y = _canonical_threshold(s)
+            y = canonical_threshold(s)
             margin = max(spec.margin[0], spec.margin[1] * abs(y))
             if any(abs(r.values[s.field] - y) < margin for r in records):
                 return False

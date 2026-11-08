@@ -12,8 +12,9 @@ import pytest
 
 from evalgen import pipeline
 from evalgen.adapters import MockAdapter, Task
-from evalgen.domains.base import Domain
+from evalgen.domains.base import Domain, Glossary
 from evalgen.domains.earthquakes import EARTHQUAKES, FORECASTER, Earthquakes
+from evalgen.genres.base import parse_glossary, render_glossary
 from evalgen.genres.classic import CLASSIC
 from evalgen.pipeline import GenerateConfig, build_instance, question_specs
 from evalgen.prompt import ANSWER_SPECS, INTRO, answer_spec_text, build_prompt
@@ -103,12 +104,16 @@ def test_build_prompt_defaults_to_the_020_wording(instances):
 
 
 def test_build_prompt_takes_a_domains_wording_and_glossary():
+    glossary = Glossary("item", "items", "item ID", r"it-\d{3}", "depot", "yard", ("checked", "unchecked"), None)
     prompt = build_prompt("DIGEST", [("Q1", "How many?", "count", None), ("Q2", "How deep?", "depth", "mi")],
-                          intro="INTRO", rules="RULES\n", glossary="GLOSSARY\n",
+                          intro="INTRO", rules="RULES\n", glossary=glossary,
                           specs={**ANSWER_SPECS, "count": "a whole number"})
-    assert prompt.startswith("INTRO\n\nRULES\n\nGLOSSARY\n\n<digest>\nDIGEST\n</digest>\n\nQuestions:\n"
+    printed = render_glossary(glossary)  # the one form a prompt's glossary takes: tagged, and read back exactly
+    assert printed.startswith("<glossary>\n") and printed.endswith("\n</glossary>\n")
+    assert prompt.startswith(f"INTRO\n\nRULES\n\n{printed}\n<digest>\nDIGEST\n</digest>\n\nQuestions:\n"
                              "Q1. How many?\n    Answer type: a whole number.\n"
                              "Q2. How deep?\n    Answer type: a number in miles, rounded to 1 decimal place.\n\n")
+    assert parse_glossary(prompt) == glossary
     words = build_prompt("DIGEST", [("Q1", "How warm?", "temperature", "°F"), ("Q2", "Which?", "observation_id", None)],
                          specs={"temperature": "a number in {unit}", "observation_id": "an observation ID"},
                          placeholders={"temperature": "<number>", "observation_id": "\"<observation ID>\""},

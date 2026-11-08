@@ -16,8 +16,7 @@ from evalgen import adapters, scoring, solver, traps
 from evalgen.adapters import Task, _perturb
 from evalgen.digest import render_notice, render_report
 from evalgen.domains import DEFAULT_DOMAIN, get_domain
-from evalgen.domains.base import (LENGTH, MI, Domain, FieldSpec, Glossary, Lexicon, Record, RecordReport, TrapVocab,
-                                  Unit)
+from evalgen.domains.base import Domain, FieldSpec, Glossary, Lexicon, Record, RecordReport, TrapVocab
 from evalgen.domains.earthquakes import DOMAIN, EARTHQUAKES
 from evalgen.geo import KM_PER_MILE, from_km
 from evalgen.models import EVENT_ID_PATTERN, Notice, Question, Trap
@@ -33,6 +32,7 @@ from evalgen.seeds import SeedLog
 from evalgen.solver import solve
 from evalgen.sources import build_snapshot, generate_synthetic, mimic_event_id, new_event_id
 from evalgen.traps import builders_for, inject_traps, primary_report, threshold_values
+from evalgen.units import LENGTH, MI, Unit
 
 from generic_quakes import GENERIC_OP_NAMES, GENERIC_QUAKES
 from test_domain_interface import generic as generic_step
@@ -114,10 +114,11 @@ def composed(seed: int, domain: Domain, instances: int = 8) -> dict:
     return out
 
 
-def test_composition_does_not_depend_on_op_names(monkeypatch):
+def test_composition_does_not_depend_on_op_names():
     """Earthquakes under the generic op names compose, plant and word the same questions draw for
-    draw: nothing in composition reads an op's name where it means its kind and field."""
-    monkeypatch.setitem(traps.BUILDERS, GENERIC_QUAKES.name, traps.BUILDERS[EARTHQUAKES.name])
+    draw: nothing in composition reads an op's name where it means its kind and field (an earthquake
+    domain under any name is planted by the 0.2.0 builders)."""
+    assert traps.builders_for(GENERIC_QUAKES) is traps.builders_for(EARTHQUAKES) is traps.EARTHQUAKE_BUILDERS
     for seed in (3, 42):
         named, plain = composed(seed, EARTHQUAKES), composed(seed, GENERIC_QUAKES)
         assert plain["twins"] == [(tid, tuple(GENERIC_OP_NAMES.get(f, f) for f in filters),

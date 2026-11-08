@@ -18,8 +18,15 @@ own ID sequence, so the format gives nothing away.
 
 Placement, ranking and scoring are the same for every domain. What a trap looks like depends on the
 domain's records, so the builders are looked up per domain (``builders_for``), and they take the
-domain's trap vocabulary (re-reporting sources, retraction reasons), ID scheme and reading rules
-from the domain itself. Earthquakes keep the 0.2.0 builders.
+domain's trap vocabulary (re-reporting sources, retraction reasons), ID scheme, statuses and reading
+rules from the domain itself. Earthquakes keep the 0.2.0 builders. The Records of every other domain
+get the same three traps, with the same careless readings:
+  duplicate          a re-reporting source repeats a record (its ID, or its own reference with a note
+                     naming the ID), with slightly different values and the domain's second status
+  retraction         a phantom report, plausible for its group, that a later notice retracts
+  conflicting_value  a wrong value of a field (a correctable one when there is one), settled by a
+                     correction notice or by the settling report next to an unsettled one
+Values move by a share of the spread of their field in the digest, so the traps scale to every field.
 """
 from __future__ import annotations
 
@@ -29,16 +36,18 @@ import math
 import random
 import re
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
-from .domains.base import Domain
-from .domains.earthquakes import EARTHQUAKES
+from .domains.base import Domain, FieldSpec, Record, RecordReport
+from .domains.earthquakes import EARTHQUAKES, Earthquakes
 from .geo import COMPASS16, compass_point, destination, haversine_km, initial_bearing
 from .models import Event, Notice, Question, Report, Trap
-from .ops import DigestData, Step, execute
+from .ops import EPS, DigestData, Step, canonical_threshold, execute
 from .rules import Mishandle
 from .scoring import get_answer_type, normalize, same_answer
 from .sources import COORD_DECIMALS
+from .units import Unit
+from .util import plain_number
 
 _PLACE = re.compile(r"^(\d+(?:\.\d+)?) km ([NSEW]{1,3}) of (.+)$")
 
@@ -55,9 +64,9 @@ class TrapConfig:
 @dataclass
 class _Candidate:
     trap: Trap
-    add_reports: list[Report]
+    add_reports: list[Any]  # Reports, or the RecordReports of a generic domain
     add_notices: list[Notice]
-    replace_at: tuple[int, Report] | None = None
+    replace_at: tuple[int, Any] | None = None
 
 
 @dataclass
@@ -65,13 +74,13 @@ class _Site:
     """What a trap builder reads while one digest is being planted, and the bookkeeping it updates."""
 
     domain: Domain
-    events: list[Event]
+    events: list[Any]  # the digest's records: Events, or the Records of a generic domain
     questions: list[Question]
     rng: random.Random
     compiled_at: int
     window_start: int
     id_style: str
-    reports: list[Report]  # the digest so far: a conflict may replace a reviewed report in it
+    reports: list[Any]  # the digest so far: a conflict may replace a settling report in it
     taken: set[str]  # every ID in use, including the IDs drawn for candidates that were not chosen
     used: set[str]  # records that already carry a duplicate or a conflict
 
@@ -82,10 +91,10 @@ Builder = Callable[[str, _Site], Optional[_Candidate]]
 
 @dataclass(frozen=True)
 class Builders:
-    """How one domain's digests are planted: the reviewed report of a record, and one builder per
+    """How one domain's digests are planted: the report that settles a record, and one builder per
     kind of trap, which proposes a placement (or None when this attempt finds no room for one)."""
 
-    primary: Callable[[Any], Report]
+    primary: Callable[[Any], Any]
     duplicate: Builder
     retraction: Builder
     conflict: Builder
@@ -235,11 +244,11 @@ def _sequence_ref(network: str, site: _Site, when: int) -> str:
     return domain.mimic_id(nearest.id, rng, taken)
 
 
-def _fresh_ref(network: str, site: _Site, when: int) -> str:
+def _fresh_ref(source: str, site: _Site, when: int) -> str:
     """A new ID for a planted report, generated the way real IDs look in this mode."""
-    if site.id_style == "sequence" and any(e.network == network for e in site.events):
-        return _sequence_ref(network, site, when)
-    return site.domain.new_id(network, site.rng, site.taken)
+    if site.id_style == "sequence" and any(e.source == source for e in site.events):
+        return _sequence_ref(source, site, when)
+    return site.domain.new_id(source, site.rng, site.taken)
 
 
 def _implied_town(event: Event) -> tuple[str, float, float] | None:
@@ -363,16 +372,174 @@ def _conflict(trap_id: str, site: _Site) -> _Candidate | None:
     return _Candidate(trap, [prelim], [])
 
 
-# Builders by domain name. Earthquakes keep the 0.2.0 builders and records; the generic builders for
-# every other domain come with the generic record path (plan phase 1b).
-BUILDERS: dict[str, Builders] = {EARTHQUAKES.name: Builders(primary_report, _duplicate, _phantom, _conflict)}
+# --------------------------------------------------------- the Records of every other domain
+
+
+def record_report(record: Record, status: str) -> RecordReport:
+    """The report of a record that settles its values, filed under `status` (its domain's first)."""
+    return RecordReport(ref=record.id, source=record.source, status=status, time=record.time, lat=record.lat,
+                        lon=record.lon, group=record.group, values=dict(record.values),
+                        qualifiers=dict(record.qualifiers), place=record.place)
+
+
+def _spread(records: Sequence[Record], spec: FieldSpec) -> float:
+    """How far apart a field's values lie in the digest (at least one step of its stored places): planted
+    values move by shares of it, so a trap means as much for a wave height as for a temperature."""
+    values = [r.values[spec.key] for r in records]
+    return max(max(values) - min(values), 10.0 ** -spec.decimals)
+
+
+def _stored(value: float, spec: FieldSpec) -> float:
+    """A planted value as the field stores it: to its places, and never below zero unless it is signed."""
+    return round(value if spec.signed else max(0.0, value), spec.decimals) + 0.0  # + 0.0: never -0.0
+
+
+def _position(anchor: Record, km: tuple[float, float], site: _Site) -> tuple[float | None, float | None]:
+    """Where a planted report puts itself: nowhere in a domain without locations, at its anchor when the
+    anchor names its place (a station does not move), and else `km` away from it in a random direction."""
+    spatial = site.domain.spatial
+    if spatial is None:
+        return None, None
+    if anchor.place is not None:
+        return anchor.lat, anchor.lon
+    lat, lon = destination(anchor.lat, anchor.lon, site.rng.uniform(*km), site.rng.uniform(0.0, 360.0))
+    return round(lat, spatial.coord_decimals) + 0.0, round(lon, spatial.coord_decimals) + 0.0
+
+
+def _shown(values: Mapping[str, float], domain: Domain) -> str:
+    """Values for a trap's description: "water temperature 12.3 °C, wave height 1.85 m"."""
+    return ", ".join(f"{spec.label} {plain_number(values[spec.key])}"
+                     + ("" if spec.canonical_unit is None else f" {spec.canonical_unit}") for spec in domain.fields)
+
+
+def _record_duplicate(trap_id: str, site: _Site) -> _Candidate | None:
+    rng, records, domain = site.rng, site.events, site.domain
+    e = _pick_unused(records, site.used, rng)
+    if e is None:
+        return None
+    source = rng.choice(_rereporters(site, e.source))
+    form = rng.choice(("same_id", "cross_ref"))
+    when = min(site.compiled_at - 1, max(site.window_start, e.time + rng.choice((-1, 1)) * rng.randint(3, 40)))
+    ref = e.id if form == "same_id" else _fresh_ref(source, site, when)
+    lat, lon = _position(e, (1.0, 8.0), site)
+    values = {spec.key: _stored(e.values[spec.key] + rng.uniform(-0.08, 0.08) * _spread(records, spec), spec)
+              for spec in domain.fields}
+    status = domain.statuses[1]
+    dup = RecordReport(ref=ref, source=source, status=status, time=when, lat=lat, lon=lon, group=e.group,
+                       values=values, qualifiers=dict(e.qualifiers), place=e.place,
+                       same_as=None if form == "same_id" else e.id, role="duplicate", trap_id=trap_id)
+    how = f"under the same {domain.id_label}" if form == "same_id" else f"as {ref} with a note naming it"
+    description = (f"{source} re-reported {e.id} {how}: {status} {_shown(values, domain)} "
+                   f"({domain.statuses[0]}: {_shown(e.values, domain)})")
+    trap = Trap(trap_id, "duplicate", form, e.id, description,
+                mishandles=[Mishandle(split=((ref, source, status),)).to_dict()])
+    return _Candidate(trap, [dup], [])
+
+
+def _record_phantom(trap_id: str, site: _Site) -> _Candidate:
+    """A report of a record that never was, with values typical of its group's records, retracted later."""
+    rng, records, domain = site.rng, site.events, site.domain
+    anchor = rng.choice(records)
+    peers = [r for r in records if r.group == anchor.group]
+    pool = peers if len(peers) >= 3 else records
+    values = {}
+    for spec in domain.fields:
+        observed = sorted(r.values[spec.key] for r in pool)
+        spread = _spread(records, spec)
+        value = observed[int(rng.uniform(0.2, 0.95) * (len(observed) - 1))] + rng.uniform(-0.05, 0.05) * spread
+        values[spec.key] = _stored(min(max(value, observed[0]), observed[-1] + 0.05 * spread), spec)
+    lat, lon = _position(anchor, (3.0, 40.0), site)
+    when = rng.randrange(site.window_start + 60, site.compiled_at - 600)
+    ref = _fresh_ref(anchor.source, site, when)
+    phantom = RecordReport(ref=ref, source=anchor.source, status=domain.statuses[0], time=when, lat=lat, lon=lon,
+                           group=anchor.group, values=values, qualifiers=dict(anchor.qualifiers), place=anchor.place,
+                           role="phantom", trap_id=trap_id)
+    reason = rng.choice(domain.trap_vocab.retraction_reasons)
+    notice = Notice(kind="retraction", target=ref, time=min(site.compiled_at - 60, when + rng.randint(600, 5400)),
+                    reason=reason, trap_id=trap_id)
+    description = f"phantom report {ref} ({_shown(values, domain)}, {anchor.group}) later retracted: {reason}"
+    trap = Trap(trap_id, "retraction", "phantom", ref, description,
+                mishandles=[Mishandle(keep_retracted=(ref,)).to_dict()])
+    return _Candidate(trap, [phantom], [notice])
+
+
+def _canonical_thresholds(questions: Sequence[Question], key: str, units: Mapping[str, Sequence[Unit]]) -> list[float]:
+    """The thresholds the questions ask about on a field, in its canonical unit (see threshold_values)."""
+    steps = [Step(raw, units) for q in questions for raw in q.chain]
+    return [canonical_threshold(s) for s in steps if s.kind in ("at_least", "below") and s.field == key]
+
+
+def _across(threshold: float, value: float, spec: FieldSpec, rng: random.Random, reach: float) -> float:
+    """A stored value on the other side of `threshold` from `value`, at most `reach` beyond it: below it
+    when `value` passes an "at least" filter there, at or above it when it does not (filters compare as
+    ops does, with EPS)."""
+    step = 10.0 ** -spec.decimals
+    steps = rng.randint(0, max(0, round(reach / step) - 1))
+    if value >= threshold - EPS:
+        wrong = round(threshold, spec.decimals)
+        while wrong >= threshold - EPS:
+            wrong = round(wrong - step, spec.decimals)
+        return wrong - steps * step
+    wrong = round(threshold, spec.decimals)
+    while wrong < threshold - EPS:
+        wrong = round(wrong + step, spec.decimals)
+    return wrong + steps * step
+
+
+def _record_conflict(trap_id: str, site: _Site) -> _Candidate | None:
+    rng, records, domain = site.rng, site.events, site.domain
+    e = _pick_unused(records, site.used, rng)
+    if e is None:
+        return None
+    spec = rng.choice([s for s in domain.fields if s.correctable] or list(domain.fields))
+    value, spread = e.values[spec.key], _spread(records, spec)
+    thresholds = _canonical_thresholds(site.questions, spec.key, domain.units)
+    if thresholds and rng.random() < 0.7:  # aim the wrong value across a threshold that is asked about
+        wrong = _across(rng.choice(thresholds), value, spec, rng, reach=0.1 * spread)
+    else:
+        wrong = value + rng.choice((-1, 1)) * rng.uniform(0.2, 0.45) * spread
+    wrong = _stored(wrong, spec)
+    if abs(wrong - value) <= max(spec.tolerance[0], spec.tolerance[1] * abs(value)):
+        return None  # a careless reader would still be right
+    unit = "" if spec.canonical_unit is None else f" {spec.canonical_unit}"
+    final, draft = domain.statuses
+    if spec.correctable and rng.random() < 0.5:  # the settling report shows the wrong value, a correction fixes it
+        index = next(i for i, r in enumerate(site.reports) if r.ref == e.id and r.role == "primary")
+        primary = site.reports[index]
+        shown = replace(primary, values={**primary.values, spec.key: wrong}, role="conflict", trap_id=trap_id)
+        issued = min(site.compiled_at - 30, max(e.time + 30, e.time + rng.randint(900, 7200)))
+        notice = Notice(kind="correction", target=e.id, time=issued, trap_id=trap_id, field=spec.key, new_value=value,
+                        old_value=wrong, qualifier=e.qualifiers.get(spec.qualifier) if spec.qualifier else None)
+        description = (f"{e.id} filed with {spec.label} {plain_number(wrong)}{unit} on its {final} report, then "
+                       f"CORRECTED to {plain_number(value)}{unit}")
+        trap = Trap(trap_id, "conflicting_value", "correction", e.id, description,
+                    mishandles=[Mishandle(ignore_correction_for=(e.id,)).to_dict()])
+        return _Candidate(trap, [], [notice], replace_at=(index, shown))
+    # A second report under the same ID disagrees with the settling one. A careless reader either takes
+    # its value, or counts it as a record of its own.
+    source = e.source if rng.random() < 0.5 else rng.choice(_rereporters(site, e.source))
+    second = RecordReport(ref=e.id, source=source, status=draft, time=e.time, lat=e.lat, lon=e.lon, group=e.group,
+                          values={**e.values, spec.key: wrong}, qualifiers=dict(e.qualifiers), place=e.place,
+                          role="conflict", trap_id=trap_id)
+    description = (f"{e.id} also reported with {spec.label} {plain_number(wrong)}{unit} ({draft}, {source}) beside the "
+                   f"{final} {plain_number(value)}{unit}")
+    trap = Trap(trap_id, "conflicting_value", "second_report", e.id, description,
+                mishandles=[Mishandle(prefer_preliminary_for=(e.id,)).to_dict(),
+                            Mishandle(split=((e.id, source, draft),)).to_dict()])
+    return _Candidate(trap, [second], [])
+
+
+EARTHQUAKE_BUILDERS = Builders(primary_report, _duplicate, _phantom, _conflict)  # the 0.2.0 builders
 
 
 def builders_for(domain: Domain) -> Builders:
-    """The builders that plant traps in a domain's digests."""
-    if domain.name not in BUILDERS:
-        raise NotImplementedError(f"no trap builders for the {domain.name!r} domain")
-    return BUILDERS[domain.name]
+    """The builders that plant traps in a domain's digests. Earthquake domains (whose records are 0.2.0
+    Events and Reports) keep the 0.2.0 builders; every other domain's Records are planted by the generic
+    builders, whose settling reports carry the domain's first status."""
+    if isinstance(domain, Earthquakes):
+        return EARTHQUAKE_BUILDERS
+    return Builders(functools.partial(record_report, status=domain.statuses[0]), _record_duplicate, _record_phantom,
+                    _record_conflict)
 
 
 def inject_traps(events: list[Event], questions: list[Question], rng: random.Random, *, compiled_at: int,

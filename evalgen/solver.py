@@ -10,8 +10,9 @@ Both receive each question's operation chain (its machine-readable meaning) inst
 the English wording: the point is to test the digest, not to build a language-understanding
 system. Language models, of course, only ever get the English prompt.
 
-The line parsers below read the classic genre (the 0.2.0 digest). A prompt of a non-legacy run is
-read by the parser of its genre (see evalgen.genres), named by the caller or recognised by sniffing.
+The line parsers below read the classic genre's 0.2.0 digest of earthquakes. A prompt of a non-legacy
+run is read from its text alone: the glossary it prints (genres.base.parse_glossary), and the parser of
+the genre that recognises its digest (genres.detect_genre), unless the caller names the genre.
 """
 from __future__ import annotations
 
@@ -214,8 +215,9 @@ def parse_digest(text: str) -> DigestData:
 
 def read_digest(prompt: str, genre: str | None = None, domain: Domain | None = None) -> DigestData:
     """The reports and notices of a prompt's digest about `domain`'s records (earthquakes when not
-    given), read by the parser of the genre that wrote it: `genre` when it is known, or else the
-    genre that recognises the digest (genres.detect_genre)."""
+    given), read through the glossary the prompt prints (if any) by the parser of the genre that wrote
+    it: `genre` when it is known, or else the genre that recognises the digest (genres.detect_genre,
+    which falls back to classic)."""
     text = extract_digest(prompt)
     reader = get_genre(genre) if genre is not None else detect_genre(text)
     return reader.parse(text, parse_glossary(prompt), domain if domain is not None else get_domain())
@@ -224,8 +226,9 @@ def read_digest(prompt: str, genre: str | None = None, domain: Domain | None = N
 def _reading(prompt: str, domain: str | None, genre: str | None) -> tuple[DigestData, Domain | None, Units | None]:
     """A prompt's digest data, its domain and the units its chains use. Without a domain or a genre
     the prompt is a legacy one (earthquakes, classic), read exactly as 0.2.0 read it, and the domain
-    and units are None. Otherwise the units are those the prompt's glossary prints, when it prints
-    one (a domain whose unit words are drawn per instance is read through it), else the domain's."""
+    and units are None. Otherwise the prompt's glossary is read from its text, and the units are those
+    it prints (a domain whose unit words are drawn per instance is read through it), or the domain's
+    when it prints none."""
     if domain is None and genre is None:
         return parse_digest(extract_digest(prompt)), None, None
     records_domain = get_domain(domain)
@@ -239,8 +242,9 @@ def solve(prompt: str, questions: Sequence[dict], mode: str = "oracle", *, domai
     """Answer every question from the prompt text. mode: "oracle" or "naive".
 
     `domain` and `genre` name the instance's domain and the rendering's genre, as a non-legacy run
-    records them; without either, the prompt is read as 0.2.0 read it. The oracle applies the reading
-    rules of the instance's domain."""
+    records them; without either, the prompt is read as 0.2.0 read it. With the domain alone, the
+    prompt is read from its text: its glossary, and the genre that recognises its digest (falling back
+    to classic). The oracle applies the reading rules of the instance's domain (Domain.resolve)."""
     data, records_domain, units = _reading(prompt, domain, genre)
     resolver = resolve if records_domain is None else records_domain.resolve
     skip = ("dedupe",) if mode == "naive" else ()

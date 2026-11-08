@@ -19,8 +19,7 @@ from evalgen import pipeline, scoring
 from evalgen.audit import write_audit_sample
 from evalgen.digest import make_chatter
 from evalgen.domains import all_domains, get_domain
-from evalgen.domains.base import (GENERIC_CHATTER, Lexicon, Record, RecordReport, Surface, TrapVocab, Unit,
-                                  standard_lexicon)
+from evalgen.domains.base import GENERIC_CHATTER, Lexicon, Record, RecordReport, Surface, TrapVocab, standard_lexicon
 from evalgen.domains.earthquakes import EARTHQUAKES
 from evalgen.genres.classic import CLASSIC
 from evalgen.mix import Entry, choices, parse_mix, single_choice
@@ -33,6 +32,7 @@ from evalgen.report import TRAP_KINDS, answer_type_order, load_instances, model_
 from evalgen.scoring import get_answer_type, is_correct, normalize
 from evalgen.seeds import SeedLog
 from evalgen.sources import (build_domain_snapshot, events_sha256, load_snapshot, record_problems, save_snapshot)
+from evalgen.units import Unit
 from evalgen.util import read_json, sha256_hex, write_json
 
 from conftest import quiet
@@ -518,8 +518,8 @@ def test_the_standard_lexicon_words_every_operation_from_the_domains_words(toys)
 
 
 def toy_instance(c, index: int = 0) -> Instance:
-    """An instance of a composition, with one reviewed line per record, a correction and two traps (the
-    generic traps and renderings come with the generic classic genre, plan phase 1b)."""
+    """An instance of a composition, assembled by hand: one reviewed line per record, a correction and two
+    traps (instances that the pipeline plants and renders are tested in test_record_digests.py)."""
     bound, questions = c.domain, c.questions
     reports = [RecordReport(ref=r.id, source=r.source, status="reviewed", time=r.time, lat=r.lat, lon=r.lon,
                             group=r.group, values=dict(r.values), qualifiers=dict(r.qualifiers)) for r in c.events]

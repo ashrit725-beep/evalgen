@@ -329,6 +329,13 @@ def _nouns(inst: Instance) -> tuple[str, str]:
     return domain.noun, domain.plural
 
 
+def _record_word(instances: Iterable[Instance]) -> str:
+    """What a report calls one of the run's records: "quake" in a legacy run (as 0.2.0 did), else the
+    word its instances share ("reading"), or "record" when their words differ."""
+    words = {"quake" if inst.domain is None else _nouns(inst)[0] for inst in instances}
+    return words.pop() if len(words) == 1 else "record"
+
+
 def _table(headers: list[str], rows: list[list[Any]]) -> list[str]:
     out = ["| " + " | ".join(headers) + " |", "|" + "|".join("---" for _ in headers) + "|"]
     out += ["| " + " | ".join(_cell(c) for c in row) + " |" for row in rows]
@@ -383,9 +390,9 @@ def render_markdown(data: dict, run_dir: Path) -> str:
                    f"{m['format']['strict']} / {m['format']['lenient']} / {m['format']['failed']} "
                    f"({m['format']['api_errors']})"] for m in models])
     md += ["`oracle` reads only the digest text and applies the reading rules, so it should score 100%. That shows every "
-           "item is answerable from the text. `naive` treats every line as a separate quake and ignores notices. "
-           "`mock` is a *simulated* model with built-in benchmark contamination, used to exercise the metrics without "
-           "API keys; it is not a language model.", ""]
+           f"item is answerable from the text. `naive` treats every line as a separate {_record_word(instances.values())} "
+           "and ignores notices. `mock` is a *simulated* model with built-in benchmark contamination, used to exercise "
+           "the metrics without API keys; it is not a language model.", ""]
     for m in models:
         f = m["format"]
         if f["api_errors"]:

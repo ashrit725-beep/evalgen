@@ -1,4 +1,5 @@
-"""Genres: classic is the 0.2.0 renderer and parser, draw for draw; genre modules and plugins are
+"""Genres: classic is the 0.2.0 renderer and parser on earthquakes, draw for draw (its version for the
+records of other domains is tested in test_record_digests.py); genre modules and plugins are
 discovered like domains; a reader picks the parser of the genre that wrote a digest by sniffing and
 falls back to classic, so every legacy digest is read exactly as 0.2.0 read it; and a genre plan
 renders an instance's variants in other genres while the oracle still reads every one of them."""
@@ -13,7 +14,6 @@ import pytest
 
 from evalgen import genres, pipeline
 from evalgen.digest import choose_style, render_digest
-from evalgen.domains.base import Domain, Glossary
 from evalgen.domains.earthquakes import EARTHQUAKES
 from evalgen.genres import DEFAULT_GENRE, Registry, all_genres, detect_genre, get_genre
 from evalgen.genres.base import RenderContext, parse_glossary
@@ -57,22 +57,6 @@ def test_classic_parses_exactly_as_020(instances):
             assert CLASSIC.parse(rendering.digest, None, EARTHQUAKES) == legacy  # a legacy prompt prints no glossary
             assert CLASSIC.parse(rendering.digest, glossary, EARTHQUAKES) == legacy
             assert read_digest(rendering.prompt) == read_digest(rendering.prompt, "classic", EARTHQUAKES) == legacy
-
-
-def test_classic_leaves_other_domains_to_the_generic_record_path(instances):
-    class Toy(Domain):
-        name = "toy"
-
-    inst = instances[0]
-    rendering = inst.renderings[0]
-    ctx = RenderContext(inst.reports, inst.notices, inst.chatter, compiled_at=inst.compiled_at,
-                        window_hours=inst.window_hours, style=rendering.style, rng=random.Random(0), domain=Toy())
-    glossary = Glossary("item", "items", "item ID", "depot", "yard")
-    for attempt in (lambda: CLASSIC.choose_style(random.Random(0), Toy()), lambda: CLASSIC.render(ctx),
-                    lambda: CLASSIC.parse(rendering.digest, glossary, Toy()),
-                    lambda: read_digest(rendering.prompt, "classic", Toy())):
-        with pytest.raises(NotImplementedError, match="phase 1b"):
-            attempt()
 
 
 # --------------------------------------------------------------------- registry and dispatch

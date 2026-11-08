@@ -19,7 +19,7 @@ import pytest
 
 from evalgen import domains, scoring
 from evalgen.domains import DEFAULT_DOMAIN, Registry, all_domains
-from evalgen.domains.base import KM, LENGTH, MI, Domain, FieldSpec, GlossaryField, Record, RecordReport, Unit
+from evalgen.domains.base import Domain, FieldSpec, GlossaryField, Record, RecordReport
 from evalgen.domains.earthquakes import EARTHQUAKES
 from evalgen.geo import from_km, to_km
 from evalgen.models import Instance, Notice
@@ -29,6 +29,7 @@ from evalgen.questions import _answer_steps, _quantity, fmt_num
 from evalgen.rules import Mishandle, report_to_event
 from evalgen.scoring import AnswerType, equivalent, is_correct, normalize, register_answer_type
 from evalgen.solver import parse_digest
+from evalgen.units import KM, LENGTH, MI, Unit
 from evalgen.util import plain_number, utc_iso, write_json
 
 from generic_quakes import GenericQuakes
@@ -338,7 +339,7 @@ def test_printed_values_read_back_exactly_in_every_unit():
         for unit in spec.units:
             for value in values:
                 text = spec.encode(value, unit)
-                assert spec.decode(float(text), unit) == glossary_field.decode(float(text), unit) == value
+                assert spec.decode(text, unit) == glossary_field.decode(text, unit) == value
                 assert len(text.partition(".")[2]) <= 3, (value, unit.symbol, text)
                 printed += 1
     assert printed == 2 * (851 + 2344)

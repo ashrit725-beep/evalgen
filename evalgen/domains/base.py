@@ -5,7 +5,6 @@ objects, ...): its vocabulary, its numeric fields and their units, a seeded synt
 optionally a live source, its ID scheme, the wording of its traps and its reading rules. Operations,
 templates, traps, genres and scoring are written once against this interface.
 
-    Unit          a unit a value is printed in, and its affine map to the field's canonical unit
     FieldSpec     one numeric field: labels, units, answer type, guard margins and threshold draws
     Spatial       distance questions in a domain whose records have a location: radii and guards
     Lexicon       how questions word a domain's records and operations
@@ -18,7 +17,9 @@ templates, traps, genres and scoring are written once against this interface.
     Surface       the words one instance uses for a domain whose surface is drawn per instance
     Domain        the base class; each domain module exports an instance as ``DOMAIN``
 
-``standard_lexicon`` words the questions of any domain from its own vocabulary and field labels.
+Units, and the exact codec of the numbers printed in them, live in evalgen.units.
+``standard_lexicon`` words the questions of any domain from its own vocabulary and field labels, and
+``record_rules`` writes the reading rules of any domain that prints none of its own.
 
 Earthquakes keep their 0.2.0 record types (``models.Event`` and ``models.Report``), which expose the
 same generic names as Record and RecordReport: ``values``, ``group`` and ``source``.
@@ -27,95 +28,17 @@ from __future__ import annotations
 
 import copy
 import random
+import textwrap
 from dataclasses import asdict, dataclass, field, replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence
 
-from ..geo import KM_PER_MILE
 from ..scoring import AnswerType, answer_type_conflict
+from ..units import LENGTH, ExactValues, Unit
 
 if TYPE_CHECKING:
     from ..models import Notice
     from ..rules import Mishandle
-
-
-@dataclass(frozen=True)
-class Unit:
-    """A unit a field's value can be printed or asked in: canonical = value × scale + offset.
-
-    Scale and offset are relative to the field's canonical unit, so one symbol can mean different
-    things in different fields: km is the canonical unit of a depth, but 1 / 149597870.7 of the
-    canonical au of a miss distance. The offset makes the map affine, as °F needs. A unit whose values
-    are on another scale than the field's stored ones (inches of mercury beside hectopascals) can set
-    its own precision, scoring tolerance and threshold step; the others use the field's (a tolerance
-    converted into the unit, see FieldSpec.unit_tolerances)."""
-
-    symbol: str  # printed after a number: "km", "mi", "°F"
-    words: str  # written in a question: "km", "miles", "degrees Fahrenheit"
-    scale: float = 1.0
-    offset: float = 0.0
-    decimals: int | None = None  # places of answers and restated thresholds in this unit (None: the field's)
-    tolerance: tuple[float, float] | None = None  # (abs, rel) of answers in this unit (None: the field's)
-    step: float | None = None  # thresholds asked in this unit are rounded to it (None: the field's threshold_step)
-
-    def to_canonical(self, value: float) -> float:
-        return value * self.scale + self.offset
-
-    def from_canonical(self, value: float) -> float:
-        return (value - self.offset) / self.scale
-
-    def places(self, default: int) -> int:
-        """Decimal places of a value written in this unit: its own, or else `default` (the field's)."""
-        return default if self.decimals is None else self.decimals
-
-    def to_dict(self) -> dict[str, Any]:
-        """The unit as JSON (a drawn surface stores its units), without the attributes left at default."""
-        defaults = Unit("", "")
-        return {name: list(value) if isinstance(value, tuple) else value for name, value in asdict(self).items()
-                if name in ("symbol", "words") or value != getattr(defaults, name)}
-
-    @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> Unit:
-        tolerance = d.get("tolerance")
-        return cls(**{**d, "tolerance": None if tolerance is None else tuple(tolerance)})
-
-
-KM = Unit("km", "km")
-MI = Unit("mi", "miles", KM_PER_MILE)
-LENGTH = (KM, MI)  # depths, radii and distances: stored in km, printed in km or miles
-
-
-def find_unit(units: Iterable[Unit], symbol: str) -> Unit:
-    """The unit printed as `symbol` among `units`."""
-    for unit in units:
-        if unit.symbol == symbol:
-            return unit
-    raise ValueError(f"unknown unit {symbol!r}")
-
-
-class ExactValues:
-    """Printing a field's stored values so that a reader recovers them exactly (FieldSpec, and
-    GlossaryField for a reader that knows only the prompt). Stored values have `decimals` places in
-    the canonical unit. Converting a printed value back is rarely exact (most tenths of a degree
-    Celsius have no decimal form in Fahrenheit that converts back to them), so a printed value is
-    converted and then rounded to the stored places."""
-
-    decimals: int
-
-    def decode(self, printed: float, unit: Unit | None = None) -> float:
-        """The stored value that a number printed in `unit` (None: the canonical unit) stands for."""
-        return round(printed if unit is None else unit.to_canonical(printed), self.decimals)
-
-    def encode(self, value: float, unit: Unit | None = None) -> str:
-        """A stored value printed in `unit` (None: the canonical unit), with the fewest decimals that
-        decode back to it. A value with more places than the field stores has no such form."""
-        shown = value if unit is None else unit.from_canonical(value)
-        for places in range(16):
-            text = f"{shown:.{places}f}"
-            if self.decode(float(text), unit) == value:
-                return text
-        raise ValueError(f"{value!r} cannot be printed in {unit.symbol if unit else 'its canonical unit'} so "
-                         f"that it reads back exactly: is it stored to {self.decimals} decimal places?")
 
 
 @dataclass(frozen=True)
@@ -176,7 +99,8 @@ class FieldSpec(ExactValues):
 class Spatial:
     """Distance questions in a domain whose records have a location (lat, lon): the radii a
     within_distance question asks about, and the guards that keep distance answers unambiguous.
-    Distances are great-circle km, asked in km or miles (LENGTH) and answered to `decimals` places."""
+    Distances are great-circle km, asked in km or miles (LENGTH) and answered to `decimals` places.
+    Latitudes and longitudes are stored to `coord_decimals` places, which digests print exactly."""
 
     radii: Mapping[str, tuple[int, ...]]  # within_distance radii by unit symbol
     margin: tuple[float, float]  # (km, rel): no record lies within max(km, rel × radius) of a radius
@@ -185,6 +109,7 @@ class Spatial:
     point_offset_km: tuple[float, float]  # a question's point lies this far from a random record
     point_label: str  # names a question's point: "station {source}-{number}"
     decimals: int = 1
+    coord_decimals: int = 3
 
 
 @dataclass(frozen=True)
@@ -261,7 +186,7 @@ class RecordReport:
 
     ref: str  # the identifier printed on the line
     source: str
-    status: str  # "reviewed" or "preliminary"
+    status: str  # one of its domain's statuses: "reviewed" or "preliminary"
     time: int
     lat: float | None
     lon: float | None
@@ -277,32 +202,43 @@ class RecordReport:
 
 @dataclass(frozen=True)
 class GlossaryField(ExactValues):
-    """One numeric field as a glossary defines it: its label, its units with their conversions and
-    the places its values are stored to, which is what a reader needs to read every printed value
-    back exactly (see ExactValues.decode)."""
+    """One numeric field as a glossary defines it: its key, its label, its units with their
+    conversions (Unit.for_readers) and the places its values are stored to, which is what a reader
+    needs to read every printed value back exactly (see evalgen.units), and the key of the qualifier
+    printed with its values, if it has one."""
 
-    key: str  # its key in record values and in question chains: "depth"
+    key: str  # its key in record values, in question chains and in log lines: "depth"
     label: str  # its name in the text: "depth"
     canonical_unit: str | None  # the unit values are stored in (None: unitless)
     units: tuple[Unit, ...]  # the units its values may be printed in
     decimals: int  # places of stored values, in the canonical unit
+    qualifier: str | None = None  # the key of the qualifier printed with its values: "probe"
 
 
 @dataclass(frozen=True)
 class Glossary:
-    """A prompt's data dictionary: what the records are called, how their ID, source and group are
-    labelled, and the label, units and precision of each numeric field (``Domain.glossary``).
-    Non-legacy prompts print it (prompt assembly, plan phase 1b), so that a reader, and a genre's
-    parser, learn every label and unit from the prompt itself: it is the only way to read a domain
-    whose surface words are drawn per instance. Legacy (0.2.0) prompts print none. It never names the
-    domain's registry name, which a held-out plugin keeps private."""
+    """A prompt's data dictionary: what the records are called, how their IDs look, how their source
+    and group are labelled, which status settles a record's values, whether records have a position
+    (and to how many places), and the key, label, units and precision of each numeric field
+    (``Domain.glossary``). Non-legacy prompts print it (evalgen.genres.base.render_glossary), so that a
+    reader, and a genre's parser, learn every word, unit and ID pattern from the prompt itself: it is
+    the only way to read a domain whose surface words are drawn per instance. Legacy (0.2.0) prompts
+    print none. It never names the domain's registry name, which a held-out plugin keeps private."""
 
     noun: str
     plural: str
     id_label: str
+    id_pattern: str  # a record ID, as a regex over lower-cased text (Domain.id_pattern)
     source_label: str
     group_label: str
+    statuses: tuple[str, str]  # the status that settles a record's values, then the one that does not
+    coord_decimals: int | None  # places of latitudes and longitudes; None: records have no position
     fields: tuple[GlossaryField, ...] = ()
+
+    @property
+    def located(self) -> bool:
+        """Records have a position (lat, lon)."""
+        return self.coord_decimals is not None
 
     @property
     def units(self) -> dict[str, tuple[Unit, ...]]:
@@ -491,6 +427,9 @@ class Domain:
     id_prefix: str | None = None  # how every record ID begins, for a domain whose surface draws another
     id_answer_type: str  # answer type naming a record (argmax, rank, nearest_to): "event_id"
     group_answer_type: str  # answer type naming a group (compare_groups): "region"
+    # The status of a report that settles its record's values, then that of a report that does not (a
+    # re-report, or an early report the settling one supersedes), as digests print them.
+    statuses: tuple[str, str] = ("reviewed", "preliminary")
     trap_vocab: TrapVocab
     chatter: tuple[str, ...] = GENERIC_CHATTER  # lines without data that digests mix in (digest.make_chatter)
     # Set by a domain whose surface words (record noun, labels, unit words, ID prefix, group names) are
@@ -536,6 +475,8 @@ class Domain:
           - each field's canonical unit is one of its units, with scale 1 and offset 0, and no
             threshold margin is smaller than the rounding of a threshold restated in another unit;
           - each field's tolerance makes sense in every unit an answer can be asked in;
+          - fields have keys and labels of their own, and a unit symbol has one wording throughout;
+          - it has two status words and every kind of trap word that digests print;
           - each op name is the 0.2.0 alias of the kind and field it names (no other name runs),
             reading that field in the domain's units and answering with the domain's types;
           - P01-P12 bind to its primary and secondary fields, and its lexicon words every filter a
@@ -545,9 +486,27 @@ class Domain:
         missing = [name for name in REQUIRED_ATTRIBUTES if not hasattr(self, name)]
         if missing:
             raise ValueError(f"{type(self).__name__} does not set {', '.join(missing)}")
-        problems = self._unit_problems() + self._op_problems() + self._answer_type_problems()
+        problems = (self._unit_problems() + self._word_problems() + self._op_problems()
+                    + self._answer_type_problems())
         if problems:
             raise ValueError(f"domain {self.name!r}: " + "; ".join(problems))
+
+    def _word_problems(self) -> list[str]:
+        """Words a digest prints that a reader must be able to tell apart, or that genres draw from."""
+        problems = []
+        for what in ("key", "label"):
+            names = [getattr(spec, what) for spec in self.fields]
+            if len(set(names)) != len(names):
+                problems.append(f"two fields have the same {what}")
+        wordings: dict[str, str] = {}
+        for unit in [u for spec in self.fields for u in spec.units] + (list(LENGTH) if self.has_location else []):
+            if wordings.setdefault(unit.symbol, unit.words) != unit.words:
+                problems.append(f"the unit {unit.symbol} is worded both {wordings[unit.symbol]!r} and {unit.words!r}")
+        if len(self.statuses) != 2 or len(set(self.statuses)) != 2 or not all(self.statuses):
+            problems.append(f"its statuses {self.statuses!r} are not two different words")
+        problems += [f"its trap vocabulary has no {name.replace('_', ' ')}"
+                     for name, words in asdict(self.trap_vocab).items() if not words]
+        return problems
 
     def _unit_problems(self) -> list[str]:
         problems = []
@@ -645,7 +604,8 @@ class Domain:
         if drawn.chatter is not None:
             bound.chatter = drawn.chatter
         bound.lexicon = bound.surface_lexicon() if drawn.lexicon is None else drawn.lexicon
-        problems = self._surface_problems(drawn) + bound._unit_problems() + bound._op_problems()
+        problems = (self._surface_problems(drawn) + bound._unit_problems() + bound._word_problems()
+                    + bound._op_problems())
         if problems:
             raise ValueError(f"domain {self.name!r} cannot be bound to its surface: " + "; ".join(problems))
         return bound
@@ -692,12 +652,18 @@ class Domain:
         """How much likelier than others a record is to be drawn into a digest (1: all alike)."""
         return 1.0
 
-    def glossary(self) -> Glossary:
-        """The data dictionary that non-legacy prompts print: what the records, their IDs, sources
-        and groups are called, and each field's label, units with their conversions and precision.
-        Bind a drawn surface first to get the glossary of one instance."""
-        numeric = tuple(GlossaryField(s.key, s.label, s.canonical_unit, s.units, s.decimals) for s in self.fields)
-        return Glossary(self.noun, self.plural, self.id_label, self.source_label, self.group_label, numeric)
+    def glossary(self, surface: Mapping[str, Any] | None = None) -> Glossary:
+        """The data dictionary that non-legacy prompts print, in the words of `surface` (a drawn
+        Surface's dict; None: the domain's own words, or those of the surface it is bound to): what the
+        records, their IDs, sources and groups are called, the ID pattern, the status words, the
+        precision of positions, and each field's key, label, units with their conversions, precision
+        and qualifier."""
+        domain = self.bind(surface)
+        numeric = tuple(GlossaryField(s.key, s.label, s.canonical_unit, tuple(u.for_readers() for u in s.units),
+                                      s.decimals, s.qualifier) for s in domain.fields)
+        coord_decimals = None if domain.spatial is None else domain.spatial.coord_decimals
+        return Glossary(domain.noun, domain.plural, domain.id_label, domain.id_pattern, domain.source_label,
+                        domain.group_label, tuple(domain.statuses), coord_decimals, numeric)
 
     def synthetic(self, rng: random.Random, n: int, compiled_at: int, window_hours: int) -> list[ResolvedRecord]:
         """`n` seeded records inside the window that ends at `compiled_at`; never reads the clock."""
@@ -711,11 +677,10 @@ class Domain:
         """A fresh ID shaped like `example`, added to `taken`, so planted lines carry no tell-tale ID."""
         raise NotImplementedError(f"{type(self).__name__} has no ID scheme")
 
-    # The generic, genre-neutral reading rules shared by the domains that print none of their own come
-    # with prompt assembly (plan phase 1b).
     def rules_text(self) -> str:
-        """The reading rules printed in every prompt."""
-        raise NotImplementedError(f"{type(self).__name__} has no reading rules")
+        """The reading rules printed in every prompt: the genre-neutral rules of every record domain,
+        in this domain's words (``record_rules``). A domain with rules of its own overrides it."""
+        return record_rules(self)
 
     @property
     def qualifier_keys(self) -> dict[str, str]:
@@ -726,11 +691,11 @@ class Domain:
                 mishandle: Mishandle | None = None) -> list[ResolvedRecord]:
         """The reading rules in code: one record per real thing (see rules.resolve). Every reader of
         a digest uses it: the oracle, trap grading and the generator's own checks. The generic rules
-        settle a record by its "reviewed" report and store a corrected qualifier under its field's
-        qualifier key."""
+        settle a record by its report of the first of its statuses ("reviewed") and store a corrected
+        qualifier under its field's qualifier key."""
         from ..rules import resolve  # imported here: rules imports this module
 
-        return resolve(reports, notices, mishandle, qualifiers=self.qualifier_keys)
+        return resolve(reports, notices, mishandle, authoritative=self.statuses[0], qualifiers=self.qualifier_keys)
 
 
 def _margin_problems(name: str, margin: float, units: Sequence[Unit], decimals: int) -> list[str]:
@@ -840,3 +805,54 @@ def standard_lexicon(domain: Domain) -> Lexicon:
 def _literal(text: str) -> str:
     """`text` inside a str.format template, standing for itself."""
     return text.replace("{", "{{").replace("}", "}}")
+
+
+RULES_WIDTH = 100  # record_rules wraps each rule at this many columns
+
+
+def record_rules(domain: Domain) -> str:
+    """The reading rules of a domain that prints none of its own, in its words: which report settles a
+    record, how re-reports, corrections and retractions read, units, positions and times, and that
+    nothing else in a digest carries data. They are genre-neutral: they say what a notice, a note, a
+    repeat and a message time are in any kind of document, and they quote every phrase the domain's
+    notices print (its trap vocabulary), so that no notice is a gotcha."""
+    noun, id_label, source, group = domain.noun, domain.id_label, domain.source_label, domain.group_label
+    final, draft = (f'"{status}"' for status in domain.statuses)
+    vocab = domain.trap_vocab
+    position = (" Positions are latitude then longitude in decimal degrees; signed values are negative for south "
+                "and west. Distances are great-circle distances on a sphere of radius 6371 km."
+                if domain.has_location else "")
+    rules = (
+        f"Every {noun} has exactly one {id_label}: the ID printed on its {final} report. A {noun} may appear in "
+        f"several reports: a {draft} report from its own {source}, or a re-report from another {source}, either "
+        f"under the same {id_label} or under its own reference with a note naming the {id_label} it repeats. "
+        f"Reports with the same {id_label}, or that name it in such a note, are the same {noun}. Count each {noun} "
+        f"once and refer to it by its {id_label}.",
+        f"If reports of the same {noun} disagree, use the values from its {final} report: {draft} values are "
+        "superseded.",
+        "A notice is a message about an earlier report, not a report itself. A correction (a CORRECTION notice, a "
+        f"notice saying that a value was revised, or any notice saying {_alternatives(vocab.correction_notices)}) "
+        f"replaces the stated value for the named {noun}, even on a {final} report.",
+        f"A retraction (a RETRACTION notice, a notice saying that a report was not a real {noun}, or any notice "
+        f"saying {_alternatives(vocab.retraction_notices)}) means the named report was not a real {noun}: ignore "
+        "that report completely.",
+        "Each value may be given in any unit the glossary lists for its field: convert it as the glossary says. "
+        "Values are compared as plain numbers once rules 2 and 3 have settled them." + position,
+        "Times may be in UTC or in another time zone with its UTC offset stated. A report's time is when its "
+        f"{noun} was recorded; a notice's time is when the notice was issued. The time at which a message was sent, "
+        f"forwarded or relayed is never the time of a {noun}. A time window includes its start and excludes its "
+        "end.",
+        "A quoted, forwarded or read-back repeat of an earlier report or notice is not a new report or notice.",
+        f"A {group} in a question is the {group} printed on the report, matched exactly as written.",
+        "Lines that are neither reports nor notices (headers, section titles, status messages, editor's notes, "
+        "reminders, greetings, signatures) carry no data and change nothing.",
+    )
+    wrapped = [textwrap.fill(f"{number}. {rule}", width=RULES_WIDTH, subsequent_indent="   ", break_long_words=False,
+                             break_on_hyphens=False) for number, rule in enumerate(rules, start=1)]
+    return "\n".join(["Reading rules:", *wrapped]) + "\n"
+
+
+def _alternatives(phrases: Sequence[str]) -> str:
+    """'"a"', '"a" or "b"', '"a", "b" or "c"': phrases quoted, as a list of alternatives."""
+    quoted = [f'"{phrase}"' for phrase in phrases]
+    return quoted[0] if len(quoted) == 1 else ", ".join(quoted[:-1]) + " or " + quoted[-1]

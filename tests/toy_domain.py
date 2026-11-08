@@ -18,8 +18,9 @@ import math
 import random
 from dataclasses import dataclass, replace
 
-from evalgen.domains.base import Domain, FieldSpec, Record, Spatial, Surface, TrapVocab, Unit, standard_lexicon
+from evalgen.domains.base import Domain, FieldSpec, Record, Spatial, Surface, TrapVocab, standard_lexicon
 from evalgen.geo import destination
+from evalgen.units import Unit
 
 CELSIUS = Unit("°C", "degrees Celsius")
 FAHRENHEIT = Unit("°F", "degrees Fahrenheit", 5 / 9, -160 / 9, step=1.0)
@@ -67,24 +68,6 @@ AREAS = (
 )
 SOURCES = tuple(sorted({area.source for area in AREAS}))
 PROBES = ("hull", "spar", "drifter")
-
-RULES = """\
-Reading rules (identical for every digest):
-1. Every {noun} has exactly one {id_label}: the ID printed on its REVIEWED report. A {noun} may be
-   reported again: PRELIMINARY by its own {source_label}, or relayed by another {source_label}, either
-   under the same {id_label} or under its own reference with a note naming the {id_label} it repeats.
-   Such reports are the same {noun}: count it once and refer to it by its {id_label}.
-2. If reports of the same {noun} disagree, use the values of its REVIEWED report.
-3. A correction (any notice saying that a value was revised or corrected) replaces the stated value of
-   the named {noun}, even on a reviewed report.
-4. A retraction (any notice saying that a report was retracted or withdrawn) means the named report
-   was not a real {noun}: ignore that report completely.
-5. A value may be given in any unit the glossary lists for it; convert it as the glossary says.
-6. Times may be in UTC or in local time with the UTC offset stated. A report's time is when its {noun}
-   was taken; a notice's time is when it was issued. A time window includes its start and excludes its
-   end.
-7. Lines that are neither reports nor notices carry no data and change nothing.
-"""
 
 # Surface words of the dressed variant.
 NOUNS = (("reading", "readings"), ("observation", "observations"), ("log entry", "log entries"))
@@ -162,9 +145,6 @@ class Toy(Domain):
             if ref not in taken:
                 taken.add(ref)
                 return ref
-
-    def rules_text(self) -> str:
-        return RULES.format(**self.words)
 
     def draw_surface(self, rng: random.Random) -> dict:
         noun, plural = rng.choice(NOUNS)
