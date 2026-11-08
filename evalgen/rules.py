@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Iterable
 
+from .domains.base import Record, RecordReport
 from .models import Event, Notice, Report
 
 READING_RULES = """\
@@ -97,9 +98,15 @@ def report_to_event(report: Report, event_id: str) -> Event:
     )
 
 
-def resolve(reports: Iterable[Report], notices: Iterable[Notice], mishandle: Mishandle | None = None) -> list[Event]:
-    """Apply the reading rules: drop retracted reports, merge re-reports, prefer REVIEWED values,
-    apply corrections. Returns one Event per real earthquake."""
+def resolve(reports: Iterable[Report | RecordReport], notices: Iterable[Notice], mishandle: Mishandle | None = None,
+            *, authoritative: str = "reviewed", field: str = "mag",
+            qualifier: str | None = "mag_type") -> list[Event | Record]:
+    """Apply the reading rules: drop retracted reports, merge re-reports, prefer the values of the
+    `authoritative` (REVIEWED) report, apply corrections. Returns one record per real thing: an
+    Event per earthquake, or a Record for the RecordReports of a generic domain.
+
+    A correction revises `field` and its qualifier `qualifier` (the magnitude and its type). A 0.2.0
+    notice gives the new magnitude and type; a generic notice gives a new value, and may name its field."""
     m = mishandle or Mishandle()
     notices = list(notices)
     retracted = {n.target for n in notices if n.kind == "retraction"} - set(m.keep_retracted)
@@ -108,33 +115,72 @@ def resolve(reports: Iterable[Report], notices: Iterable[Notice], mishandle: Mis
     }
     split = {tuple(pair) for pair in m.split}
 
-    groups: dict[str, list[Report]] = {}
-    separate: list[Event] = []
+    groups: dict[str, list[Report | RecordReport]] = {}
+    separate: list[Event | Record] = []
     for r in reports:
-        event_id = r.same_as or r.ref
-        if r.ref in retracted or event_id in retracted:  # rule 4
+        record_id = r.same_as or r.ref
+        if r.ref in retracted or record_id in retracted:  # rule 4
             continue
-        if (r.ref, r.network, r.status) in split:  # mishandled re-report: counted as its own quake
-            separate.append(report_to_event(r, r.ref))
+        if (r.ref, r.source, r.status) in split:  # mishandled re-report: counted as its own record
+            separate.append(_as_record(r, r.ref))
             continue
-        groups.setdefault(event_id, []).append(r)  # rule 1
+        groups.setdefault(record_id, []).append(r)  # rule 1
 
-    events: list[Event] = []
-    for event_id, group in groups.items():
-        reviewed = [r for r in group if r.status == "reviewed"]
-        preliminary = [r for r in group if r.status != "reviewed"]
-        if event_id in m.prefer_preliminary_for and preliminary:
-            base = preliminary[0]
+    records: list[Event | Record] = []
+    for record_id, group in groups.items():
+        settled = [r for r in group if r.status == authoritative]
+        unsettled = [r for r in group if r.status != authoritative]
+        if record_id in m.prefer_preliminary_for and unsettled:
+            base = unsettled[0]
         else:
-            base = reviewed[0] if reviewed else group[0]  # rule 2
-        event = report_to_event(base, event_id)
-        fix = corrections.get(event_id)
-        if fix is not None and fix.new_mag is not None:  # rule 3
-            event = replace(event, mag=fix.new_mag, mag_type=fix.mag_type or event.mag_type)
-        events.append(event)
-    return events + separate
+            base = settled[0] if settled else group[0]  # rule 2
+        record = _as_record(base, record_id)
+        fix = corrections.get(record_id)
+        if fix is not None:  # rule 3
+            record = _corrected(record, fix, field, qualifier)
+        records.append(record)
+    return records + separate
 
 
-def naive_events(reports: Iterable[Report]) -> list[Event]:
-    """What a careless reader sees: every report line is a separate quake; notices are ignored."""
-    return [report_to_event(r, r.ref) for r in reports]
+def naive_events(reports: Iterable[Report | RecordReport]) -> list[Event | Record]:
+    """What a careless reader sees: every report line is a separate record; notices are ignored."""
+    return [_as_record(r, r.ref) for r in reports]
+
+
+def _as_record(report: Report | RecordReport, record_id: str) -> Event | Record:
+    if isinstance(report, RecordReport):
+        return _generic_record(report, record_id)
+    return report_to_event(report, record_id)
+
+
+def _corrected(record: Event | Record, fix: Notice, field: str, qualifier: str | None) -> Event | Record:
+    if isinstance(record, Record):
+        return _generic_correction(record, fix, field, qualifier)
+    if fix.new_mag is None:
+        return record
+    revised = {field: fix.new_mag}
+    if qualifier is not None:
+        revised[qualifier] = fix.mag_type or getattr(record, qualifier)
+    return replace(record, **revised)
+
+
+# ---------------------------------------------------------------- generic records (phase 1b)
+# The generic record path of plan phase 1b resolves RecordReports into Records here. These two
+# functions cover one correctable field per notice; phase 1b extends them if its domains need more.
+
+
+def _generic_record(report: RecordReport, record_id: str) -> Record:
+    return Record(id=record_id, time=report.time, lat=report.lat, lon=report.lon, group=report.group,
+                  source=report.source, values=dict(report.values), qualifiers=dict(report.qualifiers),
+                  place=report.place)
+
+
+def _generic_correction(record: Record, fix: Notice, field: str, qualifier: str | None) -> Record:
+    """A generic correction replaces the value of the field it names (or of `field`), and its
+    qualifier when it gives one."""
+    if fix.new_value is None:
+        return record
+    qualifiers = dict(record.qualifiers)
+    if qualifier is not None and fix.qualifier is not None:
+        qualifiers[qualifier] = fix.qualifier
+    return replace(record, values={**record.values, (fix.field or field): fix.new_value}, qualifiers=qualifiers)

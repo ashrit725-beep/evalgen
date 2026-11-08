@@ -15,6 +15,11 @@ and their wrong answers sit clearly outside the scoring tolerance; a trap that c
 still planted, as plain noise. Planted lines copy the style of the real ones: place notes that
 agree with their coordinates, the network's magnitude precision, and IDs that fit the network's
 own ID sequence, so the format gives nothing away.
+
+Placement, ranking and scoring are the same for every domain. What a trap looks like depends on the
+domain's records, so the builders are looked up per domain (``builders_for``), and they take the
+domain's trap vocabulary (re-reporting sources, retraction reasons), ID scheme and reading rules
+from the domain itself. Earthquakes keep the 0.2.0 builders.
 """
 from __future__ import annotations
 
@@ -24,17 +29,17 @@ import math
 import random
 import re
 from dataclasses import dataclass, replace
+from typing import Any, Callable, Sequence
 
+from .domains.base import Domain
+from .domains.earthquakes import EARTHQUAKES
 from .geo import COMPASS16, compass_point, destination, haversine_km, initial_bearing
-from .models import EVENT_ID_RE, Event, Notice, Question, Report, Trap
-from .ops import DigestData, execute
-from .rules import Mishandle, resolve
+from .models import Event, Notice, Question, Report, Trap
+from .ops import DigestData, Step, Units, execute
+from .rules import Mishandle
 from .scoring import TOLERANCE, normalize, same_answer
-from .sources import COORD_DECIMALS, mimic_event_id, new_event_id
+from .sources import COORD_DECIMALS
 
-REREPORTING_NETWORKS = ("us", "at", "pt", "ew")
-RETRACTION_REASONS = ("quarry blast", "mine blast", "false trigger from instrument noise", "sonic boom",
-                      "automatic solution with no real event")
 _PLACE = re.compile(r"^(\d+(?:\.\d+)?) km ([NSEW]{1,3}) of (.+)$")
 
 
@@ -55,6 +60,36 @@ class _Candidate:
     replace_at: tuple[int, Report] | None = None
 
 
+@dataclass
+class _Site:
+    """What a trap builder reads while one digest is being planted, and the bookkeeping it updates."""
+
+    domain: Domain
+    events: list[Event]
+    questions: list[Question]
+    rng: random.Random
+    compiled_at: int
+    window_start: int
+    id_style: str
+    reports: list[Report]  # the digest so far: a conflict may replace a reviewed report in it
+    taken: set[str]  # every ID in use, including the IDs drawn for candidates that were not chosen
+    used: set[str]  # records that already carry a duplicate or a conflict
+
+
+Builder = Callable[[str, _Site], _Candidate | None]
+
+
+@dataclass(frozen=True)
+class Builders:
+    """How one domain's digests are planted: the reviewed report of a record, and one builder per
+    kind of trap, which proposes a placement (or None when this attempt finds no room for one)."""
+
+    primary: Callable[[Any], Report]
+    duplicate: Builder
+    retraction: Builder
+    conflict: Builder
+
+
 def primary_report(e: Event) -> Report:
     return Report(ref=e.id, network=e.network, status="reviewed", time=e.time, lat=e.lat, lon=e.lon,
                   depth_km=e.depth_km, mag=e.mag, mag_type=e.mag_type, region=e.region, place=e.place)
@@ -68,27 +103,28 @@ def _apply(reports: list[Report], notices: list[Notice], c: _Candidate) -> tuple
     return reports + c.add_reports, list(notices) + c.add_notices
 
 
-def _single_readings(trap: Trap, questions: list[Question], data: DigestData):
+def _single_readings(trap: Trap, questions: list[Question], data: DigestData, units: Units):
     """(question, answer) for every question under each careless reading of this one trap."""
     for reading in trap.mishandles:
         mishandle = Mishandle.from_dict(reading)
         for q in questions:
-            yield q, execute(q.chain, data, mishandle=mishandle)
+            yield q, execute(q.chain, data, mishandle=mishandle, units=units)
 
 
-def _single_effects(trap: Trap, questions: list[Question], key: dict, data: DigestData) -> dict:
+def _single_effects(trap: Trap, questions: list[Question], key: dict, data: DigestData, units: Units) -> dict:
     """qid -> wrong answer, for questions a reader gets wrong when only this trap is misread."""
     out = {}
-    for q, answer in _single_readings(trap, questions, data):
+    for q, answer in _single_readings(trap, questions, data, units):
         if q.qid not in out and not same_answer(q.answer_type, answer, key[q.qid]):
             out[q.qid] = answer
     return out
 
 
-def _clear_of_tolerance_edge(trap: Trap, questions: list[Question], key: dict, data: DigestData) -> bool:
+def _clear_of_tolerance_edge(trap: Trap, questions: list[Question], key: dict, data: DigestData,
+                             units: Units) -> bool:
     """A misread numeric answer should be exactly right or clearly wrong (beyond twice the scoring
     tolerance), so that rounding in the digest cannot move a careless reader across the edge."""
-    for q, answer in _single_readings(trap, questions, data):
+    for q, answer in _single_readings(trap, questions, data, units):
         if q.answer_type not in TOLERANCE:
             continue
         a, k = normalize(q.answer_type, answer), normalize(q.answer_type, key[q.qid])
@@ -101,15 +137,16 @@ def _clear_of_tolerance_edge(trap: Trap, questions: list[Question], key: dict, d
 
 
 def score_traps(traps: list[Trap], questions: list[Question], key: dict, reports: list[Report],
-                notices: list[Notice]) -> None:
+                notices: list[Notice], *, domain: Domain = EARTHQUAKES) -> None:
     """Fill trap.affected (misread alone) and trap.fallen (misread alone or with any other traps).
 
     `fallen` keeps every misread answer that is not exactly the key, including ones the scorer would
     still accept, so that a careless reader whose rounded answer lands just past the edge is
     attributed to the trap. Answers are deduplicated by exact value."""
     data = DigestData(reports, notices)
+    units = domain.units
     for trap in traps:
-        trap.affected = _single_effects(trap, questions, key, data)
+        trap.affected = _single_effects(trap, questions, key, data, units)
         trap.fallen = {}
     choices = [[None] + list(range(len(t.mishandles))) for t in traps]  # None = read correctly
     for combo in itertools.product(*choices):
@@ -118,7 +155,7 @@ def score_traps(traps: list[Trap], questions: list[Question], key: dict, reports
             continue
         mishandle = Mishandle.merged(traps[i].mishandles[combo[i]] for i in misread)
         for q in questions:
-            answer = execute(q.chain, data, mishandle=mishandle)
+            answer = execute(q.chain, data, mishandle=mishandle, units=units)
             normal = normalize(q.answer_type, answer)
             if normal == normalize(q.answer_type, key[q.qid]):
                 continue
@@ -128,21 +165,34 @@ def score_traps(traps: list[Trap], questions: list[Question], key: dict, reports
                     bucket.append(answer)
 
 
+def threshold_values(questions: Sequence[Question], field: str) -> list[float]:
+    """The thresholds the questions ask about on a field, in question order and then chain order: the
+    value of every at_least or below step on it, named by its 0.2.0 alias or generically."""
+    values = []
+    for q in questions:
+        for raw in q.chain:
+            step = Step(raw)
+            if step.kind in ("at_least", "below") and step.field == field:
+                values.append(step["value"])
+    return values
+
+
 def _pick_unused(events: list[Event], used: set[str], rng: random.Random) -> Event | None:
     pool = [e for e in events if e.id not in used]
     return rng.choice(pool) if pool else None
 
 
-def _sequence_ref(network: str, events: list[Event], rng: random.Random, taken: set[str], when: int) -> str:
+def _sequence_ref(network: str, site: _Site, when: int) -> str:
     """A new ID that fits the network's own ID sequence at time `when`, as a real report would.
 
     Numeric IDs (ci41571656, nc75462032) get an unused value between the IDs of the events just before
     and after `when`, on the network's own step (e.g. NC IDs that all end in 2 or 7). Alphanumeric,
     time-coded IDs (aka2026vupcsv, us7000tvs3) keep the nearest-in-time neighbour's ID except its last
     two characters."""
-    same = sorted((e for e in events if e.network == network), key=lambda e: (e.time, e.id))
+    rng, taken, domain = site.rng, site.taken, site.domain
+    same = sorted((e for e in site.events if e.network == network), key=lambda e: (e.time, e.id))
     if not same:
-        return new_event_id(network, rng, taken)
+        return domain.new_id(network, rng, taken)
     letters = re.match(r"[a-z]+", same[0].id).group(0)
     bodies = [e.id[len(letters):] for e in same if e.id.startswith(letters)]
     if len(bodies) == len(same) and all(b.isdigit() for b in bodies) and len({len(b) for b in bodies}) == 1:
@@ -175,18 +225,17 @@ def _sequence_ref(network: str, events: list[Event], rng: random.Random, taken: 
         tail = "".join(rng.choice("0123456789") if c.isdigit() else rng.choice("abcdefghijklmnopqrstuvwxyz")
                        for c in nearest.id[-2:])
         ref = nearest.id[:-2] + tail
-        if ref not in taken and EVENT_ID_RE.fullmatch(ref):
+        if ref not in taken and re.fullmatch(domain.id_pattern, ref):
             taken.add(ref)
             return ref
-    return mimic_event_id(nearest.id, rng, taken)
+    return domain.mimic_id(nearest.id, rng, taken)
 
 
-def _fresh_ref(network: str, events: list[Event], rng: random.Random, taken: set[str], id_style: str,
-               when: int) -> str:
+def _fresh_ref(network: str, site: _Site, when: int) -> str:
     """A new ID for a planted report, generated the way real IDs look in this mode."""
-    if id_style == "sequence" and any(e.network == network for e in events):
-        return _sequence_ref(network, events, rng, taken, when)
-    return new_event_id(network, rng, taken)
+    if site.id_style == "sequence" and any(e.network == network for e in site.events):
+        return _sequence_ref(network, site, when)
+    return site.domain.new_id(network, site.rng, site.taken)
 
 
 def _implied_town(event: Event) -> tuple[str, float, float] | None:
@@ -218,14 +267,20 @@ def _decimals(events: list[Event], network: str) -> int:
     return 2 if any(round(e.mag, 1) != e.mag for e in events if e.network == network) else 1
 
 
-def _duplicate(trap_id, events, rng, taken, used, window_start, compiled_at, id_style) -> _Candidate | None:
-    e = _pick_unused(events, used, rng)
+def _rereporters(site: _Site, network: str) -> list[str]:
+    """The domain's re-reporting networks other than `network`, in the vocabulary's order."""
+    return [n for n in site.domain.trap_vocab.rereporting_sources if n != network]
+
+
+def _duplicate(trap_id: str, site: _Site) -> _Candidate | None:
+    rng, events = site.rng, site.events
+    e = _pick_unused(events, site.used, rng)
     if e is None:
         return None
-    net = rng.choice([n for n in REREPORTING_NETWORKS if n != e.network])
+    net = rng.choice(_rereporters(site, e.network))
     form = rng.choice(("same_id", "cross_ref"))
-    when = min(compiled_at - 1, max(window_start, e.time + rng.choice((-1, 1)) * rng.randint(3, 40)))
-    ref = e.id if form == "same_id" else _fresh_ref(net, events, rng, taken, id_style, when)
+    when = min(site.compiled_at - 1, max(site.window_start, e.time + rng.choice((-1, 1)) * rng.randint(3, 40)))
+    ref = e.id if form == "same_id" else _fresh_ref(net, site, when)
     lat, lon = destination(e.lat, e.lon, rng.uniform(1.0, 8.0), rng.uniform(0.0, 360.0))
     dup = Report(
         ref=ref, network=net, status="preliminary", time=when, lat=round(lat, COORD_DECIMALS),
@@ -243,19 +298,20 @@ def _duplicate(trap_id, events, rng, taken, used, window_start, compiled_at, id_
     return _Candidate(trap, [dup], [])
 
 
-def _phantom(trap_id, events, rng, taken, window_start, compiled_at, id_style) -> _Candidate:
+def _phantom(trap_id: str, site: _Site) -> _Candidate:
+    rng, events, compiled_at = site.rng, site.events, site.compiled_at
     anchor = rng.choice(events)
     same_network = sorted(e.mag for e in events if e.network == anchor.network)
     base = same_network[int(rng.uniform(0.2, 0.95) * (len(same_network) - 1))]
     mag = round(min(max(0.0, base + rng.uniform(-0.2, 0.2)), same_network[-1] + 0.3), _decimals(events, anchor.network))
     lat, lon = destination(anchor.lat, anchor.lon, rng.uniform(3.0, 40.0), rng.uniform(0.0, 360.0))
     depth = round(max(min(e.depth_km for e in events), anchor.depth_km + rng.uniform(-5.0, 5.0)), 1)
-    when = rng.randrange(window_start + 60, compiled_at - 600)
-    ref = _fresh_ref(anchor.network, events, rng, taken, id_style, when)
+    when = rng.randrange(site.window_start + 60, compiled_at - 600)
+    ref = _fresh_ref(anchor.network, site, when)
     phantom = Report(ref=ref, network=anchor.network, status="reviewed", time=when, lat=round(lat, COORD_DECIMALS),
                      lon=round(lon, COORD_DECIMALS), depth_km=depth, mag=mag, mag_type=anchor.mag_type, region=anchor.region,
                      place=_place_for(anchor, lat, lon, events), role="phantom", trap_id=trap_id)
-    reason = rng.choice(RETRACTION_REASONS)
+    reason = rng.choice(site.domain.trap_vocab.retraction_reasons)
     notice = Notice(kind="retraction", target=ref, time=min(compiled_at - 60, when + rng.randint(600, 5400)),
                     reason=reason, trap_id=trap_id)
     description = f"phantom report {ref} (M{mag:g}, {anchor.region}) later retracted: {reason}"
@@ -264,13 +320,14 @@ def _phantom(trap_id, events, rng, taken, window_start, compiled_at, id_style) -
     return _Candidate(trap, [phantom], [notice])
 
 
-def _conflict(trap_id, events, questions, reports, rng, used, compiled_at) -> _Candidate | None:
-    e = _pick_unused(events, used, rng)
+def _conflict(trap_id: str, site: _Site) -> _Candidate | None:
+    rng, events, compiled_at = site.rng, site.events, site.compiled_at
+    e = _pick_unused(events, site.used, rng)
     if e is None:
         return None
     decimals = _decimals(events, e.network)
     step = 0.01 if decimals == 2 else 0.1
-    thresholds = [s["value"] for q in questions for s in q.chain if s["op"] in ("mag_at_least", "mag_below")]
+    thresholds = threshold_values(site.questions, "mag")
     if thresholds and rng.random() < 0.7:  # aim the wrong value across a threshold that is asked about
         x = rng.choice(thresholds)
         wrong = x - step * rng.randint(1, round(0.2 / step)) if e.mag >= x else x + step * rng.randint(0, round(0.2 / step))
@@ -280,8 +337,8 @@ def _conflict(trap_id, events, questions, reports, rng, used, compiled_at) -> _C
     if abs(wrong - e.mag) < 0.05:
         return None
     if rng.random() < 0.5:  # form 1: the reviewed report shows the wrong value, a CORRECTION fixes it
-        index = next(i for i, r in enumerate(reports) if r.ref == e.id and r.role == "primary")
-        shown = replace(reports[index], mag=wrong, role="conflict", trap_id=trap_id)
+        index = next(i for i, r in enumerate(site.reports) if r.ref == e.id and r.role == "primary")
+        shown = replace(site.reports[index], mag=wrong, role="conflict", trap_id=trap_id)
         issued = min(compiled_at - 30, max(e.time + 30, e.time + rng.randint(900, 7200)))
         notice = Notice(kind="correction", target=e.id, time=issued, new_mag=e.mag, old_mag=wrong,
                         mag_type=e.mag_type, trap_id=trap_id)
@@ -291,7 +348,7 @@ def _conflict(trap_id, events, questions, reports, rng, used, compiled_at) -> _C
         return _Candidate(trap, [], [notice], replace_at=(index, shown))
     # form 2: a PRELIMINARY report with the same ID disagrees with the REVIEWED one. A careless reader
     # either takes its magnitude, or counts it as a separate quake.
-    net = e.network if rng.random() < 0.5 else rng.choice([n for n in REREPORTING_NETWORKS if n != e.network])
+    net = e.network if rng.random() < 0.5 else rng.choice(_rereporters(site, e.network))
     prelim = Report(ref=e.id, network=net, status="preliminary", time=e.time, lat=e.lat, lon=e.lon,
                     depth_km=e.depth_km, mag=wrong, mag_type=e.mag_type, region=e.region, place=e.place,
                     role="conflict", trap_id=trap_id)
@@ -302,34 +359,44 @@ def _conflict(trap_id, events, questions, reports, rng, used, compiled_at) -> _C
     return _Candidate(trap, [prelim], [])
 
 
+# Builders by domain name. Earthquakes keep the 0.2.0 builders and records; the generic builders for
+# every other domain come with the generic record path (plan phase 1b).
+BUILDERS: dict[str, Builders] = {EARTHQUAKES.name: Builders(primary_report, _duplicate, _phantom, _conflict)}
+
+
+def builders_for(domain: Domain) -> Builders:
+    """The builders that plant traps in a domain's digests."""
+    if domain.name not in BUILDERS:
+        raise NotImplementedError(f"no trap builders for the {domain.name!r} domain")
+    return BUILDERS[domain.name]
+
+
 def inject_traps(events: list[Event], questions: list[Question], rng: random.Random, *, compiled_at: int,
-                 window_hours: int, config: TrapConfig = TrapConfig()) -> tuple[list[Report], list[Notice], list[Trap]]:
+                 window_hours: int, config: TrapConfig = TrapConfig(),
+                 domain: Domain = EARTHQUAKES) -> tuple[list[Report], list[Notice], list[Trap]]:
     """Build the digest's reports and notices: one reviewed report per event, plus the traps."""
-    reports = [primary_report(e) for e in events]
+    build = builders_for(domain)
+    units = domain.units
+    site = _Site(domain, events, questions, rng, compiled_at, window_start=compiled_at - window_hours * 3600,
+                 id_style=config.id_style, reports=[build.primary(e) for e in events], taken={e.id for e in events},
+                 used=set())
     notices: list[Notice] = []
     traps: list[Trap] = []
-    key = {q.qid: execute(q.chain, events) for q in questions}
-    taken = {e.id for e in events}
-    used: set[str] = set()
-    window_start = compiled_at - window_hours * 3600
+    key = {q.qid: execute(q.chain, events, units=units) for q in questions}
+    builders = {"duplicate": build.duplicate, "retraction": build.retraction, "conflict": build.conflict}
     plan = (["duplicate"] * rng.randint(*config.duplicates) + ["retraction"] * config.retractions
-            + ["conflicting_magnitude"] * config.conflicts)
+            + ["conflict"] * config.conflicts)
     for number, kind in enumerate(plan, start=1):
         trap_id = f"T{number}"
         best: tuple[int, _Candidate] | None = None  # rank 2: load-bearing and clean, 1: load-bearing, 0: noise
         for _ in range(config.candidates):
-            if kind == "duplicate":
-                candidate = _duplicate(trap_id, events, rng, taken, used, window_start, compiled_at, config.id_style)
-            elif kind == "retraction":
-                candidate = _phantom(trap_id, events, rng, taken, window_start, compiled_at, config.id_style)
-            else:
-                candidate = _conflict(trap_id, events, questions, reports, rng, used, compiled_at)
+            candidate = builders[kind](trap_id, site)
             if candidate is None:
                 continue
-            trial = DigestData(*_apply(reports, notices, candidate))
+            trial = DigestData(*_apply(site.reports, notices, candidate))
             rank = 0
-            if _single_effects(candidate.trap, questions, key, trial):
-                rank = 2 if _clear_of_tolerance_edge(candidate.trap, questions, key, trial) else 1
+            if _single_effects(candidate.trap, questions, key, trial, units):
+                rank = 2 if _clear_of_tolerance_edge(candidate.trap, questions, key, trial, units) else 1
             if best is None or rank > best[0]:
                 best = (rank, candidate)
             if rank == 2:
@@ -337,19 +404,21 @@ def inject_traps(events: list[Event], questions: list[Question], rng: random.Ran
         if best is None:
             continue
         chosen = best[1]
-        reports, notices = _apply(reports, notices, chosen)
+        site.reports, notices = _apply(site.reports, notices, chosen)
         traps.append(chosen.trap)
-        used.add(chosen.trap.target)
-    score_traps(traps, questions, key, reports, notices)  # authoritative, on the final digest
-    problems = check_resolution(reports, notices, events)
+        site.used.add(chosen.trap.target)
+    reports = site.reports
+    score_traps(traps, questions, key, reports, notices, domain=domain)  # authoritative, on the final digest
+    problems = check_resolution(reports, notices, events, domain=domain)
     if problems:
         raise AssertionError("trap injection broke the reading-rules invariant: " + "; ".join(problems))
     return reports, notices, traps
 
 
-def check_resolution(reports: list[Report], notices: list[Notice], events: list[Event]) -> list[str]:
+def check_resolution(reports: list[Report], notices: list[Notice], events: list[Event], *,
+                     domain: Domain = EARTHQUAKES) -> list[str]:
     """Generator invariant: applying the reading rules to the digest recovers the snapshot exactly."""
-    got = {e.id: e for e in resolve(reports, notices)}
+    got = {e.id: e for e in domain.resolve(reports, notices)}
     want = {e.id: e for e in events}
     problems = []
     missing, extra = sorted(set(want) - set(got)), sorted(set(got) - set(want))

@@ -7,10 +7,12 @@ templates, traps, genres and scoring are written once against this interface.
 
     Unit          a unit a value is printed in, and its affine map to the field's canonical unit
     FieldSpec     one numeric field: labels, units, answer type, guard margins and threshold draws
+    Spatial       distance questions in a domain whose records have a location: radii and guards
+    Lexicon       how questions word a domain's records and operations
     Record        one real thing in a generic domain: the ground truth, like an earthquake Event
     RecordReport  one digest line about a record, like an earthquake Report
     LiveAdapter   a live source, fetched once, frozen and hashed
-    TrapVocab     how a domain words duplicate notes, retraction reasons and correction notices
+    TrapVocab     how a domain words its traps: re-reporting sources, notes, reasons and notices
     Domain        the base class; each domain module exports an instance as ``DOMAIN``
 
 Earthquakes keep their 0.2.0 record types (``models.Event`` and ``models.Report``), which expose the
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Iterable, Mapping, Protocol, Sequence
 
 from ..geo import KM_PER_MILE
@@ -68,9 +71,11 @@ class FieldSpec:
 
     Values are stored in `canonical_unit` (None for a unitless field such as a magnitude) and can be
     printed or asked in any of `units`. Thresholds are drawn from the `quantiles` range of an
-    instance's values and rounded to `threshold_step`. No record may lie within `margin` (abs, rel,
-    in canonical units) of a threshold, and ranked answers need neighbours at least `rank_gap`
-    apart. Answers that report this field are scored as `answer_type`, within `tolerance` (abs, rel).
+    instance's values, moved by up to ± `jitter` (canonical units), asked in a unit drawn from
+    `units` and rounded to `threshold_step` there, or to `coarse_step` half of the time when it is
+    set. No record may lie within `margin` (abs, rel, in canonical units) of a threshold, and ranked
+    answers need neighbours at least `rank_gap` apart. Answers that report this field are converted
+    to a drawn unit, rounded to `decimals` and scored as `answer_type`, within `tolerance` (abs, rel).
     """
 
     key: str  # name in a record's values: "mag", "depth"
@@ -84,11 +89,47 @@ class FieldSpec:
     rank_gap: float
     quantiles: tuple[float, float]
     threshold_step: float
-    filters: tuple[str, ...]  # generic filter kinds that apply to it: "at_least", "below"
-    terminals: tuple[str, ...]  # generic terminal kinds that apply to it: "argmax", "rank", "max", ...
+    # Generic filter and terminal kinds that apply to it. The order of `filters` is the order in which
+    # twin templates sample them (see questions.filter_ops).
+    filters: tuple[str, ...]  # "at_least", "below"
+    terminals: tuple[str, ...]  # "argmax", "rank", "max", "min", "time_of_max"
     qualifier: str | None = None  # qualifier stored with the value and revised with it: "mag_type"
     signed: bool = False  # values can be negative (a depth above sea level)
     correctable: bool = False  # correction notices can revise it
+    jitter: float = 0.0  # thresholds move up to this far (canonical units) from the drawn quantile
+    coarse_step: float | None = None  # half of the thresholds are rounded to this step instead
+    positive_threshold: bool = False  # a threshold must be above zero in the unit it is asked in
+
+
+@dataclass(frozen=True)
+class Spatial:
+    """Distance questions in a domain whose records have a location (lat, lon): the radii a
+    within_distance question asks about, and the guards that keep distance answers unambiguous.
+    Distances are great-circle km, asked in km or miles (LENGTH) and answered to `decimals` places."""
+
+    radii: Mapping[str, tuple[int, ...]]  # within_distance radii by unit symbol
+    margin: tuple[float, float]  # (km, rel): no record lies within max(km, rel × radius) of a radius
+    nearest_gap: tuple[float, float]  # (km, rel): the runner-up lies max(km, rel × nearest) further away
+    nearest_max_km: float  # the nearest record lies at most this far from the question's point
+    point_offset_km: tuple[float, float]  # a question's point lies this far from a random record
+    point_label: str  # names a question's point: "station {source}-{number}"
+    decimals: int = 1
+
+
+@dataclass(frozen=True)
+class Lexicon:
+    """How questions word a domain, keyed by the op names of its templates (see questions.op_name).
+
+    A filter clause attaches to `records` ("earthquakes of magnitude 3 or greater"); a question
+    without filters is about `all_records`. Wordings are str.format templates. Filter clauses use
+    {value} (a threshold or radius with its unit), {place}, {start}, {end} and {group} (a group's
+    name); questions use {records} (the records with their clauses), {unit}, {nth}, {place}, {a} and
+    {b}. Every wording of an op is equally likely."""
+
+    records: str  # "earthquakes"
+    all_records: str  # "earthquakes in the digest"
+    filters: Mapping[str, tuple[str, ...]]
+    questions: Mapping[str, tuple[str, ...]]
 
 
 class RecordLike(Protocol):
@@ -173,8 +214,10 @@ class LiveAdapter(Protocol):
 class TrapVocab:
     """How a domain words its traps."""
 
+    rereporting_sources: tuple[str, ...]  # sources that re-report other sources' records: "us", "at"
     duplicate_notes: tuple[str, ...]  # notes that point a re-report at its record: "same event as"
     retraction_reasons: tuple[str, ...]  # why a report was withdrawn: "quarry blast"
+    retraction_notices: tuple[str, ...]  # phrases that announce a withdrawn report: "withdrawn"
     correction_notices: tuple[str, ...]  # phrases that announce a revised value: "revised to"
 
 
@@ -192,13 +235,22 @@ class Domain:
 
     fields: tuple[FieldSpec, ...]
     roles: Mapping[str, str]  # field keys in the 0.2.0 roles: {"primary": "mag", "secondary": "depth"}
-    has_location: bool = True  # records have lat/lon: within_distance, nearest_to, nearest_distance apply
+    spatial: Spatial | None = None  # set when records have a location
+    lexicon: Lexicon
+    # The names this domain's chains give generic kinds, by (kind, field): earthquakes keep their 0.2.0
+    # names (ops.ALIASES). Any other kind is stored generically, e.g. {"op": "at_least", "field": "temp"}.
+    op_names: Mapping[tuple[str, str | None], str] = MappingProxyType({})
     live: LiveAdapter | None = None
 
     id_pattern: str  # regex of a record ID in lower-cased text; the scorer uses it to find IDs too
     id_answer_type: str  # answer type naming a record (argmax, rank, nearest_to): "event_id"
     group_answer_type: str  # answer type naming a group (compare_groups): "region"
     trap_vocab: TrapVocab
+
+    @property
+    def has_location(self) -> bool:
+        """Records have lat/lon, so within_distance, nearest_to and nearest_distance apply."""
+        return self.spatial is not None
 
     @property
     def units(self) -> dict[str, tuple[Unit, ...]]:

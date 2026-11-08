@@ -1,0 +1,458 @@
+"""The earthquake domain object and role-based composition: questions, wording and traps composed
+through the domain must be exactly those of 0.2.0, and the domain-generic machinery must also run on
+a domain that is not earthquakes."""
+from __future__ import annotations
+
+import hashlib
+import itertools
+import json
+import random
+from dataclasses import asdict, replace
+
+import pytest
+
+from evalgen import scoring
+from evalgen.digest import render_notice, render_report
+from evalgen.domains import DEFAULT_DOMAIN, get_domain
+from evalgen.domains.base import LENGTH, MI, Domain, FieldSpec, Lexicon, Record, RecordReport, Unit
+from evalgen.domains.earthquakes import DOMAIN, EARTHQUAKES
+from evalgen.geo import KM_PER_MILE, from_km
+from evalgen.models import EVENT_ID_PATTERN, Notice
+from evalgen.ops import FILTER_OPS, execute, rows_after_filters
+from evalgen.pipeline import sample_events
+from evalgen.questions import (_EXCLUSIVE, _MONOTONE, FLOAT_SLACK, NEAREST_MAX_KM, PUBLIC_TEMPLATES, RANKS,
+                               TIME_MARGIN_S, Context, _compatible, compose_new_templates, compose_questions,
+                               draw_filter, exclusive_pairs, filter_ops, fingerprint, monotone_pairs, phrase_question,
+                               public_templates, round_to_step)
+from evalgen.rules import READING_RULES, Mishandle, naive_events, report_to_event, resolve
+from evalgen.seeds import SeedLog
+from evalgen.sources import build_snapshot, generate_synthetic, mimic_event_id, new_event_id
+from evalgen.traps import builders_for, inject_traps, primary_report, threshold_values
+
+
+# --- composition digest (its source is also run against evalgen 0.2.0 to pin LEGACY_DIGESTS) ---
+def composition_digest(seed: int, domain: Domain | None = None, instances: int = 12) -> str:
+    """SHA-256 of what composition produces for the first instances of a synthetic run: the twin
+    templates, every question (chain, answer type, unit, evidence), three wordings of each (the
+    metamorphic ones may restate units) and the planted reports, notices and traps. Without a
+    domain, every call is the legacy one; with one, the domain is passed to every call."""
+    kw = {} if domain is None else {"domain": domain}
+    public = PUBLIC_TEMPLATES if domain is None else public_templates(domain)
+    log = SeedLog(seed)
+    snapshot, _ = build_snapshot("synthetic", log, pool_size=360)
+    ctx = Context(snapshot.compiled_at, snapshot.window_hours)
+    new = compose_new_templates(log.rng("templates", "new"), **kw)
+    used: set[str] = set()
+    usage: dict[str, int] = {}
+    out: dict = {"twins": [t.to_dict() for t in new], "instances": []}
+    for i in range(instances):
+        events = sample_events(snapshot.events, log.rng("instance", i, "events"), 20, 28)
+        rng = log.rng("instance", i, "questions")
+        questions = compose_questions(events, public, new, rng, ctx, rng.randint(3, 5), used, usage, **kw)
+        reports, notices, traps = inject_traps(events, questions, log.rng("instance", i, "traps"),
+                                               compiled_at=snapshot.compiled_at,
+                                               window_hours=snapshot.window_hours, **kw)
+        wordings = []
+        for v in range(3):
+            words = random.Random(log.seed("instance", i, "render", v))
+            wordings.append([phrase_question(q, words, alt_units=v > 0 and words.random() < 0.5, **kw)
+                             for q in questions])
+        out["instances"].append({"questions": [asdict(q) for q in questions], "wordings": wordings,
+                                 "reports": [asdict(r) for r in reports], "notices": [asdict(n) for n in notices],
+                                 "traps": [asdict(t) for t in traps]})
+    return hashlib.sha256(json.dumps(out, sort_keys=True).encode()).hexdigest()
+# --- end of composition digest ---
+
+
+LEGACY_DIGESTS = {  # composition_digest(seed) run against evalgen 0.2.0, before the role-based refactor
+    3: "33ebc8fc854689873d78334d42039c000a638bdcad581dd8b8a5324ecb5d9ee4",
+    11: "fbb977888a8a4faae2eeeead0cd98996e3eb900e541f767f86e0ece33a52d458",
+    42: "3493cac6113c4347e755e51761113dd8dabf800a2dc894d57824fce4c44bf2d5",
+    99991: "796e171908d937e20c1cedbcc043b50a667457cf3bb985970d22fcc672aa992d",
+}
+
+
+@pytest.mark.parametrize("seed", sorted(LEGACY_DIGESTS))
+def test_composition_through_the_domain_object_equals_the_020_result(seed):
+    assert composition_digest(seed, get_domain("earthquakes")) == LEGACY_DIGESTS[seed]
+    assert composition_digest(seed) == LEGACY_DIGESTS[seed]  # the defaults are the earthquake domain
+
+
+# ------------------------------------------------------------ 0.2.0 literals and recipes
+# questions.py as it was in 0.2.0, written out independently of the role-based derivations.
+
+PUBLIC_020 = [
+    ("P01", ("mag_at_least",), "count"),
+    ("P02", ("within_distance",), "count"),
+    ("P03", ("in_region",), "argmax_mag"),
+    ("P04", ("mag_at_least",), "max_depth"),
+    ("P05", ("mag_at_least",), "compare_regions"),
+    ("P06", ("depth_shallower_than", "time_between"), "count"),
+    ("P07", ("in_region",), "nearest_to"),
+    ("P08", ("in_region",), "time_of_largest"),
+    ("P09", ("within_distance",), "rank_mag"),
+    ("P10", ("depth_at_least",), "max_mag"),
+    ("P11", ("time_between",), "min_depth"),
+    ("P12", ("mag_below",), "nearest_distance"),
+]
+FILTER_OPS_020 = ("mag_at_least", "mag_below", "depth_shallower_than", "depth_at_least", "within_distance",
+                  "time_between", "in_region")
+TERMINAL_OPS_020 = ("count", "argmax_mag", "rank_mag", "max_mag", "max_depth", "min_depth", "nearest_to",
+                    "nearest_distance", "compare_regions", "time_of_largest")
+EXCLUSIVE_020 = (frozenset({"mag_at_least", "mag_below"}), frozenset({"depth_shallower_than", "depth_at_least"}))
+MONOTONE_020 = {
+    ("mag_at_least", "max_mag"), ("mag_at_least", "argmax_mag"), ("mag_at_least", "time_of_largest"),
+    ("mag_at_least", "rank_mag"), ("depth_at_least", "max_depth"), ("depth_shallower_than", "min_depth"),
+}
+RADII_020 = {"km": (25, 30, 40, 50, 60, 75, 100, 125, 150, 200, 250, 300),
+             "mi": (15, 20, 25, 30, 40, 50, 60, 75, 100, 125, 150, 200)}
+
+
+def compatible_020(filters, terminal) -> bool:
+    chosen = set(filters)
+    if any(pair <= chosen for pair in EXCLUSIVE_020):
+        return False
+    if any((f, terminal) in MONOTONE_020 for f in chosen):
+        return False
+    if terminal == "compare_regions" and "in_region" in chosen:
+        return False
+    if terminal in ("nearest_to", "nearest_distance") and "within_distance" in chosen:
+        return False
+    return True
+
+
+def threshold_020(op, events, rng):
+    """draw_filter for a magnitude or depth threshold, as it was in 0.2.0."""
+    def pick(values, lo, hi):
+        ordered = sorted(values)
+        return ordered[int(rng.uniform(lo, hi) * (len(ordered) - 1))]
+
+    if op in ("mag_at_least", "mag_below"):
+        return {"op": op, "value": round(pick([e.mag for e in events], 0.25, 0.85), 1)}
+    unit = rng.choice(("km", "mi"))
+    depth_km = pick([e.depth_km for e in events], 0.25, 0.8) + rng.uniform(-1.5, 1.5)
+    value = from_km(depth_km, unit)
+    value = float(round(value)) if rng.random() < 0.5 else round(value, 1)
+    return {"op": op, "value": value, "unit": unit} if value > 0 else None
+
+
+def resolve_020(reports, notices, mishandle=None):
+    """rules.resolve as it was in 0.2.0."""
+    m = mishandle or Mishandle()
+    notices = list(notices)
+    retracted = {n.target for n in notices if n.kind == "retraction"} - set(m.keep_retracted)
+    corrections = {n.target: n for n in notices if n.kind == "correction" and n.target not in m.ignore_correction_for}
+    split = {tuple(pair) for pair in m.split}
+    groups, separate = {}, []
+    for r in reports:
+        event_id = r.same_as or r.ref
+        if r.ref in retracted or event_id in retracted:
+            continue
+        if (r.ref, r.network, r.status) in split:
+            separate.append(report_to_event(r, r.ref))
+            continue
+        groups.setdefault(event_id, []).append(r)
+    events = []
+    for event_id, group in groups.items():
+        reviewed = [r for r in group if r.status == "reviewed"]
+        preliminary = [r for r in group if r.status != "reviewed"]
+        base = preliminary[0] if event_id in m.prefer_preliminary_for and preliminary else (
+            reviewed[0] if reviewed else group[0])
+        event = report_to_event(base, event_id)
+        fix = corrections.get(event_id)
+        if fix is not None and fix.new_mag is not None:
+            event = replace(event, mag=fix.new_mag, mag_type=fix.mag_type or event.mag_type)
+        events.append(event)
+    return events + separate
+
+
+def test_derived_earthquake_guard_sets_equal_the_020_literals():
+    assert len(_EXCLUSIVE) == len(EXCLUSIVE_020) and set(_EXCLUSIVE) == set(EXCLUSIVE_020)
+    assert _MONOTONE == MONOTONE_020
+    assert filter_ops(EARTHQUAKES) == FILTER_OPS_020 == FILTER_OPS  # the population twins are sampled from
+    assert [(t.template_id, t.filters, t.terminal) for t in PUBLIC_TEMPLATES] == PUBLIC_020
+    assert {t.pool for t in PUBLIC_TEMPLATES} == {"public"} and not any(t.twin_of for t in PUBLIC_TEMPLATES)
+    for size in (1, 2, 3):
+        for filters in itertools.permutations(FILTER_OPS_020, size):
+            for terminal in TERMINAL_OPS_020:
+                assert _compatible(filters, terminal) == compatible_020(filters, terminal), (filters, terminal)
+
+
+def test_earthquake_field_specs_carry_the_020_constants():
+    mag, depth = EARTHQUAKES.field("mag"), EARTHQUAKES.field("depth")
+    assert dict(EARTHQUAKES.roles) == {"primary": "mag", "secondary": "depth"}
+    # magnitude: round(quantile in [0.25, 0.85), 1); no unit draw, jitter, coin, positivity or margin
+    assert (mag.units, mag.quantiles, mag.jitter) == ((), (0.25, 0.85), 0.0)
+    assert (mag.threshold_step, mag.coarse_step) == (0.1, None)
+    assert not mag.positive_threshold and mag.margin == (0.0, 0.0)  # magnitudes are printed exactly
+    assert mag.rank_gap - FLOAT_SLACK == 0.1 - 1e-9  # 0.2.0 MAG_GAP
+    # depth: a unit draw (km, mi), quantile in [0.25, 0.8) ± 1.5 km, whole or 1 decimal, above zero
+    assert (depth.canonical_unit, [u.symbol for u in depth.units], depth.units) == ("km", ["km", "mi"], LENGTH)
+    assert MI.scale == KM_PER_MILE == 1.609344 and [u.words for u in LENGTH] == ["km", "miles"]
+    assert (depth.quantiles, depth.jitter, depth.threshold_step, depth.coarse_step) == ((0.25, 0.8), 1.5, 0.1, 1.0)
+    assert depth.positive_threshold and depth.margin == (0.6, 0.03)  # DEPTH_MARGIN_KM, DEPTH_MARGIN_REL
+    assert depth.decimals == 1  # answers: convert, then round(1)
+    assert (mag.filters, depth.filters) == (("at_least", "below"), ("below", "at_least"))
+    assert (mag.answer_type, depth.answer_type) == ("magnitude", "depth")
+    assert [scoring.TOLERANCE[s.answer_type] for s in (mag, depth)] == [mag.tolerance, depth.tolerance]
+    spatial = EARTHQUAKES.spatial
+    assert EARTHQUAKES.has_location and dict(spatial.radii) == RADII_020
+    assert (spatial.margin, spatial.nearest_gap) == ((3.0, 0.06), (3.0, 0.08))  # DISTANCE_*, NEAREST_GAP_*
+    assert spatial.nearest_max_km == NEAREST_MAX_KM == 500.0
+    assert (spatial.point_offset_km, spatial.decimals) == ((5.0, 60.0), 1)
+    assert spatial.point_label.format(source="NC", number=42) == "station NC-42"
+    assert (TIME_MARGIN_S, RANKS) == (120, (2, 3))
+
+
+def test_threshold_draws_follow_the_020_recipe_draw_for_draw(snapshot_events):
+    events = sorted(snapshot_events.values(), key=lambda e: (e.time, e.id))
+    shallow = [replace(e, depth_km=round(e.depth_km / 20 - 0.4, 1)) for e in events]  # thresholds at or below 0
+    refused = 0
+    for seed in range(300):
+        sample = random.Random(seed).sample(shallow if seed % 3 == 0 else events, 25)
+        for op in ("mag_at_least", "mag_below", "depth_shallower_than", "depth_at_least"):
+            new, old = random.Random(seed), random.Random(seed)
+            drawn, expected = draw_filter(op, sample, new, Context(0, 24), set()), threshold_020(op, sample, old)
+            assert json.dumps(drawn) == json.dumps(expected), (seed, op)  # 12.0 stays 12.0, never 12
+            assert new.getstate() == old.getstate(), (seed, op)  # the same draws, refused or not
+            refused += drawn is None
+    assert refused > 0
+
+
+def test_thresholds_round_to_their_step():
+    for x in (0.05, 0.15, 2.675, 12.45, -0.35, 3.0, 1234.5678, 0.0):
+        assert round_to_step(x, 0.1) == round(x, 1) and round_to_step(x, 0.01) == round(x, 2)
+        assert repr(round_to_step(x, 1.0)) == repr(float(round(x))) and round_to_step(x, 10) == round(x, -1)
+    assert (round_to_step(21.3, 0.5), round_to_step(21.2, 0.5), round_to_step(7.4, 5), round_to_step(0.3, 0.25)) == (
+        21.5, 21.0, 5.0, 0.25)
+
+
+# ------------------------------------------------------------------ the earthquake domain
+
+
+def test_the_registry_serves_the_earthquake_domain():
+    assert get_domain() is get_domain(DEFAULT_DOMAIN) is EARTHQUAKES is DOMAIN
+    names = (EARTHQUAKES.name, EARTHQUAKES.noun, EARTHQUAKES.plural, EARTHQUAKES.id_label,
+             EARTHQUAKES.source_label, EARTHQUAKES.group_label)
+    assert names == ("earthquakes", "earthquake", "earthquakes", "event ID", "network", "region")
+    assert EARTHQUAKES.id_pattern == EVENT_ID_PATTERN
+    assert (EARTHQUAKES.id_answer_type, EARTHQUAKES.group_answer_type) == ("event_id", "region")
+    assert EARTHQUAKES.rules_text() is READING_RULES
+
+
+def test_the_earthquake_domain_delegates_to_the_020_functions(instances):
+    compiled_at = 1_780_000_000
+    for seed in range(4):
+        a, b = random.Random(seed), random.Random(seed)
+        assert EARTHQUAKES.synthetic(a, 60, compiled_at, 24) == generate_synthetic(b, 60, compiled_at, 24)
+        taken_a, taken_b = set(), set()
+        assert ([EARTHQUAKES.new_id(n, a, taken_a) for n in ("us", "nc", "ak")]
+                == [new_event_id(n, b, taken_b) for n in ("us", "nc", "ak")])
+        assert EARTHQUAKES.mimic_id("aka2026vupcsv", a, taken_a) == mimic_event_id("aka2026vupcsv", b, taken_b)
+        assert taken_a == taken_b
+    event = generate_synthetic(random.Random(0), 1, compiled_at)[0]
+    assert builders_for(EARTHQUAKES).primary(event) == primary_report(event)
+    for inst in instances:
+        assert EARTHQUAKES.resolve(inst.reports, inst.notices) == resolve(inst.reports, inst.notices)
+
+
+def test_the_trap_vocabulary_is_what_the_020_digests_print(instances):
+    vocab = EARTHQUAKES.trap_vocab
+    assert vocab.rereporting_sources == ("us", "at", "pt", "ew")  # the order rng.choice indexes
+    assert {"quarry blast", "false trigger from instrument noise"} <= set(vocab.retraction_reasons)
+    printed = {n.reason for inst in instances for n in inst.notices if n.kind == "retraction"}
+    assert printed and printed <= set(vocab.retraction_reasons)
+    notice = Notice(kind="retraction", target="us7000abcd", time=1770530400, reason="quarry blast",
+                    new_mag=4.2, old_mag=4.5, mag_type="mb")
+    for kind, phrases in (("retraction", vocab.retraction_notices), ("correction", vocab.correction_notices)):
+        wordings = [render_notice(replace(notice, kind=kind), form, "iso") for form in range(3)]
+        assert all(sum(p in w for p in phrases) == 1 for w in wordings), wordings  # each wording uses one phrase
+        assert all(any(p in w for w in wordings) for p in phrases)  # and every phrase is printed
+    duplicate = replace(primary_report(generate_synthetic(random.Random(0), 1, 1_780_000_000)[0]),
+                        ref="at12345678", network="at", status="preliminary", same_as="us7000abcd")
+    lines = [render_report(duplicate, style, time_fmt="iso", coord_fmt="hemi", depth_fmt="km", mag_form=0)
+             for style in ("bulletin", "prose", "wire")]  # the log style prints a same_as= field instead
+    assert all(sum(f"{note} us7000abcd" in line for note in vocab.duplicate_notes) == 1 for line in lines), lines
+    assert all(any(note in line for line in lines) for note in vocab.duplicate_notes)
+
+
+def test_the_glossary_describes_every_field_and_stays_out_of_legacy_prompts(instances):
+    text = EARTHQUAKES.glossary()
+    assert all(spec.label in text for spec in EARTHQUAKES.fields)
+    assert "1 mi = 1.609344 km" in text and "6371 km" in text and "REVIEWED" in text
+    assert not any("Glossary" in r.prompt for inst in instances for r in inst.renderings)
+
+
+# --------------------------------------------------------------------------------- traps
+
+
+def generic(step: dict) -> dict:
+    """A 0.2.0 threshold step in its generic form."""
+    names = {"mag_at_least": ("at_least", "mag"), "mag_below": ("below", "mag"),
+             "depth_shallower_than": ("below", "depth"), "depth_at_least": ("at_least", "depth")}
+    if step["op"] not in names:
+        return step
+    kind, field = names[step["op"]]
+    return {"op": kind, "field": field, **{k: v for k, v in step.items() if k != "op"}}
+
+
+def test_conflict_thresholds_are_read_from_aliases_and_generic_steps(instances):
+    questions = [q for inst in instances for q in inst.questions]
+    legacy = [s["value"] for q in questions for s in q.chain if s["op"] in ("mag_at_least", "mag_below")]  # 0.2.0
+    assert legacy and threshold_values(questions, "mag") == legacy
+    as_generic = [replace(q, chain=[generic(s) for s in q.chain]) for q in questions]
+    assert threshold_values(as_generic, "mag") == legacy
+    depths = [s["value"] for q in questions for s in q.chain if s["op"] in ("depth_shallower_than", "depth_at_least")]
+    assert threshold_values(questions, "depth") == threshold_values(as_generic, "depth") == depths
+
+
+# ------------------------------------------------------------------------- reading rules
+
+
+def test_resolve_defaults_read_every_digest_as_020_did(instances):
+    for inst in instances:
+        readings = [None] + [Mishandle.from_dict(m) for t in inst.traps for m in t.mishandles]
+        readings.append(Mishandle.merged(m for t in inst.traps for m in t.mishandles))
+        for reading in readings:
+            assert resolve(inst.reports, inst.notices, reading) == resolve_020(inst.reports, inst.notices, reading)
+        assert naive_events(inst.reports) == [report_to_event(r, r.ref) for r in inst.reports]
+
+
+def test_resolve_reads_record_reports_generically():
+    t0 = 1_780_000_000
+
+    def line(ref, status, temp, source="nws", same_as=None):
+        return RecordReport(ref=ref, source=source, status=status, time=t0, lat=None, lon=None, group="West",
+                            values={"temp": temp}, qualifiers={"sensor": "A"}, same_as=same_as)
+
+    reports = [line("ksfo-01", "provisional", 23.0, "madis"),  # a re-report before the verified line
+               line("ksfo-01", "verified", 21.0),
+               line("mx-77", "provisional", 22.0, "madis", same_as="ksfo-01"),
+               line("ksea-02", "verified", 12.5),
+               line("kbos-03", "verified", 30.0)]
+    notices = [Notice(kind="retraction", target="kbos-03", time=t0, reason="sensor fault"),
+               Notice(kind="correction", target="ksea-02", time=t0, field="temp", new_value=13.5, old_value=12.5,
+                      qualifier="B")]
+    rules = {"authoritative": "verified", "field": "temp", "qualifier": "sensor"}
+    assert resolve(reports, notices, **rules) == [
+        Record("ksfo-01", t0, None, None, "West", "nws", {"temp": 21.0}, {"sensor": "A"}),
+        Record("ksea-02", t0, None, None, "West", "nws", {"temp": 13.5}, {"sensor": "B"})]
+    assert resolve(reports, notices)[0].values == {"temp": 23.0}  # nothing is "reviewed": the first line stands
+    careless = resolve(reports, notices, Mishandle(split=(("mx-77", "madis", "provisional"),),
+                                                   keep_retracted=("kbos-03",)), **rules)
+    assert [r.id for r in careless] == ["ksfo-01", "ksea-02", "kbos-03", "mx-77"]
+    assert [r.values["temp"] for r in naive_events(reports)] == [23.0, 21.0, 22.0, 12.5, 30.0]
+
+
+# ---------------------------------------------------------- a generic domain without locations
+
+CELSIUS, FAHRENHEIT = Unit("°C", "degrees Celsius"), Unit("°F", "degrees Fahrenheit", 5 / 9, -160 / 9)
+KMH, MPH = Unit("km/h", "km/h"), Unit("mph", "mph", KM_PER_MILE)
+
+
+class Observations(Domain):
+    """A test-only generic domain: temperature in the primary role, wind speed in the secondary one,
+    and no locations, so no spatial templates."""
+
+    name = "observations"
+    plural = "observations"
+    fields = (
+        FieldSpec(key="temp", label="temperature", canonical_unit="°C", units=(CELSIUS, FAHRENHEIT), decimals=1,
+                  answer_type="temperature", tolerance=(0.5, 0.0), margin=(0.3, 0.0), rank_gap=0.5,
+                  quantiles=(0.2, 0.8), threshold_step=0.5, filters=("at_least", "below"),
+                  terminals=("argmax", "rank", "max", "time_of_max"), signed=True),
+        FieldSpec(key="wind", label="wind speed", canonical_unit="km/h", units=(KMH, MPH), decimals=1,
+                  answer_type="wind_speed", tolerance=(1.0, 0.05), margin=(1.0, 0.05), rank_gap=2.0,
+                  quantiles=(0.25, 0.75), threshold_step=1.0, jitter=2.0, positive_threshold=True,
+                  filters=("below", "at_least"), terminals=("max", "min")),
+    )
+    roles = {"primary": "temp", "secondary": "wind"}
+    lexicon = Lexicon(
+        records="observations",
+        all_records="all observations",
+        filters={"at_least(temp)": ("with a temperature of at least {value}",),
+                 "below(temp)": ("colder than {value}",),
+                 "at_least(wind)": ("with wind of {value} or more",),
+                 "below(wind)": ("with wind below {value}",),
+                 "time_between": ("that were made from {start} up to {end}",),
+                 "in_group": ("from the {group} region",)},
+        questions={"count": ("How many {records} are there?",),
+                   "argmax(temp)": ("Which of the {records} was the warmest?",),
+                   "rank(temp)": ("Which of the {records} was the {nth} warmest?",),
+                   "time_of_max(temp)": ("When was the warmest of the {records} made?",),
+                   "max(temp)": ("What was the highest temperature, in {unit}, among the {records}?",),
+                   "max(wind)": ("What was the strongest wind, in {unit}, among the {records}?",),
+                   "min(wind)": ("What was the lightest wind, in {unit}, among the {records}?",),
+                   "compare_groups": ("Which region had more {records}: {a} or {b}?",)},
+    )
+    id_answer_type = "observation_id"
+    group_answer_type = "us_region"
+
+
+OBSERVATIONS = Observations()
+T0 = 1_780_000_000
+
+
+def observations(rng: random.Random, n: int) -> list[Record]:
+    regions = ("Northeast", "Midwest", "Pacific", "South")
+    records = [Record(id=f"obs-{i:03d}", time=T0 - rng.randrange(60, 86400), lat=None, lon=None,
+                      group=rng.choice(regions), source="nws",
+                      values={"temp": round(rng.uniform(-5.0, 35.0), 1), "wind": round(rng.uniform(0.0, 60.0), 1)})
+               for i in range(n)]
+    return sorted(records, key=lambda r: (r.time, r.id))
+
+
+def test_role_templates_bind_to_a_domain_without_locations():
+    public = public_templates(OBSERVATIONS)
+    assert [t.template_id for t in public] == ["P01", "P03", "P04", "P05", "P06", "P08", "P10", "P11"]
+    assert [(t.filters, t.terminal) for t in public[:4]] == [
+        (("at_least(temp)",), "count"), (("in_group",), "argmax(temp)"), (("at_least(temp)",), "max(wind)"),
+        (("at_least(temp)",), "compare_groups")]
+    assert filter_ops(OBSERVATIONS) == ("at_least(temp)", "below(temp)", "below(wind)", "at_least(wind)",
+                                        "time_between", "in_group")
+    assert exclusive_pairs(OBSERVATIONS) == {frozenset({"at_least(temp)", "below(temp)"}),
+                                             frozenset({"at_least(wind)", "below(wind)"})}
+    assert monotone_pairs(OBSERVATIONS) == {
+        ("at_least(temp)", "max(temp)"), ("at_least(temp)", "argmax(temp)"), ("at_least(temp)", "rank(temp)"),
+        ("at_least(temp)", "time_of_max(temp)"), ("at_least(wind)", "max(wind)"), ("below(wind)", "min(wind)")}
+    for seed in range(30):
+        twins = compose_new_templates(random.Random(seed), domain=OBSERVATIONS)
+        assert [t.twin_of for t in twins] == [t.template_id for t in public]  # the pools stay matched
+        assert all(t.terminal == public[i].terminal and len(t.filters) == len(public[i].filters)
+                   for i, t in enumerate(twins))
+        assert {t.signature for t in twins}.isdisjoint(t.signature for t in public)
+
+
+def test_questions_compose_guard_and_read_on_generic_records():
+    records = observations(random.Random(5), 26)
+    public = public_templates(OBSERVATIONS)
+    twins = compose_new_templates(random.Random(5), domain=OBSERVATIONS)
+    used: set[str] = set()
+    usage: dict[str, int] = {}
+    questions = []
+    for i in range(10):
+        q_rng = random.Random(100 + i)
+        questions += compose_questions(records, public, twins, q_rng, Context(T0, 24), 4, used, usage,
+                                       domain=OBSERVATIONS)
+    assert len(questions) >= 30 and len({fingerprint(q.chain) for q in questions}) == len(questions)
+    units = OBSERVATIONS.units
+    for q in questions:
+        for step in q.chain[1:]:
+            if step["op"] in ("at_least", "below"):  # stored generically, at the field's step, clear of every record
+                spec = OBSERVATIONS.field(step["field"])
+                assert list(step) == ["op", "field", "value", "unit"]
+                assert step["value"] == round_to_step(step["value"], spec.threshold_step)
+                threshold = next(u for u in spec.units if u.symbol == step["unit"]).to_canonical(step["value"])
+                assert all(abs(r.values[spec.key] - threshold) >= spec.margin[0] for r in records)
+        answer = execute(q.chain, records, units=units)
+        assert answer is not None and q.evidence == [r.id for r in rows_after_filters(q.chain, records, units=units)]
+        kind = q.chain[-1]["op"] if q.chain[-1]["op"] != "round" else q.chain[-3]["op"]
+        expected = {"count": "count", "argmax": "observation_id", "rank": "observation_id", "time_of_max": "utc_time",
+                    "compare_groups": "us_region"}.get(kind) or OBSERVATIONS.field(q.chain[-3]["field"]).answer_type
+        assert q.answer_type == expected
+        for alt_units in (False, True):
+            text = phrase_question(q, random.Random(q.qid), alt_units=alt_units, domain=OBSERVATIONS)
+            assert "observations" in text and "{" not in text
+    kinds = {q.chain[-1]["op"] if q.chain[-1]["op"] != "round" else q.chain[-3]["op"] for q in questions}
+    assert kinds == {"count", "argmax", "max", "min", "compare_groups", "time_of_max"}  # rank came with P09 (spatial)
+    assert not any(s["op"] in ("within_distance", "nearest_to", "nearest_distance") for q in questions for s in q.chain)

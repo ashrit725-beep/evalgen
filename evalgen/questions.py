@@ -1,42 +1,47 @@
 """Question templates and the composer that turns them into concrete, guarded questions.
 
 A *template* is a skeleton: which filters, which final operation. A *question* is a template whose
-every parameter (thresholds, radii, units, points, time windows, regions) was drawn by the RNG and
+every parameter (thresholds, radii, units, points, time windows, groups) was drawn by the RNG and
 then checked by margin guards, so that rounding in the digest can never flip the correct answer.
 No concrete question is ever used twice in a run.
 
 Two pools:
-  public  PUBLIC_TEMPLATES below. Treat them as published: a model may have been trained on them.
+  public  P01-P12 below. Treat them as published: a model may have been trained on them.
   new     one "twin" per public template, composed at run time: same final operation and the same
           number of filters, but a different filter combination that is not a public skeleton.
 Because the twins mirror the public pool's answer types and filter counts, a large accuracy gap
 between the pools points at overfitting to the public skeletons rather than at difficulty.
+
+Templates are role-based. P01-P12 are written for the fields a domain puts in the *primary* and
+*secondary* roles (earthquake magnitude and depth, see ``Domain.roles``) and take the domain's own op
+names, so the earthquake templates are exactly the 0.2.0 ones; a domain whose records have no
+location has no spatial templates. Parameters, guards and wording come from the domain: its field
+specs (quantiles, jitter, rounding, margins, rank gaps), its spatial spec (radii, distance guards)
+and its lexicon. Every function takes the domain as a keyword that defaults to earthquakes, which
+draws, guards and words exactly as 0.2.0 did.
 """
 from __future__ import annotations
 
 import json
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from decimal import Decimal
+from typing import Any, Mapping, Sequence
 
 from .digest import MONTHS_LONG
-from .geo import UNIT_WORDS, destination, from_km, to_km
-from .models import Event, Question
-from .ops import FILTER_OPS, TERMINAL_OPS, answer_spec, distance_km, execute, rows_after_filters, terminal_step
+from .domains.base import LENGTH, Domain, FieldSpec, ResolvedRecord, Spatial, Unit, find_unit
+from .domains.earthquakes import EARTHQUAKES
+from .geo import destination
+from .models import Question
+from .ops import ALIASES, Step, answer_spec, distance_km, execute, role, rows_after_filters, terminal_step
 
-# Margin guards. No event may sit this close to a threshold, so display rounding (0.1 km or mi,
-# 0.001 degrees, minute-precision times) can never change a correct answer.
-DEPTH_MARGIN_KM, DEPTH_MARGIN_REL = 0.6, 0.03
-DISTANCE_MARGIN_KM, DISTANCE_MARGIN_REL = 3.0, 0.06
-TIME_MARGIN_S = 120
-MAG_GAP = 0.1 - 1e-9  # ranked answers: every gap down to the asked rank must be at least 0.1
-NEAREST_GAP_KM, NEAREST_GAP_REL = 3.0, 0.08  # the nearest quake must beat the runner-up clearly
-NEAREST_MAX_KM = 500.0  # keeps "nearest" questions local, so the 3% distance tolerance stays tight
-RADII = {
-    "km": (25, 30, 40, 50, 60, 75, 100, 125, 150, 200, 250, 300),
-    "mi": (15, 20, 25, 30, 40, 50, 60, 75, 100, 125, 150, 200),
-}
+TIME_MARGIN_S = 120  # no record within 2 minutes of a time window's ends (digests print times to the minute)
+RANKS = (2, 3)  # rank questions ask for the second or the third largest
+FLOAT_SLACK = 1e-9  # rank gaps: values exactly `rank_gap` apart pass despite float error
+SPATIAL_KINDS = ("within_distance", "nearest_to", "nearest_distance")
+TOP_KINDS = ("max", "argmax", "rank", "time_of_max")  # terminals that answer from a field's largest values
+BOTTOM_KINDS = ("min",)  # terminals that answer from its smallest values
 
 
 @dataclass(frozen=True)
@@ -59,53 +64,149 @@ class Template:
                 "terminal": self.terminal, "twin_of": self.twin_of, "skeleton": self.describe()}
 
 
-PUBLIC_TEMPLATES: tuple[Template, ...] = (
-    Template("P01", "public", ("mag_at_least",), "count"),
+# --------------------------------------------------------------------------------- op names
+# Templates name each operation by its op name: a domain's own name for a kind on a field (the 0.2.0
+# names for earthquakes, e.g. "mag_at_least"), else "kind(field)" ("at_least(temp)"), or the bare kind
+# for a kind that reads no field ("count", "time_between").
+
+
+def op_name(domain: Domain, kind: str, field: str | None = None) -> str:
+    """The op name of a kind on a field in a domain: ('at_least', 'mag') is 'mag_at_least' for earthquakes."""
+    named = domain.op_names.get((kind, field))
+    if named is not None:
+        return named
+    return f"{kind}({field})" if field else kind
+
+
+def parse_op(name: str) -> tuple[str, str | None]:
+    """(kind, field) of an op name: 'mag_at_least' -> ('at_least', 'mag'), 'count' -> ('count', None)."""
+    alias = ALIASES.get(name)
+    if alias is not None:
+        return alias.kind, alias.field
+    kind, _, field = name.partition("(")
+    return kind, field.rstrip(")") or None
+
+
+def step_op(step: Mapping[str, Any]) -> str:
+    """The op name of a chain step."""
+    return f"{step['op']}({step['field']})" if "field" in step else step["op"]
+
+
+def _step(name: str, **params: Any) -> dict:
+    """A chain step for an op name. A 0.2.0 name keeps its 0.2.0 parameter keys ('region' for a
+    group); a generic kind stores its field after the op: {"op": "at_least", "field": "temp", ...}."""
+    alias = ALIASES.get(name)
+    if alias is not None:
+        return {"op": name, **{alias.keys.get(key, key): value for key, value in params.items()}}
+    kind, field = parse_op(name)
+    return {"op": kind, **({"field": field} if field else {}), **params}
+
+
+# -------------------------------------------------------------------------------- templates
+
+# P01-P12 in role terms: "(primary)" and "(secondary)" stand for the fields in those roles.
+ROLE_TEMPLATES: tuple[Template, ...] = (
+    Template("P01", "public", ("at_least(primary)",), "count"),
     Template("P02", "public", ("within_distance",), "count"),
-    Template("P03", "public", ("in_region",), "argmax_mag"),
-    Template("P04", "public", ("mag_at_least",), "max_depth"),
-    Template("P05", "public", ("mag_at_least",), "compare_regions"),
-    Template("P06", "public", ("depth_shallower_than", "time_between"), "count"),
-    Template("P07", "public", ("in_region",), "nearest_to"),
-    Template("P08", "public", ("in_region",), "time_of_largest"),
-    Template("P09", "public", ("within_distance",), "rank_mag"),
-    Template("P10", "public", ("depth_at_least",), "max_mag"),
-    Template("P11", "public", ("time_between",), "min_depth"),
-    Template("P12", "public", ("mag_below",), "nearest_distance"),
+    Template("P03", "public", ("in_group",), "argmax(primary)"),
+    Template("P04", "public", ("at_least(primary)",), "max(secondary)"),
+    Template("P05", "public", ("at_least(primary)",), "compare_groups"),
+    Template("P06", "public", ("below(secondary)", "time_between"), "count"),
+    Template("P07", "public", ("in_group",), "nearest_to"),
+    Template("P08", "public", ("in_group",), "time_of_max(primary)"),
+    Template("P09", "public", ("within_distance",), "rank(primary)"),
+    Template("P10", "public", ("at_least(secondary)",), "max(primary)"),
+    Template("P11", "public", ("time_between",), "min(secondary)"),
+    Template("P12", "public", ("below(primary)",), "nearest_distance"),
 )
 
-_EXCLUSIVE = (frozenset({"mag_at_least", "mag_below"}), frozenset({"depth_shallower_than", "depth_at_least"}))
-# Filter/terminal pairs where the filter can never change the answer (the winner always passes it).
-_MONOTONE = {
-    ("mag_at_least", "max_mag"), ("mag_at_least", "argmax_mag"), ("mag_at_least", "time_of_largest"),
-    ("mag_at_least", "rank_mag"), ("depth_at_least", "max_depth"), ("depth_shallower_than", "min_depth"),
-}
+
+def _bind(token: str, domain: Domain) -> str:
+    """A role template's op on a domain: 'at_least(primary)' is 'mag_at_least' for earthquakes."""
+    kind, role_name = parse_op(token)
+    if role_name is None:
+        return op_name(domain, kind)
+    spec = domain.field(domain.roles[role_name])
+    if kind not in spec.filters + spec.terminals:
+        raise ValueError(f"{domain.name}: its {role_name} field {spec.key!r} has no {kind!r} operation")
+    return op_name(domain, kind, spec.key)
 
 
-def _compatible(filters: Sequence[str], terminal: str) -> bool:
+def public_templates(domain: Domain = EARTHQUAKES) -> tuple[Template, ...]:
+    """P01-P12 on a domain, under its op names. Without locations, the spatial templates (and so
+    their twins) are left out."""
+    out = []
+    for t in ROLE_TEMPLATES:
+        if not domain.has_location and any(parse_op(op)[0] in SPATIAL_KINDS for op in (*t.filters, t.terminal)):
+            continue
+        out.append(replace(t, filters=tuple(_bind(op, domain) for op in t.filters), terminal=_bind(t.terminal, domain)))
+    return tuple(out)
+
+
+def filter_ops(domain: Domain = EARTHQUAKES) -> tuple[str, ...]:
+    """Every filter a twin may use, in the order twins sample them: each field's threshold filters in
+    its spec's order, then the distance, time and group filters (ops.FILTER_OPS for earthquakes)."""
+    names = [op_name(domain, kind, spec.key) for spec in domain.fields for kind in spec.filters]
+    if domain.has_location:
+        names.append(op_name(domain, "within_distance"))
+    return (*names, op_name(domain, "time_between"), op_name(domain, "in_group"))
+
+
+def exclusive_pairs(domain: Domain = EARTHQUAKES) -> frozenset[frozenset[str]]:
+    """Filters a twin never combines: a lower and an upper threshold on one field."""
+    return frozenset(frozenset(op_name(domain, kind, spec.key) for kind in ("at_least", "below"))
+                     for spec in domain.fields if {"at_least", "below"} <= set(spec.filters))
+
+
+def monotone_pairs(domain: Domain = EARTHQUAKES) -> frozenset[tuple[str, str]]:
+    """(filter, terminal) pairs where the filter can never change the answer: the record with the
+    largest value passes every lower threshold on that field, and the smallest every upper one."""
+    pairs: set[tuple[str, str]] = set()
+    for spec in domain.fields:
+        for kind, ends in (("at_least", TOP_KINDS), ("below", BOTTOM_KINDS)):
+            if kind in spec.filters:
+                pairs.update((op_name(domain, kind, spec.key), op_name(domain, end, spec.key))
+                             for end in ends if end in spec.terminals)
+    return frozenset(pairs)
+
+
+# The 0.2.0 module-level names, for earthquakes (the pipeline and the tests import them).
+PUBLIC_TEMPLATES = public_templates(EARTHQUAKES)
+_EXCLUSIVE = exclusive_pairs(EARTHQUAKES)
+_MONOTONE = monotone_pairs(EARTHQUAKES)
+NEAREST_MAX_KM = EARTHQUAKES.spatial.nearest_max_km
+
+
+def _compatible(filters: Sequence[str], terminal: str, exclusive: frozenset[frozenset[str]] = _EXCLUSIVE,
+                monotone: frozenset[tuple[str, str]] = _MONOTONE) -> bool:
     chosen = set(filters)
-    if any(pair <= chosen for pair in _EXCLUSIVE):
+    if any(pair <= chosen for pair in exclusive):
         return False
-    if any((f, terminal) in _MONOTONE for f in chosen):
+    if any((f, terminal) in monotone for f in chosen):
         return False
-    if terminal == "compare_regions" and "in_region" in chosen:
+    kinds = {parse_op(f)[0] for f in chosen}
+    end = parse_op(terminal)[0]
+    if end == "compare_groups" and "in_group" in kinds:
         return False
-    if terminal in ("nearest_to", "nearest_distance") and "within_distance" in chosen:
+    if end in ("nearest_to", "nearest_distance") and "within_distance" in kinds:  # one point per chain
         return False
     return True
 
 
-def compose_new_templates(rng: random.Random) -> list[Template]:
+def compose_new_templates(rng: random.Random, domain: Domain = EARTHQUAKES) -> list[Template]:
     """One 'new this run' twin per public template: same terminal and filter count, new filters."""
-    public_signatures = {t.signature for t in PUBLIC_TEMPLATES}
+    public = public_templates(domain)
+    population = filter_ops(domain)
+    exclusive, monotone = exclusive_pairs(domain), monotone_pairs(domain)
+    public_signatures = {t.signature for t in public}
     templates: list[Template] = []
     seen: set = set()
-    for base in PUBLIC_TEMPLATES:
+    for base in public:
         for _ in range(500):
-            filters = tuple(rng.sample(FILTER_OPS, len(base.filters)))
+            filters = tuple(rng.sample(population, len(base.filters)))
             candidate = Template(f"N{base.template_id[1:]}", "new", filters, base.terminal, twin_of=base.template_id)
-            if (_compatible(filters, base.terminal) and candidate.signature not in public_signatures
-                    and candidate.signature not in seen):
+            if (_compatible(filters, base.terminal, exclusive, monotone)
+                    and candidate.signature not in public_signatures and candidate.signature not in seen):
                 seen.add(candidate.signature)
                 templates.append(candidate)
                 break
@@ -121,25 +222,64 @@ class Context:
     window_hours: int
 
 
-def _quantile_pick(values: Sequence[float], rng: random.Random, lo: float = 0.25, hi: float = 0.85) -> float:
+def _spatial(domain: Domain) -> Spatial:
+    if domain.spatial is None:
+        raise ValueError(f"{domain.name} records have no location")
+    return domain.spatial
+
+
+def _pick_unit(units: Sequence[Unit], rng: random.Random) -> str:
+    """The symbol of the unit to ask in, drawn when there is a choice."""
+    return rng.choice(units).symbol if len(units) > 1 else units[0].symbol
+
+
+def _quantile_pick(values: Sequence[float], rng: random.Random, lo: float, hi: float) -> float:
     ordered = sorted(values)
     return ordered[int(rng.uniform(lo, hi) * (len(ordered) - 1))]
 
 
-def _region_counts(events: Sequence[Event]) -> list[tuple[str, int]]:
+def round_to_step(value: float, step: float) -> float:
+    """`value` rounded to a multiple of `step`. A power-of-ten step rounds to decimal places exactly
+    as round() does: 0.1 gives round(value, 1), and 1 gives float(round(value))."""
+    _, digits, exponent = Decimal(repr(step)).normalize().as_tuple()
+    places = -exponent
+    if digits == (1,):
+        return float(round(value)) if places == 0 else round(value, places)
+    return round(round(value / step) * step, max(0, places))
+
+
+def _draw_threshold(spec: FieldSpec, records: Sequence[ResolvedRecord], rng: random.Random) -> dict | None:
+    """A threshold on a field: a quantile of the records' values, jittered, converted to a drawn unit
+    and rounded to the field's step (or, on a coin flip, to its coarse step). Its parameters, or
+    None when it must be positive and is not; every draw is made either way."""
+    unit = _pick_unit(spec.units, rng) if spec.units else None
+    value = _quantile_pick([r.values[spec.key] for r in records], rng, *spec.quantiles)
+    if spec.jitter:
+        value += rng.uniform(-spec.jitter, spec.jitter)
+    if unit is not None:
+        value = find_unit(spec.units, unit).from_canonical(value)
+    coarse = spec.coarse_step is not None and rng.random() < 0.5
+    value = round_to_step(value, spec.coarse_step if coarse else spec.threshold_step)
+    if spec.positive_threshold and value <= 0:
+        return None
+    return {"value": value} if unit is None else {"value": value, "unit": unit}
+
+
+def _group_counts(records: Sequence[ResolvedRecord]) -> list[tuple[str, int]]:
     counts: dict[str, int] = {}
-    for e in events:
-        counts[e.region] = counts.get(e.region, 0) + 1
+    for r in records:
+        counts[r.group] = counts.get(r.group, 0) + 1
     return sorted(counts.items())
 
 
-def _draw_point(events: Sequence[Event], rng: random.Random, taken_labels: set[str]) -> dict:
-    """A named point near a random quake. Labels are unique within an instance."""
-    anchor = rng.choice(events)
-    lat, lon = destination(anchor.lat, anchor.lon, rng.uniform(5.0, 60.0), rng.uniform(0.0, 360.0))
-    label = f"station {anchor.network.upper()}-{rng.randrange(10, 100)}"
+def _draw_point(records: Sequence[ResolvedRecord], rng: random.Random, taken_labels: set[str],
+                spatial: Spatial) -> dict:
+    """A named point near a random record. Labels are unique within an instance."""
+    anchor = rng.choice(records)
+    lat, lon = destination(anchor.lat, anchor.lon, rng.uniform(*spatial.point_offset_km), rng.uniform(0.0, 360.0))
+    label = spatial.point_label.format(source=anchor.source.upper(), number=rng.randrange(10, 100))
     while label in taken_labels:
-        label = f"station {anchor.network.upper()}-{rng.randrange(10, 1000)}"
+        label = spatial.point_label.format(source=anchor.source.upper(), number=rng.randrange(10, 1000))
     return {"lat": round(lat, 3), "lon": round(lon, 3), "label": label}
 
 
@@ -152,144 +292,163 @@ def _draw_window(rng: random.Random, ctx: Context) -> dict | None:
     if latest <= first:
         return None
     start = first + 300 * rng.randrange(0, max(1, (latest - first) // 300))
-    return {"op": "time_between", "start": start, "end": start + duration * 60}
+    return {"start": start, "end": start + duration * 60}
 
 
-def draw_filter(op: str, events: Sequence[Event], rng: random.Random, ctx: Context,
-                taken_labels: set[str]) -> dict | None:
-    if op in ("mag_at_least", "mag_below"):
-        return {"op": op, "value": round(_quantile_pick([e.mag for e in events], rng), 1)}
-    if op in ("depth_shallower_than", "depth_at_least"):
-        unit = rng.choice(("km", "mi"))
-        depth_km = _quantile_pick([e.depth_km for e in events], rng, 0.25, 0.8) + rng.uniform(-1.5, 1.5)
-        value = from_km(depth_km, unit)
-        value = float(round(value)) if rng.random() < 0.5 else round(value, 1)
-        return {"op": op, "value": value, "unit": unit} if value > 0 else None
-    if op == "within_distance":
-        unit = rng.choice(("km", "mi"))
-        return {"op": op, **_draw_point(events, rng, taken_labels), "radius": rng.choice(RADII[unit]), "unit": unit}
-    if op == "time_between":
-        return _draw_window(rng, ctx)
-    if op == "in_region":
-        regions = [r for r, c in _region_counts(events) if c >= 2]
-        return {"op": op, "region": rng.choice(regions)} if regions else None
+def _answer_steps(units: Sequence[Unit], decimals: int, rng: random.Random) -> list[dict]:
+    """An answer with a unit is converted into a drawn unit and rounded; a unitless one is left as it is."""
+    if not units:
+        return []
+    return [{"op": "convert", "to": _pick_unit(units, rng)}, {"op": "round", "ndigits": decimals}]
+
+
+def draw_filter(op: str, records: Sequence[ResolvedRecord], rng: random.Random, ctx: Context,
+                taken_labels: set[str], *, domain: Domain = EARTHQUAKES) -> dict | None:
+    kind, field = parse_op(op)
+    if kind in ("at_least", "below"):
+        params = _draw_threshold(domain.field(field), records, rng)
+        return None if params is None else _step(op, **params)
+    if kind == "within_distance":
+        spatial = _spatial(domain)
+        unit = _pick_unit(LENGTH, rng)
+        point = _draw_point(records, rng, taken_labels, spatial)
+        return _step(op, **point, radius=rng.choice(spatial.radii[unit]), unit=unit)
+    if kind == "time_between":
+        window = _draw_window(rng, ctx)
+        return None if window is None else _step(op, **window)
+    if kind == "in_group":
+        groups = [g for g, c in _group_counts(records) if c >= 2]
+        return _step(op, group=rng.choice(groups)) if groups else None
     raise ValueError(f"unknown filter {op!r}")
 
 
-def draw_terminal(op: str, events: Sequence[Event], rng: random.Random, taken_labels: set[str]) -> list[dict] | None:
-    if op in ("count", "argmax_mag", "max_mag", "time_of_largest"):
-        return [{"op": op}]
-    if op == "rank_mag":
-        return [{"op": op, "k": rng.choice((2, 3))}]
-    if op in ("max_depth", "min_depth"):
-        return [{"op": op}, {"op": "convert", "to": rng.choice(("km", "mi"))}, {"op": "round", "ndigits": 1}]
-    if op == "nearest_to":
-        return [{"op": op, **_draw_point(events, rng, taken_labels)}]
-    if op == "nearest_distance":
-        return [{"op": op, **_draw_point(events, rng, taken_labels)}, {"op": "convert", "to": rng.choice(("km", "mi"))},
-                {"op": "round", "ndigits": 1}]
-    if op == "compare_regions":
-        counts = _region_counts(events)
-        regions = [r for r, c in counts if c >= 2] or [r for r, _ in counts]
-        if len(regions) < 2:
+def draw_terminal(op: str, records: Sequence[ResolvedRecord], rng: random.Random, taken_labels: set[str], *,
+                  domain: Domain = EARTHQUAKES) -> list[dict] | None:
+    kind, field = parse_op(op)
+    if kind in ("count", "argmax", "time_of_max"):
+        return [_step(op)]
+    if kind == "rank":
+        return [_step(op, k=rng.choice(RANKS))]
+    if kind in ("max", "min"):
+        spec = domain.field(field)
+        return [_step(op), *_answer_steps(spec.units, spec.decimals, rng)]
+    if kind == "nearest_to":
+        return [_step(op, **_draw_point(records, rng, taken_labels, _spatial(domain)))]
+    if kind == "nearest_distance":
+        spatial = _spatial(domain)
+        nearest = _step(op, **_draw_point(records, rng, taken_labels, spatial))
+        return [nearest, *_answer_steps(LENGTH, spatial.decimals, rng)]
+    if kind == "compare_groups":
+        counts = _group_counts(records)
+        groups = [g for g, c in counts if c >= 2] or [g for g, _ in counts]
+        if len(groups) < 2:
             return None
-        a, b = rng.sample(regions, 2)
-        return [{"op": op, "a": a, "b": b}]
+        a, b = rng.sample(groups, 2)
+        return [_step(op, a=a, b=b)]
     raise ValueError(f"unknown terminal {op!r}")
 
 
-def guards_ok(chain: Sequence[dict], events: Sequence[Event]) -> bool:
-    """Reject parameters that sit too close to any event, or answers that are not unique."""
-    for step in chain:
-        op = step["op"]
-        if op in ("depth_shallower_than", "depth_at_least"):
-            y = to_km(step["value"], step["unit"])
-            margin = max(DEPTH_MARGIN_KM, DEPTH_MARGIN_REL * abs(y))
-            if any(abs(e.depth_km - y) < margin for e in events):
+def _canonical_threshold(s: Step) -> float:
+    symbol = s.get("unit")
+    return s["value"] if symbol is None else s.unit(symbol).to_canonical(s["value"])
+
+
+def guards_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *, domain: Domain = EARTHQUAKES) -> bool:
+    """Reject parameters that sit too close to any record, or answers that are not unique."""
+    units = domain.units
+    for raw in chain:
+        s = Step(raw, units)
+        if s.kind in ("at_least", "below"):
+            spec = domain.field(s.field)
+            y = _canonical_threshold(s)
+            margin = max(spec.margin[0], spec.margin[1] * abs(y))
+            if any(abs(r.values[s.field] - y) < margin for r in records):
                 return False
-        elif op == "within_distance":
-            r = to_km(step["radius"], step["unit"])
-            margin = max(DISTANCE_MARGIN_KM, DISTANCE_MARGIN_REL * r)
-            if any(abs(distance_km(step, e) - r) < margin for e in events):
+        elif s.kind == "within_distance":
+            spatial = _spatial(domain)
+            radius = s.unit(s["unit"]).to_canonical(s["radius"])
+            margin = max(spatial.margin[0], spatial.margin[1] * radius)
+            if any(abs(distance_km(raw, r) - radius) < margin for r in records):
                 return False
-        elif op == "time_between":
-            if any(abs(e.time - edge) < TIME_MARGIN_S for e in events for edge in (step["start"], step["end"])):
+        elif s.kind == "time_between":
+            if any(abs(r.time - edge) < TIME_MARGIN_S for r in records for edge in (s["start"], s["end"])):
                 return False
-    rows = rows_after_filters(chain, events)
-    term = terminal_step(chain)
-    op = term["op"]
-    mags = sorted((e.mag for e in rows), reverse=True)
-    if op in ("argmax_mag", "time_of_largest"):
-        return bool(rows) and (len(mags) < 2 or mags[0] - mags[1] >= MAG_GAP)
-    if op == "rank_mag":  # no ties anywhere above or at the asked rank, so every reading of "k-th" agrees
-        k = term["k"]
-        top = mags[:k + 1]
-        return len(mags) >= k and all(a - b >= MAG_GAP for a, b in zip(top, top[1:]))
-    if op in ("nearest_to", "nearest_distance"):
-        d = sorted(distance_km(term, e) for e in rows)
-        return (bool(d) and d[0] <= NEAREST_MAX_KM
-                and (len(d) < 2 or d[1] - d[0] >= max(NEAREST_GAP_KM, NEAREST_GAP_REL * d[0])))
-    if op in ("max_mag", "max_depth", "min_depth"):
+    rows = rows_after_filters(chain, records, units=units)
+    term = Step(terminal_step(chain), units)
+    if term.kind in ("argmax", "time_of_max", "rank"):
+        values = sorted((r.values[term.field] for r in rows), reverse=True)
+        gap = domain.field(term.field).rank_gap - FLOAT_SLACK
+        if term.kind == "rank":  # no ties anywhere above or at the asked rank, so every reading of "k-th" agrees
+            top = values[:term["k"] + 1]
+            return len(values) >= term["k"] and all(a - b >= gap for a, b in zip(top, top[1:]))
+        return bool(rows) and (len(values) < 2 or values[0] - values[1] >= gap)
+    if term.kind in ("nearest_to", "nearest_distance"):
+        spatial = _spatial(domain)
+        d = sorted(distance_km(term.raw, r) for r in rows)
+        return (bool(d) and d[0] <= spatial.nearest_max_km
+                and (len(d) < 2 or d[1] - d[0] >= max(spatial.nearest_gap[0], spatial.nearest_gap[1] * d[0])))
+    if term.kind in ("max", "min"):
         return bool(rows)
-    if op == "compare_regions":
-        return any(e.region in (term["a"], term["b"]) for e in rows)
+    if term.kind == "compare_groups":
+        return any(r.group in (term["a"], term["b"]) for r in rows)
     return True
 
 
-def _interesting(chain: Sequence[dict], events: Sequence[Event], value: Any, rng: random.Random) -> bool:
-    op = terminal_step(chain)["op"]
-    if op == "count":
-        return 1 <= value < len(events)
-    if op == "compare_regions":
+def _interesting(chain: Sequence[dict], records: Sequence[ResolvedRecord], value: Any, rng: random.Random) -> bool:
+    kind = Step(terminal_step(chain)).kind
+    if kind == "count":
+        return 1 <= value < len(records)
+    if kind == "compare_groups":
         return value != "tie" or rng.random() < 0.25  # ties are legitimate but kept rare
     return value is not None
 
 
 def fingerprint(chain: Sequence[dict]) -> str:
-    """Identity of a concrete question. Station labels are cosmetic and left out, and the two regions
+    """Identity of a concrete question. Point labels are cosmetic and left out, and the two groups
     of a comparison are unordered ("A or B?" is the same question as "B or A?")."""
     steps = []
     for step in chain:
         canonical = {k: v for k, v in step.items() if k != "label"}
-        if canonical["op"] == "compare_regions":
+        if Step(step).kind == "compare_groups":
             canonical["a"], canonical["b"] = sorted((canonical["a"], canonical["b"]))
         steps.append(canonical)
     return json.dumps(steps, sort_keys=True)
 
 
-def instantiate(template: Template, events: Sequence[Event], rng: random.Random, ctx: Context, *,
-                used_chains: set[str], taken_labels: set[str], attempts: int = 40) -> Question | None:
+def instantiate(template: Template, records: Sequence[ResolvedRecord], rng: random.Random, ctx: Context, *,
+                used_chains: set[str], taken_labels: set[str], attempts: int = 40,
+                domain: Domain = EARTHQUAKES) -> Question | None:
     """Draw parameters for a template until every guard passes and the question is new to the run."""
     for _ in range(attempts):
         chain: list[dict] = [{"op": "dedupe"}]
         complete = True
         for op in template.filters:
-            step = draw_filter(op, events, rng, ctx, taken_labels)
+            step = draw_filter(op, records, rng, ctx, taken_labels, domain=domain)
             if step is None:
                 complete = False
                 break
             chain.append(step)
-        tail = draw_terminal(template.terminal, events, rng, taken_labels) if complete else None
+        tail = draw_terminal(template.terminal, records, rng, taken_labels, domain=domain) if complete else None
         if tail is None:
             continue
         chain.extend(tail)
-        if fingerprint(chain) in used_chains or not guards_ok(chain, events):
+        if fingerprint(chain) in used_chains or not guards_ok(chain, records, domain=domain):
             continue
-        value = execute(chain, events)
-        if value is None or not _interesting(chain, events, value, rng):
+        value = execute(chain, records, units=domain.units)
+        if value is None or not _interesting(chain, records, value, rng):
             continue
-        answer_type, unit = answer_spec(chain)
+        answer_type, unit = answer_spec(chain, domain)
         used_chains.add(fingerprint(chain))
         taken_labels.update(step["label"] for step in chain if "label" in step)
         return Question(qid="", template_id=template.template_id, pool=template.pool, chain=chain,
                         answer_type=answer_type, unit=unit,
-                        evidence=[e.id for e in rows_after_filters(chain, events)])
+                        evidence=[r.id for r in rows_after_filters(chain, records, units=domain.units)])
     return None
 
 
-def compose_questions(events: Sequence[Event], public: Sequence[Template], new: Sequence[Template],
+def compose_questions(records: Sequence[ResolvedRecord], public: Sequence[Template], new: Sequence[Template],
                       rng: random.Random, ctx: Context, n_questions: int, used_chains: set[str],
-                      usage: dict[str, int]) -> list[Question]:
+                      usage: dict[str, int], *, domain: Domain = EARTHQUAKES) -> list[Question]:
     """3-5 questions per instance, balanced between the public and the new pool.
 
     `usage` counts how often each template has been used so far in the run. A template may only run
@@ -310,7 +469,8 @@ def compose_questions(events: Sequence[Event], public: Sequence[Template], new: 
                       and usage.get(t.template_id, 0) <= usage.get(twin.get(t.template_id, ""), 1 << 30)]
         rng.shuffle(candidates)
         for template in candidates[:6]:
-            question = instantiate(template, events, rng, ctx, used_chains=used_chains, taken_labels=taken_labels)
+            question = instantiate(template, records, rng, ctx, used_chains=used_chains, taken_labels=taken_labels,
+                                   domain=domain)
             if question is not None:
                 question.qid = f"Q{len(questions) + 1}"
                 questions.append(question)
@@ -322,6 +482,9 @@ def compose_questions(events: Sequence[Event], public: Sequence[Template], new: 
 
 # -------------------------------------------------------------------------------- phrasing
 
+ORDINALS = {2: "second", 3: "third"}
+RELATIVE_CLAUSES = ("that ", "whose ")  # clause openings that read best at the end
+
 
 def fmt_num(x: Any) -> str:
     if isinstance(x, float) and x.is_integer():
@@ -329,15 +492,15 @@ def fmt_num(x: Any) -> str:
     return f"{x:g}" if isinstance(x, float) else str(x)
 
 
-def _qty(value: float, unit: str, alt_units: bool) -> str:
-    """'50 miles', or in a metamorphic variant the same quantity in the other unit: '80.5 km'."""
+def _quantity(value: float, unit: Unit, units: Sequence[Unit], decimals: int, alt_units: bool) -> str:
+    """'50 miles', or in a metamorphic variant the same quantity in the next unit: '80.5 km'."""
     if alt_units:
-        other = "mi" if unit == "km" else "km"
-        return f"{from_km(to_km(value, unit), other):.1f} {UNIT_WORDS[other]}"
-    return f"{fmt_num(value)} {UNIT_WORDS[unit]}"
+        other = units[(units.index(unit) + 1) % len(units)]
+        return f"{other.from_canonical(unit.to_canonical(value)):.{decimals}f} {other.words}"
+    return f"{fmt_num(value)} {unit.words}"
 
 
-def _place(step: dict, rng: random.Random) -> str:
+def _place(step: Mapping[str, Any], rng: random.Random) -> str:
     lat, lon = step["lat"], step["lon"]
     if rng.random() < 0.5:
         return f"{step['label']} ({abs(lat):.3f}°{'N' if lat >= 0 else 'S'}, {abs(lon):.3f}°{'E' if lon >= 0 else 'W'})"
@@ -351,32 +514,31 @@ def _when(ts: int, style: int) -> str:
     return f"{dt:%H:%M} UTC on {dt.day} {MONTHS_LONG[dt.month - 1]} {dt.year}"
 
 
-def _filter_phrase(step: dict, rng: random.Random, alt_units: bool) -> str:
-    op = step["op"]
-    if op == "mag_at_least":
-        v = fmt_num(step["value"])
-        return rng.choice((f"of magnitude {v} or greater", f"with magnitude at least {v}", f"of magnitude {v} or more"))
-    if op == "mag_below":
-        v = fmt_num(step["value"])
-        return rng.choice((f"with magnitude below {v}", f"smaller than magnitude {v}"))
-    if op == "depth_shallower_than":
-        q = _qty(step["value"], step["unit"], alt_units)
-        return rng.choice((f"shallower than {q}", f"with a depth of less than {q}"))
-    if op == "depth_at_least":
-        q = _qty(step["value"], step["unit"], alt_units)
-        return rng.choice((f"at least {q} deep", f"with a depth of {q} or more"))
-    if op == "within_distance":
-        q = _qty(step["radius"], step["unit"], alt_units)
-        p = _place(step, rng)
-        return rng.choice((f"within {q} of {p}", f"no more than {q} from {p}"))
-    if op == "time_between":
+def _wordings(table: Mapping[str, tuple[str, ...]], step: Mapping[str, Any], domain: Domain) -> tuple[str, ...]:
+    name = step_op(step)
+    if name not in table:
+        raise ValueError(f"the {domain.name} lexicon has no wording for {name!r}")
+    return table[name]
+
+
+def _filter_phrase(step: Mapping[str, Any], rng: random.Random, alt_units: bool, domain: Domain) -> str:
+    s = Step(step, domain.units)
+    if s.kind in ("at_least", "below"):
+        symbol = s.get("unit")
+        value = s["value"]
+        values = {"value": fmt_num(value) if symbol is None else
+                  _quantity(value, s.unit(symbol), s.units(), domain.field(s.field).decimals, alt_units)}
+    elif s.kind == "within_distance":
+        values = {"value": _quantity(s["radius"], s.unit(s["unit"]), LENGTH, _spatial(domain).decimals, alt_units),
+                  "place": _place(step, rng)}
+    elif s.kind == "time_between":
         style = rng.randrange(2)
-        a, b = _when(step["start"], style), _when(step["end"], style)
-        return rng.choice((f"that occurred between {a} and {b}", f"that were recorded from {a} up to {b}"))
-    if op == "in_region":
-        r = step["region"]
-        return rng.choice((f"in {r}", f"located in {r}", f"whose region is listed as {r}"))
-    raise ValueError(f"unknown filter {op!r}")
+        values = {"start": _when(s["start"], style), "end": _when(s["end"], style)}
+    elif s.kind == "in_group":
+        values = {"group": s["group"]}
+    else:
+        raise ValueError(f"unknown filter {s.op!r}")
+    return rng.choice(_wordings(domain.lexicon.filters, step, domain)).format(**values)
 
 
 def _join(clauses: list[str]) -> str:
@@ -385,51 +547,20 @@ def _join(clauses: list[str]) -> str:
     return ", ".join(clauses[:-1]) + " and " + clauses[-1]
 
 
-ORDINALS = {2: "second", 3: "third"}
-
-
-def phrase_question(question: Question, rng: random.Random, alt_units: bool = False) -> str:
-    """English wording for a question. Different RNG draws give paraphrases with the same meaning."""
-    clauses = [_filter_phrase(s, rng, alt_units) for s in question.chain if s["op"] in FILTER_OPS]
-    clauses.sort(key=lambda c: c.startswith(("that ", "whose ")))  # relative clauses read best last
-    group = f"earthquakes {_join(clauses)}" if clauses else "earthquakes in the digest"
+def phrase_question(question: Question, rng: random.Random, alt_units: bool = False, *,
+                    domain: Domain = EARTHQUAKES) -> str:
+    """Wording for a question. Different RNG draws give paraphrases with the same meaning."""
+    lexicon = domain.lexicon
+    clauses = [_filter_phrase(s, rng, alt_units, domain) for s in question.chain if role(s["op"]) == "filter"]
+    clauses.sort(key=lambda c: c.startswith(RELATIVE_CLAUSES))  # relative clauses read best last
     term = terminal_step(question.chain)
-    op = term["op"]
-    unit = UNIT_WORDS.get(question.unit or "", "")
-    if op == "count":
-        options = (f"How many distinct {group} are there?", f"Count the distinct {group}.",
-                   f"What is the number of separate {group}?")
-    elif op == "argmax_mag":
-        options = (f"Among the {group}, which one had the largest magnitude? Give its event ID.",
-                   f"What is the event ID of the strongest of the {group}?")
-    elif op == "rank_mag":
-        nth = ORDINALS[term["k"]]
-        options = (f"Among the {group}, which one has the {nth}-largest magnitude? Give its event ID.",
-                   f"Rank the {group} by magnitude, largest first: which event is {nth}? Give its event ID.")
-    elif op == "max_mag":
-        options = (f"What was the largest magnitude among the {group}?",
-                   f"Among the {group}, what was the highest magnitude recorded?")
-    elif op == "max_depth":
-        options = (f"What was the greatest depth, in {unit}, among the {group}? Round to 1 decimal place.",
-                   f"Among the {group}, how deep was the deepest one, in {unit}? Round to 1 decimal place.")
-    elif op == "min_depth":
-        options = (f"What was the smallest depth, in {unit}, among the {group}? Round to 1 decimal place.",
-                   f"Among the {group}, how deep was the shallowest one, in {unit}? Round to 1 decimal place.")
-    elif op == "nearest_to":
-        p = _place(term, rng)
-        options = (f"Which of the {group} was closest to {p}? Give its event ID.",
-                   f"Among the {group}, give the event ID of the one nearest to {p}.")
-    elif op == "nearest_distance":
-        p = _place(term, rng)
-        options = (f"How far from {p}, in {unit}, was the closest of the {group}? Round to 1 decimal place.",
-                   f"Among the {group}, what is the distance in {unit} from {p} to the nearest one? Round to 1 decimal place.")
-    elif op == "compare_regions":
-        a, b = term["a"], term["b"]
-        options = (f"Counting only {group}, which region has more of them: {a} or {b}? Answer \"tie\" if the counts are equal.",
-                   f"Which region had more {group}: {a} or {b}? Say \"tie\" if they are equal.")
-    elif op == "time_of_largest":
-        options = (f"At what time (UTC, HH:MM) did the largest of the {group} occur?",
-                   f"When, in UTC (HH:MM), was the strongest of the {group} recorded?")
-    else:
-        raise ValueError(f"unknown terminal {op!r}")
-    return rng.choice(options)
+    s = Step(term, domain.units)
+    values = {"records": f"{lexicon.records} {_join(clauses)}" if clauses else lexicon.all_records,
+              "unit": s.unit(question.unit).words if question.unit else ""}
+    if s.kind == "rank":
+        values["nth"] = ORDINALS[s["k"]]
+    elif s.kind in ("nearest_to", "nearest_distance"):
+        values["place"] = _place(term, rng)
+    elif s.kind == "compare_groups":
+        values.update(a=s["a"], b=s["b"])
+    return rng.choice(_wordings(lexicon.questions, term, domain)).format(**values)
