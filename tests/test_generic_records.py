@@ -21,6 +21,7 @@ from evalgen.digest import make_chatter
 from evalgen.domains import all_domains, get_domain
 from evalgen.domains.base import GENERIC_CHATTER, Lexicon, Record, RecordReport, Surface, TrapVocab, standard_lexicon
 from evalgen.domains.earthquakes import EARTHQUAKES
+from evalgen.genres import all_genres
 from evalgen.genres.classic import CLASSIC
 from evalgen.mix import Entry, choices, parse_mix, single_choice
 from evalgen.models import Instance, Notice, Rendering, Trap
@@ -98,8 +99,10 @@ def test_a_tolerance_holds_in_every_unit_an_answer_can_be_asked_in(toys):
 def test_a_mix_names_one_domain_and_genre_until_phase_4(toys):
     assert parse_mix("legacy") == () and single_choice("legacy") is None
     assert parse_mix(" toy : classic ") == (Entry("toy", "classic"),) and parse_mix("toy") == (Entry("toy"),)
-    assert single_choice("toy:classic") == single_choice("toy") == (toys.toy, CLASSIC)  # a bare domain: any genre
-    assert choices(parse_mix("toy,toy-flat:classic")) == [(toys.toy, CLASSIC), (toys.flat, CLASSIC)]
+    assert single_choice("toy:classic") == (toys.toy, CLASSIC)
+    assert choices(parse_mix("toy")) == [(toys.toy, genre) for genre in all_genres()]  # a bare domain: any genre
+    assert choices(parse_mix("toy,toy-flat:classic")) == [(toys.toy, genre) for genre in all_genres()] + [
+        (toys.flat, CLASSIC)]
     for text in ("toy,toy-flat:classic", "random"):
         with pytest.raises(NotImplementedError, match="phase 4"):
             single_choice(text)
