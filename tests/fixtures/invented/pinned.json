@@ -1,0 +1,326 @@
+{
+  "about": "What seed 20261108 draws in the invented domain alone: its synthetic snapshot (360 records) and the surfaces of the first three instances of a run (seed path instance/i/surface). tests/test_domain_invented.py checks that the same seed still draws exactly these.",
+  "seed": 20261108,
+  "pool_size": 360,
+  "compiled_at": 1787378400,
+  "events_sha256": "9ba5d3c4f129932070d8922046a6e5b41788ab6309c37edfa5177dde0c242654",
+  "first_records": [
+    {
+      "id": "iv-90958",
+      "time": 1787119343,
+      "group": "hazel",
+      "source": "elk",
+      "values": {
+        "f1": 216.8,
+        "f2": 45.6
+      }
+    },
+    {
+      "id": "iv-34108",
+      "time": 1787120294,
+      "group": "elm",
+      "source": "elk",
+      "values": {
+        "f1": 218.1,
+        "f2": 53.6
+      }
+    },
+    {
+      "id": "iv-37814",
+      "time": 1787121700,
+      "group": "birch",
+      "source": "bay",
+      "values": {
+        "f1": 209.2,
+        "f2": 43.4
+      }
+    }
+  ],
+  "surfaces": [
+    {
+      "noun": "consignment",
+      "plural": "consignments",
+      "id_label": "consignment ID",
+      "source_label": "operator",
+      "group_label": "dock",
+      "id_prefix": "zgs/",
+      "labels": {
+        "f1": "nep tonnage",
+        "f2": "berthing duration"
+      },
+      "groups": {
+        "alder": "Lull Reach",
+        "birch": "Dorn Ford",
+        "cedar": "Drerk",
+        "dogwood": "Prerm",
+        "elm": "Valol",
+        "fir": "Nak",
+        "gorse": "Tosorm",
+        "hazel": "Globurt Spur"
+      },
+      "sources": {
+        "ash": "Tumert",
+        "bay": "Glerlag",
+        "cob": "Zalan",
+        "dun": "Kesk",
+        "elk": "Mid Shipping"
+      },
+      "units": {
+        "f1": [
+          {
+            "symbol": "kr",
+            "words": "krems"
+          },
+          {
+            "symbol": "rm",
+            "words": "rirms",
+            "scale": 40.0,
+            "decimals": 3,
+            "step": 0.1
+          }
+        ],
+        "f2": [
+          {
+            "symbol": "gl",
+            "words": "glurms"
+          },
+          {
+            "symbol": "da",
+            "words": "dalls",
+            "scale": 0.1,
+            "decimals": 0,
+            "step": 10.0
+          }
+        ]
+      },
+      "trap_vocab": {
+        "rereporting_sources": [
+          "Dern",
+          "Brorm",
+          "Tumert"
+        ],
+        "duplicate_notes": [
+          "duplicate of",
+          "mirror of"
+        ],
+        "retraction_reasons": [
+          "barcode collision",
+          "double scan",
+          "mislabelled crate"
+        ],
+        "retraction_notices": [
+          "rescinded",
+          "struck from the ledger"
+        ],
+        "correction_notices": [
+          "reset to",
+          "restated as"
+        ]
+      },
+      "chatter": [
+        "This digest is compiled automatically and has not been checked by an editor.",
+        "No {group_label} reported a closure in this period.",
+        "Gate traffic at several {group_label}s was heavier than usual.",
+        "Reminder: each {source_label} files in its own units; the glossary gives every conversion.",
+        "Late {plural} may be listed in the next edition instead."
+      ]
+    },
+    {
+      "noun": "drum",
+      "plural": "drums",
+      "id_label": "tag number",
+      "source_label": "bureau",
+      "group_label": "outpost",
+      "id_prefix": "MVW.",
+      "labels": {
+        "f1": "declared lading",
+        "f2": "transit time"
+      },
+      "groups": {
+        "alder": "Brarnon",
+        "birch": "Lasturm Spur",
+        "cedar": "Pakort",
+        "dogwood": "Fill",
+        "elm": "Nudend",
+        "fir": "Garak",
+        "gorse": "Dornind",
+        "hazel": "Slesesk"
+      },
+      "sources": {
+        "ash": "Bradod Cartage",
+        "bay": "Glirk Lines",
+        "cob": "Gondesk Transit",
+        "dun": "Drurk",
+        "elk": "Warnot Forwarding"
+      },
+      "units": {
+        "f1": [
+          {
+            "symbol": "zk",
+            "words": "zirks"
+          },
+          {
+            "symbol": "sn",
+            "words": "surns",
+            "scale": 0.2,
+            "decimals": 1,
+            "step": 25.0
+          },
+          {
+            "symbol": "sd",
+            "words": "sunds",
+            "scale": 25.0,
+            "decimals": 3,
+            "step": 0.2
+          }
+        ],
+        "f2": [
+          {
+            "symbol": "hl",
+            "words": "halls"
+          },
+          {
+            "symbol": "qk",
+            "words": "quesks",
+            "scale": 0.5,
+            "decimals": 1,
+            "step": 2.0
+          },
+          {
+            "symbol": "kk",
+            "words": "krarks",
+            "scale": 16.0,
+            "decimals": 3,
+            "step": 0.05
+          }
+        ]
+      },
+      "trap_vocab": {
+        "rereporting_sources": [
+          "Kust Forwarding",
+          "Lud",
+          "Glirk Lines"
+        ],
+        "duplicate_notes": [
+          "same drum as",
+          "double entry of"
+        ],
+        "retraction_reasons": [
+          "scanner misread",
+          "barcode collision",
+          "gate sensor fault"
+        ],
+        "retraction_notices": [
+          "cancelled",
+          "struck from the ledger"
+        ],
+        "correction_notices": [
+          "restated as",
+          "revised to"
+        ]
+      },
+      "chatter": [
+        "No {group_label} reported a closure in this period.",
+        "Ledger maintenance ran from {h1} to {h2} UTC; filing resumed afterwards.",
+        "Gate traffic at several {group_label}s was heavier than usual.",
+        "Reminder: each {source_label} files in its own units; the glossary gives every conversion.",
+        "Late {plural} may be listed in the next edition instead."
+      ]
+    },
+    {
+      "noun": "shipment",
+      "plural": "shipments",
+      "id_label": "shipment number",
+      "source_label": "bureau",
+      "group_label": "compound",
+      "id_prefix": "nk.",
+      "labels": {
+        "f1": "rated weight",
+        "f2": "sop spell"
+      },
+      "groups": {
+        "alder": "Skirnom Staithe",
+        "birch": "Fevib",
+        "cedar": "Kaskund",
+        "dogwood": "Kend",
+        "elm": "Snondark Mill",
+        "fir": "Nag",
+        "gorse": "Teroll",
+        "hazel": "Stok"
+      },
+      "sources": {
+        "ash": "Trurim",
+        "bay": "Vern",
+        "cob": "Bern",
+        "dun": "Suk",
+        "elk": "Mekum Logistics"
+      },
+      "units": {
+        "f1": [
+          {
+            "symbol": "tk",
+            "words": "tuks"
+          },
+          {
+            "symbol": "le",
+            "words": "lerts",
+            "scale": 0.04,
+            "decimals": 0,
+            "step": 100.0
+          },
+          {
+            "symbol": "vk",
+            "words": "vosks",
+            "scale": 60.0,
+            "decimals": 3,
+            "step": 0.1
+          }
+        ],
+        "f2": [
+          {
+            "symbol": "vu",
+            "words": "vusts"
+          },
+          {
+            "symbol": "sl",
+            "words": "snuls",
+            "scale": 0.125,
+            "decimals": 1,
+            "step": 10.0
+          }
+        ]
+      },
+      "trap_vocab": {
+        "rereporting_sources": [
+          "Wil",
+          "Lend",
+          "Trurim"
+        ],
+        "duplicate_notes": [
+          "mirror of",
+          "duplicate of"
+        ],
+        "retraction_reasons": [
+          "training record",
+          "double scan",
+          "barcode collision"
+        ],
+        "retraction_notices": [
+          "voided",
+          "rescinded"
+        ],
+        "correction_notices": [
+          "adjusted to",
+          "restated as"
+        ]
+      },
+      "chatter": [
+        "The {source_label} feeds were briefly out of step between {h1} and {h2} UTC; nothing was lost.",
+        "No {group_label} reported a closure in this period.",
+        "Editor's note: entries are reproduced exactly as each {source_label} filed them, units included.",
+        "Ledger maintenance ran from {h1} to {h2} UTC; filing resumed afterwards.",
+        "Late {plural} may be listed in the next edition instead."
+      ]
+    }
+  ]
+}
