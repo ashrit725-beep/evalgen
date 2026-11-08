@@ -12,15 +12,14 @@ value and its time) and depth the *secondary* one (thresholds, the deepest and t
 from __future__ import annotations
 
 import random
-from typing import Any, Mapping, Sequence
+from typing import Sequence
 
 from ..forecast import forecast_text, make_forecast, resolve_forecasts
-from ..geo import EARTH_RADIUS_KM
 from ..models import EVENT_ID_PATTERN, Event, Notice, Report
 from ..ops import ALIASES
 from ..rules import READING_RULES, Mishandle, resolve
 from ..sources import generate_synthetic, mimic_event_id, new_event_id
-from .base import LENGTH, Domain, FieldSpec, Forecaster, Lexicon, Spatial, TrapVocab, Unit
+from .base import LENGTH, Domain, FieldSpec, Forecaster, Lexicon, Spatial, TrapVocab
 
 # Margin guards: no event may sit this close to a threshold, so that display rounding (0.1 km or mi,
 # 0.001 degrees, minute-precision times) can never change a correct answer. Magnitudes need no
@@ -114,13 +113,6 @@ TRAP_VOCAB = TrapVocab(
 FORECASTER = Forecaster(source="usgs", make=make_forecast, text=forecast_text, resolve=resolve_forecasts)
 
 
-def _units_text(units: Sequence[Unit], canonical: str) -> str:
-    """'km or mi (1 mi = 1.609344 km)'."""
-    names = " or ".join(u.symbol for u in units)
-    conversions = "; ".join(f"1 {u.symbol} = {u.scale!r} {canonical}" for u in units if u.symbol != canonical)
-    return f"{names} ({conversions})" if conversions else names
-
-
 class Earthquakes(Domain):
     name = "earthquakes"
     noun = "earthquake"
@@ -155,21 +147,6 @@ class Earthquakes(Domain):
 
     def rules_text(self) -> str:
         return READING_RULES
-
-    def glossary(self, surface: Mapping[str, Any] | None = None) -> str:
-        """The data dictionary for non-legacy prompts. Legacy (0.2.0) prompts print only the rules."""
-        return "\n".join([
-            "Glossary (earthquake reports):",
-            f"- {self.id_label}: identifies one earthquake; it is the ID printed on the earthquake's REVIEWED report.",
-            f"- {self.source_label}: the seismic network that filed a report.",
-            f"- {self.group_label}: where the earthquake struck, as printed on its report.",
-            f"- {MAGNITUDE.label}: a plain number; the scale printed beside it (md, ml, mb, mw, mww, ...) "
-            "does not change how magnitudes compare.",
-            f"- {DEPTH.label}: in {_units_text(DEPTH.units, 'km')} below sea level; "
-            "a negative depth is above sea level.",
-            f"- distance: great-circle, in {_units_text(LENGTH, 'km')}, "
-            f"on a sphere of radius {EARTH_RADIUS_KM:g} km.",
-        ]) + "\n"
 
     def resolve(self, reports: Sequence[Report], notices: Sequence[Notice],
                 mishandle: Mishandle | None = None) -> list[Event]:

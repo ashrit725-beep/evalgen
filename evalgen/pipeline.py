@@ -134,11 +134,16 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
     `genre_plan` gives the genre of each rendering, the original first. None is the legacy path:
     classic everywhere, with the 0.2.0 calls, random draws and output. Otherwise the instance records
     its domain and each rendering its genre, and a variant avoids the original's style only when it
-    is in the original's genre."""
+    is in the original's genre. A domain with surface words draws them for the instance (only off
+    the legacy path, so the legacy seed paths never change), and every step uses the bound domain."""
     if genre_plan is None and domain.name != EARTHQUAKES.name:
         raise ValueError(f"only earthquakes have a legacy rendering: {domain.name} needs a genre plan")
     if genre_plan is not None and len(genre_plan) != cfg.variants + 1:
         raise ValueError(f"the genre plan names {len(genre_plan)} genres for {cfg.variants + 1} renderings")
+    surface = None
+    if genre_plan is not None and domain.has_surface:
+        surface = domain.draw_surface(seedlog.rng("instance", index, "surface"))
+        domain = domain.bind(surface)
     events = sample_events(snapshot.events, seedlog.rng("instance", index, "events"), cfg.events_min, cfg.events_max)
     q_rng = seedlog.rng("instance", index, "questions")
     questions = compose_questions(events, public_templates(domain), new_templates, q_rng, ctx,
@@ -155,7 +160,7 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
         q.features = {
             "trap_exposure": min(2, sum(1 for t in traps if q.qid in t.affected)),
             "filters_matter": not same_answer(q.answer_type, execute(unfiltered, events, units=units),
-                                              answer_key[q.qid]),
+                                              answer_key[q.qid], unit=q.unit),
         }
     chatter = make_chatter(seedlog.rng("instance", index, "chatter"), snapshot.compiled_at,
                            sorted({e.network for e in events}))
@@ -191,7 +196,7 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
         instance_id=f"inst-{index:03d}", seed=seedlog.seed("instance", index), compiled_at=snapshot.compiled_at,
         window_hours=snapshot.window_hours, event_ids=[e.id for e in events], reports=reports, notices=notices,
         chatter=chatter, traps=traps, questions=questions, answer_key=answer_key, renderings=renderings,
-        forecast=forecast, domain=None if genre_plan is None else domain.name,
+        forecast=forecast, domain=None if genre_plan is None else domain.name, surface=surface,
     )
 
 
@@ -207,7 +212,7 @@ def generator_self_check(instances: Sequence[Instance]) -> dict:
             got = solve(rendering.prompt, specs, mode="oracle", domain=inst.domain, genre=rendering.genre)
             for q in inst.questions:
                 checks += 1
-                if same_answer(q.answer_type, got[q.qid], inst.answer_key[q.qid]):
+                if same_answer(q.answer_type, got[q.qid], inst.answer_key[q.qid], unit=q.unit):
                     agreements += 1
                 else:
                     problems.append(f"{inst.instance_id}/{rendering.variant}/{q.qid}: digest-only oracle "
@@ -424,7 +429,7 @@ def score_run(run_dir: Path, *, log: Log = print) -> list[Path]:
                                  "template_id": q.template_id, "pool": q.pool, "answer_type": q.answer_type,
                                  "unit": q.unit, "key": key, "given": given,
                                  "normalized": normalize(q.answer_type, given),
-                                 "correct": is_correct(q.answer_type, key, given),
+                                 "correct": is_correct(q.answer_type, key, given, unit=q.unit),
                                  **_recorded(domain=inst.domain, genre=rendering.genre)})
                 if inst.forecast:
                     forecasts.append({"instance_id": inst.instance_id, "variant": rendering.variant,

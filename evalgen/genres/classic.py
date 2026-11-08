@@ -14,11 +14,11 @@ import re
 from typing import Any, Mapping
 
 from ..digest import HEADERS, choose_style, render_digest
-from ..domains.base import Domain
+from ..domains.base import Domain, Glossary
 from ..domains.earthquakes import EARTHQUAKES
 from ..ops import DigestData
 from ..solver import parse_digest
-from .base import Genre, Glossary, RenderContext
+from .base import Genre, RenderContext
 
 
 def _first_line_pattern(header: str) -> re.Pattern[str]:
@@ -49,8 +49,8 @@ class Classic(Genre):
         first = digest_text.lstrip().split("\n", 1)[0]
         return any(pattern.match(first) for pattern in _HEADER_LINES)
 
-    def parse(self, digest_text: str, glossary: Glossary | None) -> DigestData:
-        _require_earthquakes(EARTHQUAKES.name if glossary is None else glossary.domain)
+    def parse(self, digest_text: str, glossary: Glossary | None, domain: Domain) -> DigestData:
+        _require_earthquakes(domain.name)
         return parse_digest(digest_text)
 
 

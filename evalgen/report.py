@@ -111,7 +111,7 @@ def model_metrics(score: dict, instances: list[Instance], forecasts: list[dict])
                 if other is None or (base["normalized"] is None and other["normalized"] is None):
                     continue
                 compared += 1
-                same = equivalent(q.answer_type, base["normalized"], other["normalized"])
+                same = equivalent(q.answer_type, base["normalized"], other["normalized"], unit=q.unit)
                 consistent += same
                 all_agree = all_agree and same
             pairs += compared
@@ -134,7 +134,8 @@ def model_metrics(score: dict, instances: list[Instance], forecasts: list[dict])
                     if row["correct"]:
                         tally[trap.kind]["caught"] += 1
                     elif row["normalized"] is not None and any(
-                            f is not None and equivalent(q.answer_type, row["normalized"], f, f) for f in fallen):
+                            f is not None and equivalent(q.answer_type, row["normalized"], f, f, unit=q.unit)
+                            for f in fallen):
                         tally[trap.kind]["fell"] += 1
                     else:
                         tally[trap.kind]["other_error"] += 1

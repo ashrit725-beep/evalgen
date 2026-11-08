@@ -6,8 +6,10 @@ a news article, an email thread, a chat log, a table, a form, a radio transcript
 own text back to exactly the same reports and notices.
 
     RenderContext  everything one rendering is drawn from
-    Glossary       a prompt's data dictionary: what its records, their fields and units are called
     Genre          the base class; each genre module exports an instance as ``GENRE``
+
+A prompt's glossary (``Domain.glossary``, see evalgen.domains.base) tells a genre's parser the labels,
+units and precision of the records; ``render_glossary`` prints it and ``parse_glossary`` reads it back.
 """
 from __future__ import annotations
 
@@ -17,42 +19,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from ..domains.base import Domain, RecordReport, Unit
+from ..domains.base import Domain, Glossary, RecordReport
 from ..models import Notice, Report
 from ..ops import DigestData
-
-
-@dataclass(frozen=True)
-class GlossaryField:
-    """One numeric field as a glossary defines it."""
-
-    key: str  # its key in record values and in question chains: "depth"
-    label: str  # its name in the text: "depth"
-    units: tuple[Unit, ...] = ()  # the units its values may be printed in, with their conversions
-
-
-@dataclass(frozen=True)
-class Glossary:
-    """A prompt's data dictionary: what the records are called, how their ID, source and group are
-    labelled, and the label and units of each numeric field. Non-legacy prompts print it (prompt
-    assembly, plan phase 1b), so that a reader, and a genre's parser, learn every label and unit from
-    the prompt itself: it is the only way to read a domain whose surface words are drawn per
-    instance. Legacy (0.2.0) prompts print none."""
-
-    domain: str  # the registry name of the records' domain
-    noun: str
-    plural: str
-    id_label: str
-    source_label: str
-    group_label: str
-    fields: tuple[GlossaryField, ...] = ()
-
-    @classmethod
-    def of(cls, domain: Domain) -> Glossary:
-        """The glossary of a domain's records."""
-        return cls(domain.name, domain.noun, domain.plural, domain.id_label, domain.source_label,
-                   domain.group_label, tuple(GlossaryField(spec.key, spec.label, spec.units) for spec in domain.fields))
-
 
 _GLOSSARY = re.compile(r"<glossary>.*?</glossary>", re.DOTALL)
 
@@ -112,6 +81,7 @@ class Genre(ABC):
         the oracle picks its parser by sniffing (see evalgen.genres.detect_genre)."""
 
     @abstractmethod
-    def parse(self, digest_text: str, glossary: Glossary | None) -> DigestData:
+    def parse(self, digest_text: str, glossary: Glossary | None, domain: Domain) -> DigestData:
         """The exact inverse of render: every report and notice, read from the text alone, with the
-        labels and units of the prompt's glossary (None: a legacy prompt, which prints none)."""
+        labels, units and precision of the prompt's glossary (None: a legacy prompt, which prints
+        none). The caller names the records' domain, which the prompt never does."""

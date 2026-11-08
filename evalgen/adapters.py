@@ -18,7 +18,10 @@ from typing import Any
 
 import requests
 
+from .domains import get_domain
 from .models import Instance
+from .ops import Step, terminal_step
+from .scoring import get_answer_type
 from .seeds import derive_seed
 from .solver import forecast_estimate, solve
 from .util import sha256_hex
@@ -128,27 +131,68 @@ class MockAdapter(Adapter):
 
 
 def _perturb(q: dict, value: Any, rng: random.Random, task: Task) -> Any:
+    """A wrong answer to the question. The 0.2.0 answer types keep their 0.2.0 draws; any other type
+    (a domain's own) is perturbed according to its kind (scoring.AnswerType)."""
     answer_type = q["answer_type"]
     if value is None:
         return None
     if answer_type == "count":
-        wrong = max(0, value + rng.choice((-2, -1, 1, 2)))
-        return wrong if wrong != value else value + 1
+        return _other_count(value, rng)
     if answer_type == "event_id":
-        refs = sorted({r.ref for r in task.hidden.reports} - {value}) if task.hidden else []
-        return rng.choice(refs) if refs else f"{value}x"
+        return _other_id(value, rng, task)
     if answer_type == "magnitude":
         return round(value + rng.choice((-0.4, -0.3, 0.3, 0.4)), 2)
     if answer_type in ("depth", "distance"):
         return round(value + rng.choice((-1, 1)) * max(2.0, abs(value) * rng.uniform(0.2, 0.4)), 1)
     if answer_type == "region":
-        term = next(s for s in q["chain"] if s["op"] == "compare_regions")
-        return rng.choice([x for x in (term["a"], term["b"], "tie") if x != value])
+        return _other_group(q, value, rng)
     if answer_type == "utc_time":
-        hh, mm = (int(x) for x in value.split(":"))
-        total = (hh * 60 + mm + rng.choice((-40, -15, -7, 7, 15, 40))) % 1440
-        return f"{total // 60:02d}:{total % 60:02d}"
-    return value
+        return _other_clock(value, rng)
+    known = get_answer_type(answer_type)
+    if known.kind == "count":
+        return _other_count(value, rng)
+    if known.kind == "id":
+        return _other_id(value, rng, task)
+    if known.kind == "group":
+        return _other_group(q, value, rng)
+    if known.kind == "clock":
+        return _other_clock(value, rng)
+    if known.kind == "number":  # as a depth or a distance, but never within the type's tolerance
+        abs_tol, rel_tol = known.tolerance_in(q["unit"])
+        edge = max(abs_tol, rel_tol * abs(value))
+        wrong = value + rng.choice((-1, 1)) * max(2.0, 3 * edge, abs(value) * rng.uniform(0.2, 0.4))
+        return round(wrong, _places(q, task))
+    raise ValueError(f"the mock cannot get a {known.kind} answer ({answer_type}) wrong")
+
+
+def _other_count(value: int, rng: random.Random) -> int:
+    wrong = max(0, value + rng.choice((-2, -1, 1, 2)))
+    return wrong if wrong != value else value + 1
+
+
+def _other_id(value: str, rng: random.Random, task: Task) -> str:
+    refs = sorted({r.ref for r in task.hidden.reports} - {value}) if task.hidden else []
+    return rng.choice(refs) if refs else f"{value}x"
+
+
+def _other_group(q: dict, value: str, rng: random.Random) -> str:
+    term = next(s for s in q["chain"] if Step(s).kind == "compare_groups")
+    return rng.choice([x for x in (term["a"], term["b"], "tie") if x != value])
+
+
+def _other_clock(value: str, rng: random.Random) -> str:
+    hh, mm = (int(x) for x in value.split(":"))
+    total = (hh * 60 + mm + rng.choice((-40, -15, -7, 7, 15, 40))) % 1440
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def _places(q: dict, task: Task) -> int:
+    """The decimal places of a numeric answer: the question's rounding, or else (an answer that is
+    a stored value) the places its field is stored to."""
+    rounding = next((s["ndigits"] for s in q["chain"] if s["op"] == "round"), None)
+    if rounding is not None:
+        return rounding
+    return get_domain(task.domain).field(Step(terminal_step(q["chain"])).field).decimals
 
 
 def _sloppy_json(answers: dict, rng: random.Random) -> str:

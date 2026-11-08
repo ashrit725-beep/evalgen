@@ -10,13 +10,19 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # allow plain `pytest` as well as `python -m pytest`
     sys.path.insert(0, str(ROOT))
 
-from evalgen import pipeline  # noqa: E402
+from evalgen import pipeline, scoring  # noqa: E402
 from evalgen.report import load_instances  # noqa: E402
 from evalgen.sources import load_snapshot  # noqa: E402
 
 
 def quiet(*_args) -> None:
     pass
+
+
+@pytest.fixture
+def answer_registry(monkeypatch):
+    """Answer types registered during a test (directly, or by registering a domain) stay in that test."""
+    monkeypatch.setattr(scoring, "ANSWER_TYPES", dict(scoring.ANSWER_TYPES))
 
 
 @pytest.fixture(scope="session")

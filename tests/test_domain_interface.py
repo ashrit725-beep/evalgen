@@ -6,23 +6,32 @@ from __future__ import annotations
 import copy
 import importlib
 import json
+import os
 import pkgutil
+import random
+import re
+import subprocess
 import sys
-from dataclasses import asdict, fields
+from dataclasses import asdict, fields, replace
+from pathlib import Path
 
 import pytest
 
 from evalgen import domains, scoring
 from evalgen.domains import DEFAULT_DOMAIN, Registry, all_domains
-from evalgen.domains.base import KM, LENGTH, MI, Domain, FieldSpec, Record, RecordReport, Unit
+from evalgen.domains.base import KM, LENGTH, MI, Domain, FieldSpec, GlossaryField, Record, RecordReport, Unit
+from evalgen.domains.earthquakes import EARTHQUAKES
 from evalgen.geo import from_km, to_km
 from evalgen.models import Instance, Notice
-from evalgen.ops import (ALIASES, FILTER_OPS, KINDS, TERMINAL_OPS, answer_spec, describe, execute, passes,
-                         rows_after_filters)
+from evalgen.ops import (ALIASES, FILTER_OPS, KINDS, TERMINAL_OPS, answer_spec, describe, describe_step, execute,
+                         passes, rows_after_filters)
+from evalgen.questions import _answer_steps, _quantity, fmt_num
 from evalgen.rules import Mishandle, report_to_event
-from evalgen.scoring import AnswerType, is_correct, normalize, register_answer_type
+from evalgen.scoring import AnswerType, equivalent, is_correct, normalize, register_answer_type
 from evalgen.solver import parse_digest
-from evalgen.util import utc_iso, write_json
+from evalgen.util import plain_number, utc_iso, write_json
+
+from generic_quakes import GenericQuakes
 
 # The generic form of every 0.2.0 name, written out here independently of ops.ALIASES.
 GENERIC = {
@@ -315,6 +324,83 @@ def test_units_map_affinely_and_the_length_units_match_geo_to_the_bit():
             assert repr(unit.from_canonical(x)) == repr(from_km(x, unit.symbol))  # answers are written
 
 
+# ------------------------------------------------------------ printed values and precision
+
+
+def test_printed_values_read_back_exactly_in_every_unit():
+    fahrenheit = TEMPERATURE[1]
+    # Converting back is not exact: -30.7 °C has no decimal form in °F that converts to exactly -30.7.
+    assert all(fahrenheit.to_canonical(round(fahrenheit.from_canonical(-30.7), d)) != -30.7 for d in range(16))
+    temp, depth, mag = WEATHER.field("temp"), EARTHQUAKES.field("depth"), EARTHQUAKES.field("mag")
+    printed = 0
+    for spec, values in ((temp, [t / 10 for t in range(-400, 451)]), (depth, [t / 10 for t in range(-30, 7000, 3)])):
+        glossary_field = GlossaryField(spec.key, spec.label, spec.canonical_unit, spec.units, spec.decimals)
+        for unit in spec.units:
+            for value in values:
+                text = spec.encode(value, unit)
+                assert spec.decode(float(text), unit) == glossary_field.decode(float(text), unit) == value
+                assert len(text.partition(".")[2]) <= 3, (value, unit.symbol, text)
+                printed += 1
+    assert printed == 2 * (851 + 2344)
+    assert (temp.encode(-30.7, fahrenheit), temp.encode(21.0, fahrenheit), temp.encode(21.0)) == ("-23.3", "69.8", "21")
+    assert (mag.encode(4.27), mag.encode(4.0), mag.decode(4.27)) == ("4.27", "4", 4.27)  # unitless: as stored
+    with pytest.raises(ValueError, match="stored to 1 decimal places"):
+        temp.encode(21.05, fahrenheit)  # more places than the field stores: no printed form reads back
+
+
+def test_stored_earthquake_values_have_the_places_their_fields_print(instances, snapshot_events):
+    records = [*snapshot_events.values(), *(r for inst in instances for r in inst.reports)]
+    for spec in EARTHQUAKES.fields:
+        assert all(round(r.values[spec.key], spec.decimals) == r.values[spec.key] for r in records), spec.key
+
+
+PASCALS = Unit("hPa", "hectopascals")
+INCHES = Unit("inHg", "inches of mercury", 33.8639, decimals=2, tolerance=(0.02, 0.0))
+
+
+class Barometers(GenericQuakes):
+    """Earthquake records with their depth read as a pressure: a unit 34 times the canonical one sets
+    its own places and tolerance."""
+
+    name = "barometers"
+    fields = (EARTHQUAKES.field("mag"),
+              replace(EARTHQUAKES.field("depth"), label="pressure", canonical_unit="hPa", units=(PASCALS, INCHES),
+                      answer_type="pressure", tolerance=(0.5, 0.0), margin=(1.0, 0.0)))
+
+
+def test_a_unit_on_another_scale_sets_its_own_places_and_tolerance(answer_registry):
+    domain = Barometers()
+    domain.validate()
+    pressure = next(t for t in domain.answer_types() if t.name == "pressure")
+    assert (pressure.tolerance, dict(pressure.unit_tolerance)) == ((0.5, 0.0), {"inHg": (0.02, 0.0)})
+    register_answer_type(pressure)
+    assert is_correct("pressure", 1013.2, 1012.8, unit="hPa") and is_correct("pressure", 29.92, 29.93, unit="inHg")
+    assert not is_correct("pressure", 29.92, 29.50, unit="inHg")  # 0.42 inHg is 14 hPa
+    assert not equivalent("pressure", 29.92, 29.95, unit="inHg") and equivalent("pressure", 29.92, 29.95)
+    assert (PASCALS.places(1), INCHES.places(1), MI.places(1)) == (1, 2, 1)
+    assert _quantity(1017.6, PASCALS, (PASCALS, INCHES), 1, True) == "30.05 inches of mercury"
+    assert _quantity(30.05, INCHES, (PASCALS, INCHES), 1, True) == "1017.6 hectopascals"
+    rounding = {}
+    for seed in range(20):
+        convert, round_step = _answer_steps((PASCALS, INCHES), 1, random.Random(seed))
+        rounding[convert["to"]] = round_step["ndigits"]
+    assert rounding == {"hPa": 1, "inHg": 2}
+
+
+def test_numbers_are_stated_exactly_at_every_magnitude():
+    values = [m * 10.0 ** e for e in range(-6, 10) for m in (1.0, 1.5, -2.25, 3.14159, 9.87654321)]
+    values += [123456.7, 1234567.5, 101325.5, 7480000.0, 0.00005]
+    for x in values:
+        for text in (fmt_num(x), plain_number(x)):
+            assert "e" not in text and float(text) == x, (x, text)
+        step = {"op": "at_least", "field": "p", "value": x}
+        assert describe_step(step) == f"p ≥ {plain_number(x)}"
+    # Where "g" is exact (every 0.2.0 threshold and radius), the text is what "g" printed.
+    legacy = [t / 10 for t in range(-50, 10000)] + [-0.0, 12.0, 150.0, 25, 300]
+    assert all(plain_number(x) == format(x, "g") for x in legacy)
+    assert (fmt_num(-0.0), fmt_num(12.0), fmt_num(3.1)) == ("0", "12", "3.1")  # as 0.2.0 phrased them
+
+
 # ----------------------------------------------------------------------- instance JSON
 
 
@@ -345,25 +431,32 @@ def test_optional_fields_are_written_only_when_set(instances):
 # ------------------------------------------------------------------------ answer types
 
 
-@pytest.fixture
-def answer_registry(monkeypatch):
-    """Answer types registered in a test stay in that test."""
-    monkeypatch.setattr(scoring, "ANSWER_TYPES", dict(scoring.ANSWER_TYPES))
-    monkeypatch.setattr(scoring, "TOLERANCE", dict(scoring.TOLERANCE))
-
-
 def test_020_answer_types_and_tolerances_are_unchanged():
     kinds = {"count": "count", "event_id": "id", "magnitude": "number", "depth": "number", "distance": "number",
              "region": "group", "utc_time": "clock", "probability": "probability"}
     assert {name: scoring.ANSWER_TYPES[name].kind for name in kinds} == kinds
     tolerances = {"magnitude": (0.05, 0.0), "depth": (0.3, 0.02), "distance": (1.5, 0.03)}
-    assert {name: scoring.TOLERANCE[name] for name in tolerances} == tolerances
+    assert {name: scoring.ANSWER_TYPES[name].tolerance for name in tolerances} == tolerances
+    assert not any(scoring.ANSWER_TYPES[name].unit_tolerance for name in kinds)  # one tolerance in km and mi
     assert scoring.ANSWER_TYPES["utc_time"].tolerance[0] == scoring.TIME_TOLERANCE_MIN == 1
+
+
+def test_the_earthquake_domain_declares_exactly_the_builtin_types():
+    declared = EARTHQUAKES.answer_types()
+    assert [t.name for t in declared] == ["magnitude", "depth", "event_id", "region"]
+    assert all(scoring.ANSWER_TYPES[t.name] == t for t in declared)  # registering them changes nothing
+
+
+def test_an_answer_type_no_domain_declares_is_an_error_not_a_raw_comparison():
+    for attempt in (lambda: normalize("colour", "red"), lambda: is_correct("colour", "red", "red"),
+                    lambda: equivalent("colour", "red", "red")):
+        with pytest.raises(KeyError, match="unknown answer type 'colour'"):
+            attempt()
 
 
 def test_domains_can_register_their_own_answer_types(answer_registry):
     register_answer_type(AnswerType("temperature", "number", (0.5, 0.0)))
-    assert scoring.TOLERANCE["temperature"] == (0.5, 0.0)
+    assert scoring.ANSWER_TYPES["temperature"].tolerance == (0.5, 0.0)
     assert normalize("temperature", "21.30 °C") == 21.3
     assert is_correct("temperature", 21.3, "21.7") and not is_correct("temperature", 21.3, "21.9")
     register_answer_type(AnswerType("observation_id", "id", id_pattern=r"k[a-z]{3}-\d{4}"))
@@ -400,10 +493,10 @@ def test_registering_is_idempotent_and_conflicts_are_errors(answer_registry):
 # ---------------------------------------------------------------------------- registry
 
 TOY_DOMAIN = """\
-from evalgen.domains.base import Domain
+from evalgen.domains.earthquakes import Earthquakes
 
 
-class Toy(Domain):
+class Toy(Earthquakes):  # a complete domain under another name
     name = {name!r}
 
 
@@ -414,7 +507,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from evalgen.domains.base import Domain
+from evalgen.domains.earthquakes import Earthquakes
 
 
 @dataclass(frozen=True)
@@ -422,7 +515,7 @@ class Depot:  # a dataclass needs its module registered while the plugin runs
     name: str
 
 
-class Consignments(Domain):
+class Consignments(Earthquakes):
     name = {name!r}
     depots = (Depot("north"), Depot("south"))
 
@@ -485,3 +578,139 @@ def test_the_evalgen_registry_lists_its_modules_in_order():
                    if m.name != "base" and not m.name.startswith("_"))
     assert all_domains() == [importlib.import_module(f"evalgen.domains.{name}").DOMAIN for name in names]
     assert DEFAULT_DOMAIN == "earthquakes"
+
+
+FLAKY_DOMAIN = """\
+import flaky_switch
+from evalgen.domains.base import Domain
+from evalgen.domains.earthquakes import Earthquakes
+
+if flaky_switch.FAULT == "import":
+    raise RuntimeError("beta cannot be imported")
+
+
+class Beta(Earthquakes):
+    name = "beta"
+
+
+class Bare(Domain):  # sets nothing, so validation refuses it
+    name = "beta"
+
+
+DOMAIN = Bare() if flaky_switch.FAULT == "invalid" else Beta()
+"""
+
+
+@pytest.mark.parametrize("fault, error", [("import", RuntimeError), ("invalid", ValueError)])
+def test_a_broken_domain_module_leaves_the_registry_as_it_was(tmp_path, monkeypatch, fault, error):
+    root = tmp_path / "flaky_domains"
+    root.mkdir()
+    (root / "__init__.py").write_text("")
+    (tmp_path / "flaky_switch.py").write_text(f"FAULT = {fault!r}\n")
+    for module in ("alpha", "gamma"):
+        (root / f"{module}.py").write_text(TOY_DOMAIN.format(name=module))
+    (root / "beta.py").write_text(FLAKY_DOMAIN)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    try:
+        registry = Registry("flaky_domains")
+        for attempt in (lambda: registry.get("gamma"), lambda: registry.get("alpha"), registry.all):
+            with pytest.raises(error):  # every lookup fails as the first did: none quietly misses gamma
+                attempt()
+        assert registry._entries == {} and not registry._discovered
+        importlib.import_module("flaky_switch").FAULT = None  # the module is mended
+        sys.modules.pop("flaky_domains.beta", None)
+        assert [d.name for d in registry.all()] == ["alpha", "beta", "gamma"]
+    finally:
+        for module in [m for m in sys.modules if m.startswith(("flaky_domains", "flaky_switch"))]:
+            del sys.modules[module]
+
+
+def test_every_domain_validates():
+    for domain in [*all_domains(), GenericQuakes()]:
+        domain.validate()
+
+
+def variant(base: type = GenericQuakes, **attributes) -> Domain:
+    return type("Variant", (base,), {"name": "variant", **attributes})()
+
+
+def test_validation_names_what_is_wrong_with_a_domain():
+    mag, depth = EARTHQUAKES.field("mag"), EARTHQUAKES.field("depth")
+    wordings = GenericQuakes.lexicon.filters
+    lexicon = replace(GenericQuakes.lexicon, filters={k: v for k, v in wordings.items() if k != "time_between"})
+    cases = [
+        (type("Bare", (Domain,), {"name": "bare"})(), "Bare does not set noun, plural, id_label"),
+        (variant(fields=(mag, replace(depth, canonical_unit="m"))),
+         "depth is stored in m, which is not one of its units"),
+        (variant(fields=(mag, replace(depth, units=(replace(KM, scale=1000.0), MI)))),
+         "the canonical unit of depth must have scale 1 and offset 0"),
+        (variant(fields=(mag, replace(depth, units=(KM, replace(MI, decimals=0))))),
+         "the depth margin 0.6 is smaller than the rounding of a threshold restated in mi (0.804672)"),
+        (variant(lexicon=lexicon), "its lexicon has no wording for time_between"),
+        (variant(op_names={("at_least", "mag"): "temp_at_least"}),
+         "op name 'temp_at_least' is not the 0.2.0 alias of at_least(mag)"),
+        (variant(EARTHQUAKES.__class__, fields=(replace(mag, answer_type="intensity"), depth)),
+         "op name 'max_mag' answers as 'magnitude', not as 'intensity'"),
+        (variant(roles={"primary": "depth", "secondary": "mag"}), "P01-P12 do not bind to its fields"),
+        (variant(fields=(mag, replace(depth, tolerance=(0.1, 0.0)))),
+         "answer type 'depth' is already registered differently"),
+    ]
+    for domain, message in cases:
+        with pytest.raises(ValueError, match=re.escape(message)):
+            domain.validate()
+    with pytest.raises(ValueError, match="answer type 'depth'"):  # the registry refuses it
+        Registry("evalgen.domains").register(cases[-1][0])
+
+
+TREMORS = """\
+from dataclasses import replace
+
+from evalgen.domains.earthquakes import DEPTH, MAGNITUDE
+
+from generic_quakes import GenericQuakes
+
+
+class Tremors(GenericQuakes):  # a domain whose answer types are not built into the scorer
+    name = "tremors"
+    fields = (replace(MAGNITUDE, answer_type="intensity", tolerance=(0.5, 0.0)), DEPTH)
+    id_answer_type = "tremor_id"
+    group_answer_type = "zone"
+
+
+DOMAIN = Tremors()
+"""
+TESTS_DIR = Path(__file__).resolve().parent
+
+
+@pytest.fixture
+def tremor_package(tmp_path, monkeypatch):
+    """A domain package with one domain, whose answer types only that domain declares."""
+    (tmp_path / "tremor_domains").mkdir()
+    (tmp_path / "tremor_domains" / "__init__.py").write_text("")
+    (tmp_path / "tremor_domains" / "tremors.py").write_text(TREMORS)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    yield tmp_path
+    for module in [m for m in sys.modules if m.startswith("tremor_domains")]:
+        del sys.modules[module]
+
+
+def test_a_domains_answer_types_are_registered_with_it(answer_registry, tremor_package, monkeypatch):
+    monkeypatch.setattr(domains, "REGISTRY", Registry("tremor_domains"))
+    assert "intensity" not in scoring.ANSWER_TYPES
+    assert is_correct("intensity", 4.0, "4.4") and not is_correct("intensity", 4.0, "4.6")  # discovered on demand
+    assert normalize("tremor_id", "Tremor NC75012345.") == "nc75012345" and normalize("zone", "Utah region") == "utah"
+    assert {"intensity", "tremor_id", "zone"} <= set(scoring.ANSWER_TYPES)
+
+
+def test_a_fresh_process_scores_a_domains_answer_types(tremor_package):
+    script = (
+        "import evalgen.domains as domains\n"
+        "from evalgen.scoring import is_correct, normalize\n"
+        "domains.REGISTRY = domains.Registry('tremor_domains')  # nothing has looked a domain up yet\n"
+        "print(is_correct('intensity', 4.0, '4.4'), is_correct('intensity', 4.0, '4.6'), normalize('zone', 'Utah'))\n"
+        "try:\n    normalize('colour', 'red')\nexcept KeyError as exc:\n    print(exc)\n"
+    )
+    path = os.pathsep.join([str(tremor_package), str(TESTS_DIR), str(TESTS_DIR.parent)])
+    done = subprocess.run([sys.executable, "-c", script], env={**os.environ, "PYTHONPATH": path}, capture_output=True,
+                          text=True, cwd=tremor_package, check=True)
+    assert done.stdout.splitlines() == ["True False utah", "\"unknown answer type 'colour'\""]

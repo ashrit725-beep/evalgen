@@ -14,15 +14,19 @@ but a string holding several different values ("7 or 8", "3-4", two event IDs) c
 
 Answer types live in a registry (``ANSWER_TYPES``). A type's kind (count, id, number, group, clock
 or probability) says how its answers are read; the type adds its tolerance, ID pattern, number
-parser or group suffix. The types above are built in, and a domain registers its own with
-``register_answer_type``: one per field, plus the types of its record IDs and its groups.
+parser or group suffix. The types above are built in. Every other type belongs to a domain, which
+declares it (``Domain.answer_types``: one per field, plus the types of its record IDs and its
+groups), and registering the domain registers its types (see evalgen.domains). A type that is not
+registered yet makes ``get_answer_type`` discover the built-in domains first, so a fresh process
+scores any of their types; a type that no domain declares is an error, never compared as raw values.
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 import re
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from .models import EVENT_ID_PATTERN
 
@@ -74,20 +78,27 @@ def _parse_probability(value: Any) -> float | None:
 class AnswerType:
     """How the answers of one type are read and compared.
 
-    kind        count | id | number | group | clock | probability
-    tolerance   number: (abs, rel), right when |answer - key| <= max(abs, rel × |key|);
-                clock: (minutes, 0), counted around midnight
-    id_pattern  id: the regex that picks the ID out of a longer answer, matched in lower case
-    parse       count, number, probability: a raw answer as one number, or None when ambiguous
-    suffix      group: a trailing word an answer may add, in lower case ("Nevada region" is "Nevada")
+    kind            count | id | number | group | clock | probability
+    tolerance       number: (abs, rel), right when |answer - key| <= max(abs, rel × |key|), in the
+                    unit the question asked for; clock: (minutes, 0), counted around midnight
+    unit_tolerance  number: the (abs, rel) of answers asked in a particular unit, by unit symbol, for
+                    units whose values are on another scale (inches of mercury beside hectopascals)
+    id_pattern      id: the regex that picks the ID out of a longer answer, matched in lower case
+    parse           count, number, probability: a raw answer as one number, or None when ambiguous
+    suffix          group: a trailing word an answer may add, in lower case ("Nevada region" is "Nevada")
     """
 
     name: str
     kind: str
     tolerance: tuple[float, float] = (0.0, 0.0)
+    unit_tolerance: Mapping[str, tuple[float, float]] = dataclasses.field(default_factory=dict)
     id_pattern: str | None = None
     parse: Callable[[Any], float | None] = _number
     suffix: str | None = None
+
+    def tolerance_in(self, unit: str | None) -> tuple[float, float]:
+        """The (abs, rel) tolerance of an answer given in `unit` (None: a unitless answer)."""
+        return self.unit_tolerance.get(unit, self.tolerance) if unit is not None else self.tolerance
 
 
 def _read_count(t: AnswerType, value: Any) -> int | None:
@@ -152,63 +163,79 @@ ANSWER_TYPES: dict[str, AnswerType] = {t.name: t for t in (
     AnswerType("utc_time", "clock", (TIME_TOLERANCE_MIN, 0)),
     AnswerType("probability", "probability", parse=_parse_probability),
 )}
-# The numeric types and their (abs, rel) tolerance. Trap placement uses it too, to keep a misread
-# answer clear of the scoring edge.
-TOLERANCE: dict[str, tuple[float, float]] = {
-    name: t.tolerance for name, t in ANSWER_TYPES.items() if t.kind == "number"
-}
+
+
+def answer_type_conflict(answer_type: AnswerType) -> str | None:
+    """Why `answer_type` cannot be registered, or None when it can."""
+    if answer_type.kind not in _READERS:
+        return f"unknown answer kind {answer_type.kind!r}"
+    known = ANSWER_TYPES.get(answer_type.name)
+    if known is not None and known != answer_type:
+        return f"answer type {answer_type.name!r} is already registered differently"
+    return None
 
 
 def register_answer_type(answer_type: AnswerType) -> AnswerType:
     """Add an answer type. Registering an identical type again is harmless; registering a different
     type under a name that is taken is an error."""
-    if answer_type.kind not in _READERS:
-        raise ValueError(f"unknown answer kind {answer_type.kind!r}")
-    known = ANSWER_TYPES.get(answer_type.name)
-    if known is not None and known != answer_type:
-        raise ValueError(f"answer type {answer_type.name!r} is already registered differently")
+    conflict = answer_type_conflict(answer_type)
+    if conflict is not None:
+        raise ValueError(conflict)
     ANSWER_TYPES[answer_type.name] = answer_type
-    if answer_type.kind == "number":
-        TOLERANCE[answer_type.name] = answer_type.tolerance
     return answer_type
 
 
+def get_answer_type(name: str) -> AnswerType:
+    """The answer type called `name`. A name that is not registered yet first has the built-in
+    domains discovered (registering a domain registers its types); a name that is still unknown
+    raises KeyError."""
+    known = ANSWER_TYPES.get(name)
+    if known is None:
+        from .domains import all_domains  # imported here: evalgen.domains imports this module
+
+        all_domains()
+        known = ANSWER_TYPES.get(name)
+    if known is None:
+        raise KeyError(f"unknown answer type {name!r}")
+    return known
+
+
 def normalize(answer_type: str, value: Any) -> Any:
-    """Bring an answer (from a model, or the key) into a comparable canonical form, or None.
-    An answer of an unregistered type is compared as it is."""
+    """Bring an answer (from a model, or the key) into a comparable canonical form, or None."""
+    known = get_answer_type(answer_type)
     if value is None:
         return None
     if isinstance(value, list):
         if len(value) != 1:
             return None  # several values offered: ambiguous
         value = value[0]
-    known = ANSWER_TYPES.get(answer_type)
-    return _READERS[known.kind](known, value) if known else value
+    return _READERS[known.kind](known, value)
 
 
-def equivalent(answer_type: str, a: Any, b: Any, reference: Any = None) -> bool:
-    """Are two *normalised* answers the same, up to the scoring tolerance?"""
+def equivalent(answer_type: str, a: Any, b: Any, reference: Any = None, *, unit: str | None = None) -> bool:
+    """Are two *normalised* answers the same, up to the scoring tolerance of answers in `unit`?"""
+    known = get_answer_type(answer_type)
     if a is None or b is None:
         return a is None and b is None
-    known = ANSWER_TYPES.get(answer_type)
-    if known is not None and known.kind == "number":
-        abs_tol, rel_tol = known.tolerance
+    if known.kind == "number":
+        abs_tol, rel_tol = known.tolerance_in(unit)
         scale = abs(reference) if reference is not None else max(abs(a), abs(b))
         return abs(a - b) <= max(abs_tol, rel_tol * scale) + 1e-9
-    if known is not None and known.kind == "clock":
+    if known.kind == "clock":
         diff = abs(a - b) % 1440
         return min(diff, 1440 - diff) <= known.tolerance[0]
     return a == b
 
 
-def is_correct(answer_type: str, key: Any, given: Any) -> bool:
+def is_correct(answer_type: str, key: Any, given: Any, *, unit: str | None = None) -> bool:
+    """Is `given` right, for a question whose key is `key` and that asked for an answer in `unit`?"""
     k, g = normalize(answer_type, key), normalize(answer_type, given)
-    return k is not None and g is not None and equivalent(answer_type, k, g, reference=k)
+    return k is not None and g is not None and equivalent(answer_type, k, g, reference=k, unit=unit)
 
 
-def same_answer(answer_type: str, a: Any, b: Any) -> bool:
+def same_answer(answer_type: str, a: Any, b: Any, *, unit: str | None = None) -> bool:
     """Raw-value comparison used by the generator (e.g. does a trap change an answer?)."""
-    return equivalent(answer_type, normalize(answer_type, a), normalize(answer_type, b))
+    return equivalent(answer_type, normalize(answer_type, a), normalize(answer_type, b), unit=unit)
 
 
 # ----------------------------------------------------------------------------- statistics

@@ -35,6 +35,7 @@ from .domains.earthquakes import EARTHQUAKES
 from .geo import destination
 from .models import Question
 from .ops import ALIASES, Step, answer_spec, distance_km, execute, role, rows_after_filters, terminal_step
+from .util import plain_number
 
 TIME_MARGIN_S = 120  # no record within 2 minutes of a time window's ends (digests print times to the minute)
 RANKS = (2, 3)  # rank questions ask for the second or the third largest
@@ -296,10 +297,12 @@ def _draw_window(rng: random.Random, ctx: Context) -> dict | None:
 
 
 def _answer_steps(units: Sequence[Unit], decimals: int, rng: random.Random) -> list[dict]:
-    """An answer with a unit is converted into a drawn unit and rounded; a unitless one is left as it is."""
+    """An answer with a unit is converted into a drawn unit and rounded to that unit's places (the
+    field's `decimals` unless the unit sets its own); a unitless one is left as it is."""
     if not units:
         return []
-    return [{"op": "convert", "to": _pick_unit(units, rng)}, {"op": "round", "ndigits": decimals}]
+    unit = find_unit(units, _pick_unit(units, rng))
+    return [{"op": "convert", "to": unit.symbol}, {"op": "round", "ndigits": unit.places(decimals)}]
 
 
 def draw_filter(op: str, records: Sequence[ResolvedRecord], rng: random.Random, ctx: Context,
@@ -487,16 +490,19 @@ RELATIVE_CLAUSES = ("that ", "whose ")  # clause openings that read best at the 
 
 
 def fmt_num(x: Any) -> str:
+    """A threshold or radius as a question states it: exactly the chain's value, 12 for 12.0 (and 0
+    for -0.0), never rounded or in exponent notation."""
     if isinstance(x, float) and x.is_integer():
         return str(int(x))
-    return f"{x:g}" if isinstance(x, float) else str(x)
+    return plain_number(x)
 
 
 def _quantity(value: float, unit: Unit, units: Sequence[Unit], decimals: int, alt_units: bool) -> str:
-    """'50 miles', or in a metamorphic variant the same quantity in the next unit: '80.5 km'."""
+    """'50 miles', or in a metamorphic variant the same quantity in the next unit, to that unit's
+    places (`decimals` unless it sets its own): '80.5 km'."""
     if alt_units:
         other = units[(units.index(unit) + 1) % len(units)]
-        return f"{other.from_canonical(unit.to_canonical(value)):.{decimals}f} {other.words}"
+        return f"{other.from_canonical(unit.to_canonical(value)):.{other.places(decimals)}f} {other.words}"
     return f"{fmt_num(value)} {unit.words}"
 
 

@@ -56,8 +56,13 @@ class Registry(Generic[T]):
         known = self._entries.get(entry.name)
         if known is not None and known is not entry:
             raise ValueError(f"two {self.noun}s are named {entry.name!r}")
+        self._admit(entry)
         self._entries[entry.name] = entry
         return entry
+
+    def _admit(self, entry: T) -> None:
+        """Called before an entry is added: a registry of a particular kind checks it here (raising
+        refuses it) and sets up what comes with it."""
 
     def load_plugin(self, path: str | Path) -> T:
         """Register the entry defined in a Python file outside the package. The private run config
@@ -69,13 +74,22 @@ class Registry(Generic[T]):
         return self.register(self._entry_in(module))
 
     def _discover(self) -> None:
+        """Register the package's entry modules in sorted order, all or none: when one fails to import
+        or is refused, the registry is left as it was and the next lookup tries again (and fails the
+        same way), so a lookup never quietly misses the entries after a broken module."""
         if self._discovered:
             return
-        self._discovered = True  # set first: an entry module that looks entries up must not recurse
-        package = importlib.import_module(self.package)
-        for info in sorted(pkgutil.iter_modules(package.__path__), key=lambda m: m.name):
-            if info.name != "base" and not info.name.startswith("_"):
-                self.register(self._entry_in(importlib.import_module(f"{self.package}.{info.name}")))
+        self._discovered = True  # set first, as a recursion guard: an entry module may look entries up
+        before = dict(self._entries)
+        try:
+            package = importlib.import_module(self.package)
+            for info in sorted(pkgutil.iter_modules(package.__path__), key=lambda m: m.name):
+                if info.name != "base" and not info.name.startswith("_"):
+                    self.register(self._entry_in(importlib.import_module(f"{self.package}.{info.name}")))
+        except BaseException:
+            self._entries = before
+            self._discovered = False
+            raise
 
     def _entry_in(self, module: ModuleType) -> T:
         entry = getattr(module, self.attribute, None)

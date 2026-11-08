@@ -10,7 +10,8 @@ A question's meaning is an *operation chain*, a list of small steps such as
 The answer key is simply ``execute(chain, snapshot_events)``: plain Python over the frozen
 snapshot, with no LLM and no text parsing. The same executor also powers the reference solvers
 (fed with what they parsed from the digest text) and trap grading (fed with a digest read the
-wrong way, see ``rules.Mishandle``).
+wrong way, see ``rules.Mishandle``). On digest data, dedupe applies the reading rules of the
+records' domain (``resolver``: its ``Domain.resolve``; the earthquake rules by default).
 
 Chains always have the shape: dedupe, zero or more filters, one terminal, optional post-steps
 (convert, round).
@@ -38,8 +39,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from .domains.base import LENGTH, Domain, RecordLike, ResolvedRecord, Unit, find_unit
 from .geo import haversine_km
 from .models import Notice, Report
-from .rules import Mishandle, naive_events, resolve
-from .util import utc_iso
+from .rules import Mishandle, Resolver, naive_events, resolve
+from .util import plain_number, utc_iso
 
 EPS = 1e-9
 
@@ -262,7 +263,7 @@ def _round(s: Step, value: Any, term: Step | None) -> Any:
 
 def _threshold_text(s: Step, sign: str) -> str:
     unit = s.get("unit")
-    return f"{s.field} {sign} {s['value']:g}" + ("" if unit is None else f" {unit}")
+    return f"{s.field} {sign} {plain_number(s['value'])}" + ("" if unit is None else f" {unit}")
 
 
 def _call(s: Step, *args: str) -> str:
@@ -276,7 +277,7 @@ def _at_point(s: Step) -> str:
 
 
 def _within_text(s: Step) -> str:
-    return f"within {s['radius']:g} {s['unit']} of ({s['lat']:.3f}, {s['lon']:.3f})"
+    return f"within {plain_number(s['radius'])} {s['unit']} of ({s['lat']:.3f}, {s['lon']:.3f})"
 
 
 def _window_text(s: Step) -> str:
@@ -352,10 +353,10 @@ def terminal(step: Mapping[str, Any], rows: Sequence[ResolvedRecord]) -> Any:
     return _answer(kind, s, rows)
 
 
-def _dedupe(rows: Any, mishandle: Mishandle | None) -> list[Any]:
+def _dedupe(rows: Any, mishandle: Mishandle | None, resolver: Resolver) -> list[Any]:
     if isinstance(rows, DigestData):
-        return resolve(rows.reports, rows.notices, mishandle)
-    return list(rows)  # snapshot events are already one row per earthquake
+        return resolver(rows.reports, rows.notices, mishandle)
+    return list(rows)  # snapshot records are already one row per real thing
 
 
 def _as_events(rows: Any) -> list[Any]:
@@ -365,7 +366,8 @@ def _as_events(rows: Any) -> list[Any]:
 
 
 def rows_after_filters(chain: Sequence[dict], data: Any, *, mishandle: Mishandle | None = None,
-                       skip: Sequence[str] = (), units: Units | None = None) -> list[Any]:
+                       skip: Sequence[str] = (), units: Units | None = None,
+                       resolver: Resolver = resolve) -> list[Any]:
     """The records that survive dedupe and every filter (the question's 'evidence')."""
     rows = data
     for raw in chain:
@@ -374,7 +376,7 @@ def rows_after_filters(chain: Sequence[dict], data: Any, *, mishandle: Mishandle
         step = Step(raw, units)
         kind = KINDS.get(step.kind)
         if step.kind == "dedupe":
-            rows = _dedupe(rows, mishandle)
+            rows = _dedupe(rows, mishandle, resolver)
         elif kind is not None and kind.role == "filter":
             test = kind.test(step)
             rows = [r for r in _as_events(rows) if test(r)]
@@ -382,11 +384,13 @@ def rows_after_filters(chain: Sequence[dict], data: Any, *, mishandle: Mishandle
 
 
 def execute(chain: Sequence[dict], data: Any, *, mishandle: Mishandle | None = None,
-            skip: Sequence[str] = (), units: Units | None = None) -> Any:
+            skip: Sequence[str] = (), units: Units | None = None, resolver: Resolver = resolve) -> Any:
     """Run an operation chain over snapshot events (answer key) or parsed digest data (solvers).
 
-    `units` gives the units of generic fields (a domain's ``units``); 0.2.0 names carry their own."""
-    rows = rows_after_filters(chain, data, mishandle=mishandle, skip=skip, units=units)
+    `units` gives the units of generic fields (a domain's ``units``); 0.2.0 names carry their own.
+    `resolver` gives the reading rules that dedupe applies to digest data: the records' domain's
+    ``resolve`` (the default is the earthquake rules)."""
+    rows = rows_after_filters(chain, data, mishandle=mishandle, skip=skip, units=units, resolver=resolver)
     value: Any = None
     term: Step | None = None
     for raw in chain:

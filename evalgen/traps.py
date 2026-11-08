@@ -29,15 +29,15 @@ import math
 import random
 import re
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 from .domains.base import Domain
 from .domains.earthquakes import EARTHQUAKES
 from .geo import COMPASS16, compass_point, destination, haversine_km, initial_bearing
 from .models import Event, Notice, Question, Report, Trap
-from .ops import DigestData, Step, Units, execute
+from .ops import DigestData, Step, execute
 from .rules import Mishandle
-from .scoring import TOLERANCE, normalize, same_answer
+from .scoring import get_answer_type, normalize, same_answer
 from .sources import COORD_DECIMALS
 
 _PLACE = re.compile(r"^(\d+(?:\.\d+)?) km ([NSEW]{1,3}) of (.+)$")
@@ -76,7 +76,8 @@ class _Site:
     used: set[str]  # records that already carry a duplicate or a conflict
 
 
-Builder = Callable[[str, _Site], _Candidate | None]
+# Optional, not "X | None": this alias is evaluated at import, and Python 3.9 has no such unions.
+Builder = Callable[[str, _Site], Optional[_Candidate]]
 
 
 @dataclass(frozen=True)
@@ -103,34 +104,37 @@ def _apply(reports: list[Report], notices: list[Notice], c: _Candidate) -> tuple
     return reports + c.add_reports, list(notices) + c.add_notices
 
 
-def _single_readings(trap: Trap, questions: list[Question], data: DigestData, units: Units):
-    """(question, answer) for every question under each careless reading of this one trap."""
+def _single_readings(trap: Trap, questions: list[Question], data: DigestData, domain: Domain):
+    """(question, answer) for every question under each careless reading of this one trap, with the
+    domain's reading rules for everything the reader does not misread."""
+    units = domain.units
     for reading in trap.mishandles:
         mishandle = Mishandle.from_dict(reading)
         for q in questions:
-            yield q, execute(q.chain, data, mishandle=mishandle, units=units)
+            yield q, execute(q.chain, data, mishandle=mishandle, units=units, resolver=domain.resolve)
 
 
-def _single_effects(trap: Trap, questions: list[Question], key: dict, data: DigestData, units: Units) -> dict:
+def _single_effects(trap: Trap, questions: list[Question], key: dict, data: DigestData, domain: Domain) -> dict:
     """qid -> wrong answer, for questions a reader gets wrong when only this trap is misread."""
     out = {}
-    for q, answer in _single_readings(trap, questions, data, units):
-        if q.qid not in out and not same_answer(q.answer_type, answer, key[q.qid]):
+    for q, answer in _single_readings(trap, questions, data, domain):
+        if q.qid not in out and not same_answer(q.answer_type, answer, key[q.qid], unit=q.unit):
             out[q.qid] = answer
     return out
 
 
 def _clear_of_tolerance_edge(trap: Trap, questions: list[Question], key: dict, data: DigestData,
-                             units: Units) -> bool:
+                             domain: Domain) -> bool:
     """A misread numeric answer should be exactly right or clearly wrong (beyond twice the scoring
     tolerance), so that rounding in the digest cannot move a careless reader across the edge."""
-    for q, answer in _single_readings(trap, questions, data, units):
-        if q.answer_type not in TOLERANCE:
+    for q, answer in _single_readings(trap, questions, data, domain):
+        answer_type = get_answer_type(q.answer_type)
+        if answer_type.kind != "number":
             continue
         a, k = normalize(q.answer_type, answer), normalize(q.answer_type, key[q.qid])
         if a is None or k is None or a == k:
             continue
-        abs_tol, rel_tol = TOLERANCE[q.answer_type]
+        abs_tol, rel_tol = answer_type.tolerance_in(q.unit)
         if abs(a - k) <= 2 * max(abs_tol, rel_tol * abs(k)):
             return False
     return True
@@ -146,7 +150,7 @@ def score_traps(traps: list[Trap], questions: list[Question], key: dict, reports
     data = DigestData(reports, notices)
     units = domain.units
     for trap in traps:
-        trap.affected = _single_effects(trap, questions, key, data, units)
+        trap.affected = _single_effects(trap, questions, key, data, domain)
         trap.fallen = {}
     choices = [[None] + list(range(len(t.mishandles))) for t in traps]  # None = read correctly
     for combo in itertools.product(*choices):
@@ -155,7 +159,7 @@ def score_traps(traps: list[Trap], questions: list[Question], key: dict, reports
             continue
         mishandle = Mishandle.merged(traps[i].mishandles[combo[i]] for i in misread)
         for q in questions:
-            answer = execute(q.chain, data, mishandle=mishandle, units=units)
+            answer = execute(q.chain, data, mishandle=mishandle, units=units, resolver=domain.resolve)
             normal = normalize(q.answer_type, answer)
             if normal == normalize(q.answer_type, key[q.qid]):
                 continue
@@ -395,8 +399,8 @@ def inject_traps(events: list[Event], questions: list[Question], rng: random.Ran
                 continue
             trial = DigestData(*_apply(site.reports, notices, candidate))
             rank = 0
-            if _single_effects(candidate.trap, questions, key, trial, units):
-                rank = 2 if _clear_of_tolerance_edge(candidate.trap, questions, key, trial, units) else 1
+            if _single_effects(candidate.trap, questions, key, trial, domain):
+                rank = 2 if _clear_of_tolerance_edge(candidate.trap, questions, key, trial, domain) else 1
             if best is None or rank > best[0]:
                 best = (rank, candidate)
             if rank == 2:

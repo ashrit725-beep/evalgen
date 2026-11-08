@@ -9,7 +9,7 @@ the answer a model would produce if it missed that trap.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Iterable
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from .domains.base import Record, RecordReport
 from .models import Event, Notice, Report
@@ -83,6 +83,11 @@ class Mishandle:
         )
 
 
+# The reading rules of one domain in code (Domain.resolve): (reports, notices, mishandle) -> records.
+# Optional, not "X | None": this alias is evaluated at import, and Python 3.9 has no such unions.
+Resolver = Callable[[Sequence[Any], Sequence[Notice], Optional[Mishandle]], list[Any]]
+
+
 def report_to_event(report: Report, event_id: str) -> Event:
     return Event(
         id=event_id,
@@ -99,14 +104,16 @@ def report_to_event(report: Report, event_id: str) -> Event:
 
 
 def resolve(reports: Iterable[Report | RecordReport], notices: Iterable[Notice], mishandle: Mishandle | None = None,
-            *, authoritative: str = "reviewed", field: str = "mag",
-            qualifier: str | None = "mag_type") -> list[Event | Record]:
+            *, authoritative: str = "reviewed", qualifiers: Mapping[str, str] | None = None) -> list[Event | Record]:
     """Apply the reading rules: drop retracted reports, merge re-reports, prefer the values of the
     `authoritative` (REVIEWED) report, apply corrections. Returns one record per real thing: an
     Event per earthquake, or a Record for the RecordReports of a generic domain.
 
-    A correction revises `field` and its qualifier `qualifier` (the magnitude and its type). A 0.2.0
-    notice gives the new magnitude and type; a generic notice gives a new value, and may name its field."""
+    A correction revises one value. An earthquake (0.2.0) correction gives the new magnitude and its
+    type. A generic correction names its field and gives the new value, and may give a new
+    qualifier, which is stored under that field's qualifier key in `qualifiers` (by field key: what a
+    domain's field specs name). A generic domain passes its own `authoritative` status and
+    `qualifiers` (Domain.resolve); the defaults are the earthquake rules."""
     m = mishandle or Mishandle()
     notices = list(notices)
     retracted = {n.target for n in notices if n.kind == "retraction"} - set(m.keep_retracted)
@@ -137,7 +144,7 @@ def resolve(reports: Iterable[Report | RecordReport], notices: Iterable[Notice],
         record = _as_record(base, record_id)
         fix = corrections.get(record_id)
         if fix is not None:  # rule 3
-            record = _corrected(record, fix, field, qualifier)
+            record = _corrected(record, fix, qualifiers or {})
         records.append(record)
     return records + separate
 
@@ -153,20 +160,17 @@ def _as_record(report: Report | RecordReport, record_id: str) -> Event | Record:
     return report_to_event(report, record_id)
 
 
-def _corrected(record: Event | Record, fix: Notice, field: str, qualifier: str | None) -> Event | Record:
+def _corrected(record: Event | Record, fix: Notice, qualifiers: Mapping[str, str]) -> Event | Record:
     if isinstance(record, Record):
-        return _generic_correction(record, fix, field, qualifier)
+        return _generic_correction(record, fix, qualifiers)
     if fix.new_mag is None:
         return record
-    revised = {field: fix.new_mag}
-    if qualifier is not None:
-        revised[qualifier] = fix.mag_type or getattr(record, qualifier)
-    return replace(record, **revised)
+    return replace(record, mag=fix.new_mag, mag_type=fix.mag_type or record.mag_type)
 
 
 # ---------------------------------------------------------------- generic records (phase 1b)
-# The generic record path of plan phase 1b resolves RecordReports into Records here. These two
-# functions cover one correctable field per notice; phase 1b extends them if its domains need more.
+# The generic record path of plan phase 1b resolves RecordReports into Records here. A correction
+# revises one field; phase 1b extends this if its domains need more.
 
 
 def _generic_record(report: RecordReport, record_id: str) -> Record:
@@ -175,12 +179,19 @@ def _generic_record(report: RecordReport, record_id: str) -> Record:
                   place=report.place)
 
 
-def _generic_correction(record: Record, fix: Notice, field: str, qualifier: str | None) -> Record:
-    """A generic correction replaces the value of the field it names (or of `field`), and its
-    qualifier when it gives one."""
+def _generic_correction(record: Record, fix: Notice, qualifiers: Mapping[str, str]) -> Record:
+    """A generic correction replaces the value of the field it names, and that field's qualifier
+    (under its key in `qualifiers`) when it gives one. A correction that names no field, a field the
+    record lacks, or a qualifier for a field that has none, is an error, never a guess."""
+    if fix.field is None:
+        raise ValueError(f"the correction of {fix.target} names no field")
+    if fix.field not in record.values:
+        raise ValueError(f"the correction of {fix.target} names {fix.field!r}, which its record does not have")
     if fix.new_value is None:
         return record
-    qualifiers = dict(record.qualifiers)
-    if qualifier is not None and fix.qualifier is not None:
-        qualifiers[qualifier] = fix.qualifier
-    return replace(record, values={**record.values, (fix.field or field): fix.new_value}, qualifiers=qualifiers)
+    revised = replace(record, values={**record.values, fix.field: fix.new_value})
+    if fix.qualifier is None:
+        return revised
+    if fix.field not in qualifiers:
+        raise ValueError(f"the correction of {fix.target} gives a qualifier, but {fix.field!r} has none")
+    return replace(revised, qualifiers={**record.qualifiers, qualifiers[fix.field]: fix.qualifier})

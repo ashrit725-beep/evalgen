@@ -1,10 +1,11 @@
-"""Small shared helpers: canonical hashing, JSON files, UTC timestamps."""
+"""Small shared helpers: canonical hashing, JSON files, UTC timestamps, exact number text."""
 from __future__ import annotations
 
 import hashlib
 import json
 import re
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,16 @@ def write_json(path: Path, obj: Any) -> None:
 
 def read_json(path: Path) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def plain_number(x: float | int) -> str:
+    """A number as text, exactly as stored and never in exponent notation: 3.1, 12 (for 12.0), -0,
+    0.00005, 1234567.5. It agrees with format(x, "g") wherever that is exact; "g" keeps only six
+    significant digits and switches to exponents for small and large values."""
+    if isinstance(x, float):
+        text = format(Decimal(repr(x)), "f")
+        return text[:-2] if text.endswith(".0") else text
+    return str(x)
 
 
 def utc_iso(ts: int) -> str:

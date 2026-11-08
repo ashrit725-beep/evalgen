@@ -27,7 +27,7 @@ from .genres import detect_genre, get_genre
 from .genres.base import parse_glossary
 from .geo import KM_PER_MILE, haversine_km
 from .models import EVENT_ID_PATTERN, Notice, Report
-from .ops import DigestData, execute
+from .ops import DigestData, Units, execute
 from .rules import resolve
 
 ID = r"(?<![0-9a-z])" + EVENT_ID_PATTERN + r"(?![0-9a-z])"
@@ -212,20 +212,26 @@ def parse_digest(text: str) -> DigestData:
 # ---------------------------------------------------------------------------------- solving
 
 
-def read_digest(prompt: str, genre: str | None = None) -> DigestData:
-    """The reports and notices of a prompt's digest, read by the parser of the genre that wrote it:
-    `genre` when it is known, or else the genre that recognises the digest (genres.detect_genre)."""
+def read_digest(prompt: str, genre: str | None = None, domain: Domain | None = None) -> DigestData:
+    """The reports and notices of a prompt's digest about `domain`'s records (earthquakes when not
+    given), read by the parser of the genre that wrote it: `genre` when it is known, or else the
+    genre that recognises the digest (genres.detect_genre)."""
     text = extract_digest(prompt)
     reader = get_genre(genre) if genre is not None else detect_genre(text)
-    return reader.parse(text, parse_glossary(prompt))
+    return reader.parse(text, parse_glossary(prompt), domain if domain is not None else get_domain())
 
 
-def _reading(prompt: str, domain: str | None, genre: str | None) -> tuple[DigestData, Domain | None]:
-    """A prompt's digest data and its domain. Without a domain or a genre the prompt is a legacy one
-    (earthquakes, classic), read exactly as 0.2.0 read it, and the domain is None."""
+def _reading(prompt: str, domain: str | None, genre: str | None) -> tuple[DigestData, Domain | None, Units | None]:
+    """A prompt's digest data, its domain and the units its chains use. Without a domain or a genre
+    the prompt is a legacy one (earthquakes, classic), read exactly as 0.2.0 read it, and the domain
+    and units are None. Otherwise the units are those the prompt's glossary prints, when it prints
+    one (a domain whose unit words are drawn per instance is read through it), else the domain's."""
     if domain is None and genre is None:
-        return parse_digest(extract_digest(prompt)), None
-    return read_digest(prompt, genre), get_domain(domain)
+        return parse_digest(extract_digest(prompt)), None, None
+    records_domain = get_domain(domain)
+    glossary = parse_glossary(prompt)
+    units = records_domain.units if glossary is None else glossary.units
+    return read_digest(prompt, genre, records_domain), records_domain, units
 
 
 def solve(prompt: str, questions: Sequence[dict], mode: str = "oracle", *, domain: str | None = None,
@@ -233,17 +239,18 @@ def solve(prompt: str, questions: Sequence[dict], mode: str = "oracle", *, domai
     """Answer every question from the prompt text. mode: "oracle" or "naive".
 
     `domain` and `genre` name the instance's domain and the rendering's genre, as a non-legacy run
-    records them; without either, the prompt is read as 0.2.0 read it."""
-    data, records_domain = _reading(prompt, domain, genre)
-    units = None if records_domain is None else records_domain.units
+    records them; without either, the prompt is read as 0.2.0 read it. The oracle applies the reading
+    rules of the instance's domain."""
+    data, records_domain, units = _reading(prompt, domain, genre)
+    resolver = resolve if records_domain is None else records_domain.resolve
     skip = ("dedupe",) if mode == "naive" else ()
-    return {q["qid"]: execute(q["chain"], data, skip=skip, units=units) for q in questions}
+    return {q["qid"]: execute(q["chain"], data, skip=skip, units=units, resolver=resolver) for q in questions}
 
 
 def forecast_estimate(prompt: str, rule: dict, *, domain: str | None = None, genre: str | None = None) -> float:
     """Oracle's forecast: a naive base rate from M>=min_mag events near the point in the digest.
     `domain` and `genre` are read as in ``solve``."""
-    data, records_domain = _reading(prompt, domain, genre)
+    data, records_domain, _ = _reading(prompt, domain, genre)
     events = (resolve(data.reports, data.notices) if records_domain is None
               else records_domain.resolve(data.reports, data.notices))
     nearby = [

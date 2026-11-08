@@ -13,10 +13,10 @@ import pytest
 
 from evalgen import genres, pipeline
 from evalgen.digest import choose_style, render_digest
-from evalgen.domains.base import Domain
+from evalgen.domains.base import Domain, Glossary
 from evalgen.domains.earthquakes import EARTHQUAKES
 from evalgen.genres import DEFAULT_GENRE, Registry, all_genres, detect_genre, get_genre
-from evalgen.genres.base import Glossary, RenderContext, parse_glossary
+from evalgen.genres.base import RenderContext, parse_glossary
 from evalgen.genres.classic import CLASSIC, GENRE
 from evalgen.pipeline import question_specs
 from evalgen.report import load_instances
@@ -45,15 +45,15 @@ def test_classic_draws_and_renders_exactly_as_020(instances):
 
 
 def test_classic_parses_exactly_as_020(instances):
-    glossary = Glossary.of(EARTHQUAKES)
+    glossary = EARTHQUAKES.glossary()
     assert [(f.key, f.label, [u.symbol for u in f.units]) for f in glossary.fields] == [
         ("mag", "magnitude", []), ("depth", "depth", ["km", "mi"])]
     for inst in instances:
         for rendering in inst.renderings:
             legacy = parse_digest(rendering.digest)
-            assert CLASSIC.parse(rendering.digest, None) == legacy  # a legacy prompt prints no glossary
-            assert CLASSIC.parse(rendering.digest, glossary) == legacy
-            assert read_digest(rendering.prompt) == read_digest(rendering.prompt, "classic") == legacy
+            assert CLASSIC.parse(rendering.digest, None, EARTHQUAKES) == legacy  # a legacy prompt prints no glossary
+            assert CLASSIC.parse(rendering.digest, glossary, EARTHQUAKES) == legacy
+            assert read_digest(rendering.prompt) == read_digest(rendering.prompt, "classic", EARTHQUAKES) == legacy
 
 
 def test_classic_leaves_other_domains_to_the_generic_record_path(instances):
@@ -64,9 +64,10 @@ def test_classic_leaves_other_domains_to_the_generic_record_path(instances):
     rendering = inst.renderings[0]
     ctx = RenderContext(inst.reports, inst.notices, inst.chatter, compiled_at=inst.compiled_at,
                         window_hours=inst.window_hours, style=rendering.style, rng=random.Random(0), domain=Toy())
-    glossary = Glossary("toy", "item", "items", "item ID", "depot", "yard")
+    glossary = Glossary("item", "items", "item ID", "depot", "yard")
     for attempt in (lambda: CLASSIC.choose_style(random.Random(0), Toy()), lambda: CLASSIC.render(ctx),
-                    lambda: CLASSIC.parse(rendering.digest, glossary)):
+                    lambda: CLASSIC.parse(rendering.digest, glossary, Toy()),
+                    lambda: read_digest(rendering.prompt, "classic", Toy())):
         with pytest.raises(NotImplementedError, match="phase 1b"):
             attempt()
 
@@ -80,6 +81,22 @@ def test_dispatch_falls_back_to_classic_on_every_legacy_digest(instances):
             assert parse_glossary(rendering.prompt) is None
             assert CLASSIC.sniff(rendering.digest)
             assert detect_genre(rendering.digest) is CLASSIC
+
+
+def test_no_genre_recognises_another_genres_digests(instances):
+    """The oracle picks a parser by sniffing and falls back to classic only when no other genre claims
+    a digest: so no genre but classic may claim a legacy digest, and none may claim another's output."""
+    every = all_genres()
+    for inst in instances[:4]:
+        for rendering in inst.renderings:
+            assert [g.name for g in every if g.sniff(rendering.digest)] == [DEFAULT_GENRE]
+        for writer in every:
+            rng = random.Random(inst.seed)
+            style = writer.choose_style(rng, EARTHQUAKES)
+            text = writer.render(RenderContext(inst.reports, inst.notices, inst.chatter, compiled_at=inst.compiled_at,
+                                               window_hours=inst.window_hours, style=style, rng=rng,
+                                               domain=EARTHQUAKES))
+            assert [g.name for g in every if g.sniff(text)] == [writer.name]
 
 
 def test_the_evalgen_registry_lists_its_modules_in_order_and_defaults_to_classic():
@@ -141,8 +158,8 @@ class Quoted(Classic):
     def sniff(self, digest_text):
         return all(line.startswith(">") for line in digest_text.split("\\n"))
 
-    def parse(self, digest_text, glossary):
-        return super().parse("\\n".join(line[2:] for line in digest_text.split("\\n")), glossary)
+    def parse(self, digest_text, glossary, domain):
+        return super().parse("\\n".join(line[2:] for line in digest_text.split("\\n")), glossary, domain)
 
 
 GENRE = Quoted()
@@ -187,7 +204,7 @@ def test_sniffing_picks_the_genre_that_wrote_a_digest(quoted, instances):
     assert misread.notices == [] and misread != parse_digest(plain)
     assert not CLASSIC.sniff(text) and not quoted.sniff(plain)
     assert detect_genre(text) is quoted and detect_genre(plain) is CLASSIC
-    assert quoted.parse(text, None) == parse_digest(plain)
+    assert quoted.parse(text, None, EARTHQUAKES) == parse_digest(plain)
     assert read_digest(f"<digest>\n{text}\n</digest>") == parse_digest(plain)
 
 

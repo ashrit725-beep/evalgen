@@ -3,6 +3,8 @@ forecast resolution. With the defaults (the legacy path) every call, file and ma
 0.2.0 one; the new options are recorded only when they are set."""
 from __future__ import annotations
 
+import copy
+import random
 import shutil
 from dataclasses import asdict, fields, replace
 
@@ -11,10 +13,10 @@ import pytest
 from evalgen import pipeline
 from evalgen.adapters import MockAdapter, Task
 from evalgen.domains.base import Domain
-from evalgen.domains.earthquakes import FORECASTER, Earthquakes
+from evalgen.domains.earthquakes import EARTHQUAKES, FORECASTER, Earthquakes
 from evalgen.genres.classic import CLASSIC
 from evalgen.pipeline import GenerateConfig, build_instance, question_specs
-from evalgen.prompt import ANSWER_SPECS, INTRO, build_prompt
+from evalgen.prompt import ANSWER_SPECS, INTRO, answer_spec_text, build_prompt
 from evalgen.questions import Context, compose_new_templates
 from evalgen.report import PACKAGE_DIR, code_fingerprint
 from evalgen.rules import READING_RULES
@@ -104,6 +106,56 @@ def test_build_prompt_takes_a_domains_wording_and_glossary():
     assert prompt.startswith("INTRO\n\nRULES\n\nGLOSSARY\n\n<digest>\nDIGEST\n</digest>\n\nQuestions:\n"
                              "Q1. How many?\n    Answer type: a whole number.\n"
                              "Q2. How deep?\n    Answer type: a number in miles, rounded to 1 decimal place.\n\n")
+    words = build_prompt("DIGEST", [("Q1", "How warm?", "temperature", "°F"), ("Q2", "Which?", "observation_id", None)],
+                         specs={"temperature": "a number in {unit}", "observation_id": "an observation ID"},
+                         placeholders={"temperature": "<number>", "observation_id": "\"<observation ID>\""},
+                         unit_words={"°F": "degrees Fahrenheit"}, answer_note="IDs are JSON strings.")
+    assert "Q1. How warm?\n    Answer type: a number in degrees Fahrenheit.\n" in words
+    assert words.endswith("{\"answers\": {\"Q1\": <number>, \"Q2\": \"<observation ID>\"}}\nIDs are JSON strings.\n")
+    with pytest.raises(KeyError, match="°F"):  # a unit without words is an error, never an empty word
+        answer_spec_text("depth", "°F")
+
+
+# --------------------------------------------------------------------------- surface words
+
+
+class Retold(Earthquakes):
+    """Earthquakes whose records go by a word drawn for each instance: a domain with surface words."""
+
+    has_surface = True
+    WORDS = ("quakes", "tremors", "seismic events", "shocks")
+
+    def draw_surface(self, rng):
+        return {"records": rng.choice(self.WORDS)}
+
+    def bind(self, surface):
+        if surface is None:
+            return self
+        bound = copy.copy(self)
+        bound.lexicon = replace(self.lexicon, records=surface["records"],
+                                all_records=f"{surface['records']} in the digest")
+        return bound
+
+
+def test_surface_words_are_drawn_and_bound_off_the_legacy_path_only():
+    def build(domain, genre_plan):
+        seedlog = SeedLog(5)
+        snapshot, _ = build_snapshot("synthetic", seedlog)
+        inst = build_instance(0, snapshot, compose_new_templates(seedlog.rng("templates", "new")), seedlog,
+                              GenerateConfig(seed=5), Context(snapshot.compiled_at, snapshot.window_hours), set(), {},
+                              domain=domain, genre_plan=genre_plan)
+        return inst, seedlog.seeds
+
+    retold = Retold()
+    legacy, legacy_seeds = build(retold, None)
+    assert legacy.surface is None and "instance/0/surface" not in legacy_seeds
+    assert legacy.to_dict() == build(EARTHQUAKES, None)[0].to_dict()  # the legacy path never draws one
+    planned, planned_seeds = build(retold, (CLASSIC,) * 3)
+    word = random.Random(planned_seeds["instance/0/surface"]).choice(Retold.WORDS)
+    assert planned.surface == {"records": word} and planned.to_dict()["surface"] == {"records": word}
+    assert all(word in text for r in planned.renderings for text in r.question_text.values())
+    check = pipeline.generator_self_check([planned])
+    assert check["oracle_agreements"] == check["oracle_checks"] > 0
 
 
 # ------------------------------------------------------------------------- run and score

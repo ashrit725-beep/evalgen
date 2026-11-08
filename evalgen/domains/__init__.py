@@ -5,13 +5,15 @@ Every public module of this package is one built-in domain and exports ``DOMAIN`
 package never imports a domain module (domain modules import the rest of evalgen, which may in turn
 import this package). Private plugins, Python files kept outside the public repository for held-out
 domains, follow the same convention and are loaded by path with ``load_plugin`` (see
-evalgen.registry, which the genres share).
+evalgen.registry, which the genres share). A domain is validated when it is registered, and its
+answer types are registered with the scorer at the same time.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 from .. import registry
+from ..scoring import register_answer_type
 from .base import Domain
 
 DEFAULT_DOMAIN = "earthquakes"  # the 0.2.0 domain: the legacy path, and any lookup without a name
@@ -23,6 +25,14 @@ class Registry(registry.Registry[Domain]):
 
     def __init__(self, package: str = __name__) -> None:
         super().__init__(package, Domain, attribute="DOMAIN", default=DEFAULT_DOMAIN)
+
+    def _admit(self, entry: Domain) -> None:
+        """Validate a domain (Domain.validate) before it is added, and register its answer types, so
+        that the scorer reads every answer about its records. (They stay registered if a later module
+        of the same discovery fails: registering them again on the next attempt is harmless.)"""
+        entry.validate()
+        for answer_type in entry.answer_types():  # validate() checked that none conflicts
+            register_answer_type(answer_type)
 
 
 REGISTRY = Registry()

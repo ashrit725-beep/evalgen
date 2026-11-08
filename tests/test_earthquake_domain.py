@@ -7,27 +7,35 @@ import hashlib
 import itertools
 import json
 import random
-from dataclasses import asdict, replace
+from dataclasses import asdict, fields, replace
+from types import SimpleNamespace
 
 import pytest
 
-from evalgen import scoring
+from evalgen import adapters, scoring, solver, traps
+from evalgen.adapters import Task, _perturb
 from evalgen.digest import render_notice, render_report
 from evalgen.domains import DEFAULT_DOMAIN, get_domain
-from evalgen.domains.base import LENGTH, MI, Domain, FieldSpec, Lexicon, Record, RecordReport, Unit
+from evalgen.domains.base import (LENGTH, MI, Domain, FieldSpec, Glossary, Lexicon, Record, RecordReport, TrapVocab,
+                                  Unit)
 from evalgen.domains.earthquakes import DOMAIN, EARTHQUAKES
 from evalgen.geo import KM_PER_MILE, from_km
-from evalgen.models import EVENT_ID_PATTERN, Notice
-from evalgen.ops import FILTER_OPS, execute, rows_after_filters
+from evalgen.models import EVENT_ID_PATTERN, Notice, Question, Trap
+from evalgen.ops import FILTER_OPS, DigestData, execute, rows_after_filters
 from evalgen.pipeline import sample_events
 from evalgen.questions import (_EXCLUSIVE, _MONOTONE, FLOAT_SLACK, NEAREST_MAX_KM, PUBLIC_TEMPLATES, RANKS,
                                TIME_MARGIN_S, Context, _compatible, compose_new_templates, compose_questions,
                                draw_filter, exclusive_pairs, filter_ops, fingerprint, monotone_pairs, phrase_question,
                                public_templates, round_to_step)
 from evalgen.rules import READING_RULES, Mishandle, naive_events, report_to_event, resolve
+from evalgen.scoring import is_correct, register_answer_type
 from evalgen.seeds import SeedLog
+from evalgen.solver import solve
 from evalgen.sources import build_snapshot, generate_synthetic, mimic_event_id, new_event_id
 from evalgen.traps import builders_for, inject_traps, primary_report, threshold_values
+
+from generic_quakes import GENERIC_OP_NAMES, GENERIC_QUAKES
+from test_domain_interface import generic as generic_step
 
 
 # --- composition digest (its source is also run against evalgen 0.2.0 to pin LEGACY_DIGESTS) ---
@@ -76,6 +84,48 @@ LEGACY_DIGESTS = {  # composition_digest(seed) run against evalgen 0.2.0, before
 def test_composition_through_the_domain_object_equals_the_020_result(seed):
     assert composition_digest(seed, get_domain("earthquakes")) == LEGACY_DIGESTS[seed]
     assert composition_digest(seed) == LEGACY_DIGESTS[seed]  # the defaults are the earthquake domain
+
+
+def composed(seed: int, domain: Domain, instances: int = 8) -> dict:
+    """What composition makes of the first instances of a synthetic run, in `domain`'s op names."""
+    log = SeedLog(seed)
+    snapshot, _ = build_snapshot("synthetic", log, pool_size=360)
+    ctx = Context(snapshot.compiled_at, snapshot.window_hours)
+    new = compose_new_templates(log.rng("templates", "new"), domain)
+    used: set[str] = set()
+    usage: dict[str, int] = {}
+    out: dict = {"twins": [(t.template_id, t.filters, t.terminal) for t in new], "instances": []}
+    for i in range(instances):
+        events = sample_events(snapshot.events, log.rng("instance", i, "events"), 20, 28)
+        rng = log.rng("instance", i, "questions")
+        questions = compose_questions(events, public_templates(domain), new, rng, ctx, rng.randint(3, 5), used, usage,
+                                      domain=domain)
+        reports, notices, planted = inject_traps(events, questions, log.rng("instance", i, "traps"),
+                                                 compiled_at=snapshot.compiled_at,
+                                                 window_hours=snapshot.window_hours, domain=domain)
+        words = random.Random(log.seed("instance", i, "render", 1))
+        out["instances"].append({
+            "chains": [q.chain for q in questions],
+            "questions": [(q.template_id, q.answer_type, q.unit, q.evidence) for q in questions],
+            "wordings": [phrase_question(q, words, alt_units=True, domain=domain) for q in questions],
+            "digest": (reports, notices), "traps": [(t.affected, t.fallen) for t in planted],
+            "question_stream": rng.getstate(),
+        })
+    return out
+
+
+def test_composition_does_not_depend_on_op_names(monkeypatch):
+    """Earthquakes under the generic op names compose, plant and word the same questions draw for
+    draw: nothing in composition reads an op's name where it means its kind and field."""
+    monkeypatch.setitem(traps.BUILDERS, GENERIC_QUAKES.name, traps.BUILDERS[EARTHQUAKES.name])
+    for seed in (3, 42):
+        named, plain = composed(seed, EARTHQUAKES), composed(seed, GENERIC_QUAKES)
+        assert plain["twins"] == [(tid, tuple(GENERIC_OP_NAMES.get(f, f) for f in filters),
+                                   GENERIC_OP_NAMES.get(end, end)) for tid, filters, end in named["twins"]]
+        assert len(named["instances"]) == len(plain["instances"])
+        for a, b in zip(named["instances"], plain["instances"]):
+            assert [[generic_step(s) for s in chain] for chain in a.pop("chains")] == b.pop("chains")
+            assert a == b  # templates, answer types, units, evidence, wordings, digest, traps, draws
 
 
 # ------------------------------------------------------------ 0.2.0 literals and recipes
@@ -194,7 +244,8 @@ def test_earthquake_field_specs_carry_the_020_constants():
     assert depth.decimals == 1  # answers: convert, then round(1)
     assert (mag.filters, depth.filters) == (("at_least", "below"), ("below", "at_least"))
     assert (mag.answer_type, depth.answer_type) == ("magnitude", "depth")
-    assert [scoring.TOLERANCE[s.answer_type] for s in (mag, depth)] == [mag.tolerance, depth.tolerance]
+    assert [scoring.ANSWER_TYPES[s.answer_type].tolerance for s in (mag, depth)] == [mag.tolerance, depth.tolerance]
+    assert all(u.decimals is None and u.tolerance is None for u in depth.units)  # the field's, in km and mi
     spatial = EARTHQUAKES.spatial
     assert EARTHQUAKES.has_location and dict(spatial.radii) == RADII_020
     assert (spatial.margin, spatial.nearest_gap) == ((3.0, 0.06), (3.0, 0.08))  # DISTANCE_*, NEAREST_GAP_*
@@ -277,10 +328,14 @@ def test_the_trap_vocabulary_is_what_the_020_digests_print(instances):
 
 
 def test_the_glossary_describes_every_field_and_stays_out_of_legacy_prompts(instances):
-    text = EARTHQUAKES.glossary()
-    assert all(spec.label in text for spec in EARTHQUAKES.fields)
-    assert "1 mi = 1.609344 km" in text and "6371 km" in text and "REVIEWED" in text
-    assert not any("Glossary" in r.prompt for inst in instances for r in inst.renderings)
+    glossary = EARTHQUAKES.glossary()
+    assert (glossary.noun, glossary.plural, glossary.id_label, glossary.source_label, glossary.group_label) == (
+        "earthquake", "earthquakes", "event ID", "network", "region")
+    assert [(f.key, f.label, f.canonical_unit, f.units, f.decimals) for f in glossary.fields] == [
+        ("mag", "magnitude", None, (), 2), ("depth", "depth", "km", LENGTH, 1)]
+    assert glossary.units == EARTHQUAKES.units
+    assert "domain" not in {f.name for f in fields(Glossary)}  # a prompt never names a (held-out) domain
+    assert not any("<glossary>" in r.prompt for inst in instances for r in inst.renderings)
 
 
 # --------------------------------------------------------------------------------- traps
@@ -330,18 +385,27 @@ def test_resolve_reads_record_reports_generically():
                line("mx-77", "provisional", 22.0, "madis", same_as="ksfo-01"),
                line("ksea-02", "verified", 12.5),
                line("kbos-03", "verified", 30.0)]
-    notices = [Notice(kind="retraction", target="kbos-03", time=t0, reason="sensor fault"),
-               Notice(kind="correction", target="ksea-02", time=t0, field="temp", new_value=13.5, old_value=12.5,
-                      qualifier="B")]
-    rules = {"authoritative": "verified", "field": "temp", "qualifier": "sensor"}
+    fix = Notice(kind="correction", target="ksea-02", time=t0, field="temp", new_value=13.5, old_value=12.5,
+                 qualifier="B")
+    notices = [Notice(kind="retraction", target="kbos-03", time=t0, reason="sensor fault"), fix]
+    rules = {"authoritative": "verified", "qualifiers": {"temp": "sensor"}}
     assert resolve(reports, notices, **rules) == [
         Record("ksfo-01", t0, None, None, "West", "nws", {"temp": 21.0}, {"sensor": "A"}),
         Record("ksea-02", t0, None, None, "West", "nws", {"temp": 13.5}, {"sensor": "B"})]
-    assert resolve(reports, notices)[0].values == {"temp": 23.0}  # nothing is "reviewed": the first line stands
+    unverified = resolve(reports, notices, qualifiers={"temp": "sensor"})  # nothing is "reviewed": first lines stand
+    assert [r.values["temp"] for r in unverified] == [23.0, 13.5]
     careless = resolve(reports, notices, Mishandle(split=(("mx-77", "madis", "provisional"),),
                                                    keep_retracted=("kbos-03",)), **rules)
     assert [r.id for r in careless] == ["ksfo-01", "ksea-02", "kbos-03", "mx-77"]
     assert [r.values["temp"] for r in naive_events(reports)] == [23.0, 21.0, 22.0, 12.5, 30.0]
+    # A correction is never guessed: it names a field the record has, and a qualifier needs the field's key.
+    for notice, message in ((replace(fix, field=None), "names no field"),
+                            (replace(fix, field="wind"), "names 'wind', which its record does not have")):
+        with pytest.raises(ValueError, match=message):
+            resolve(reports, [notice], **rules)
+    with pytest.raises(ValueError, match="gives a qualifier, but 'temp' has none"):
+        resolve(reports, notices, authoritative="verified")  # the earthquake rules cannot read this digest
+    assert resolve(reports, [replace(fix, qualifier=None)], **rules)[1].qualifiers == {"sensor": "A"}
 
 
 # ---------------------------------------------------------- a generic domain without locations
@@ -352,10 +416,15 @@ KMH, MPH = Unit("km/h", "km/h"), Unit("mph", "mph", KM_PER_MILE)
 
 class Observations(Domain):
     """A test-only generic domain: temperature in the primary role, wind speed in the secondary one,
-    and no locations, so no spatial templates."""
+    and no locations, so no spatial templates. A "verified" line settles an observation's values, and
+    a corrected temperature names its sensor."""
 
     name = "observations"
+    noun = "observation"
     plural = "observations"
+    id_label = "observation ID"
+    source_label = "provider"
+    group_label = "region"
     fields = (
         FieldSpec(key="temp", label="temperature", canonical_unit="°C", units=(CELSIUS, FAHRENHEIT), decimals=1,
                   answer_type="temperature", tolerance=(0.5, 0.0), margin=(0.3, 0.0), rank_gap=0.5,
@@ -385,12 +454,80 @@ class Observations(Domain):
                    "min(wind)": ("What was the lightest wind, in {unit}, among the {records}?",),
                    "compare_groups": ("Which region had more {records}: {a} or {b}?",)},
     )
+    id_pattern = r"obs-\d{3}"
     id_answer_type = "observation_id"
     group_answer_type = "us_region"
+    trap_vocab = TrapVocab(rereporting_sources=("madis",), duplicate_notes=("same observation as",),
+                           retraction_reasons=("sensor fault",), retraction_notices=("withdrawn",),
+                           correction_notices=("corrected to",))
+
+    def resolve(self, reports, notices, mishandle=None):
+        return resolve(reports, notices, mishandle, authoritative="verified", qualifiers={"temp": "sensor"})
 
 
 OBSERVATIONS = Observations()
 T0 = 1_780_000_000
+
+
+def observation_line(ref: str, status: str, temp: float, source: str = "nws") -> RecordReport:
+    return RecordReport(ref=ref, source=source, status=status, time=T0, lat=None, lon=None, group="Pacific",
+                        values={"temp": temp, "wind": 10.0}, qualifiers={"sensor": "A"})
+
+
+def test_every_reader_of_a_digest_applies_its_domains_reading_rules(answer_registry, monkeypatch):
+    """The executor, the oracle and trap grading read a generic digest by its domain's rules (here a
+    "verified" line settles the values, and a correction's qualifier is a sensor), never by the
+    earthquake rules, which cannot read it at all."""
+    OBSERVATIONS.validate()
+    for answer_type in OBSERVATIONS.answer_types():
+        register_answer_type(answer_type)
+    reports = [observation_line("obs-001", "provisional", 23.0, "madis"), observation_line("obs-001", "verified", 21.0),
+               observation_line("obs-002", "verified", 12.5)]
+    notices = [Notice(kind="correction", target="obs-002", time=T0, field="temp", new_value=13.5, old_value=12.5,
+                      qualifier="B")]
+    data = DigestData(reports, notices)
+    warmest = [{"op": "dedupe"}, {"op": "max", "field": "temp"}]
+    coolest = [{"op": "dedupe"}, {"op": "below", "field": "temp", "value": 20.0}, {"op": "argmax", "field": "temp"}]
+    assert execute(warmest, data, units=OBSERVATIONS.units, resolver=OBSERVATIONS.resolve) == 21.0
+    with pytest.raises(ValueError, match="gives a qualifier"):
+        execute(warmest, data, units=OBSERVATIONS.units)
+    monkeypatch.setattr(solver, "get_domain", lambda name=None: OBSERVATIONS)
+    monkeypatch.setattr(solver, "read_digest", lambda prompt, genre=None, domain=None: data)
+    specs = [{"qid": "Q1", "chain": warmest}, {"qid": "Q2", "chain": coolest}]
+    assert solve("PROMPT", specs, domain="observations", genre="classic") == {"Q1": 21.0, "Q2": "obs-002"}
+    assert solve("PROMPT", specs, mode="naive", domain="observations", genre="classic") == {"Q1": 23.0, "Q2": "obs-002"}
+    question = Question("Q1", "P10", "public", warmest, "temperature")
+    trap = Trap("T1", "conflicting_value", "second_report", "obs-001", "obs-001 also reported as 23.0",
+                mishandles=[Mishandle(prefer_preliminary_for=("obs-001",)).to_dict()])
+    traps.score_traps([trap], [question], {"Q1": 21.0}, reports, notices, domain=OBSERVATIONS)
+    assert (trap.affected, trap.fallen) == ({"Q1": 23.0}, {"Q1": [23.0]})
+
+
+def test_the_mock_gets_every_answer_type_of_a_domain_wrong(answer_registry, monkeypatch):
+    for answer_type in OBSERVATIONS.answer_types():
+        register_answer_type(answer_type)
+    monkeypatch.setattr(adapters, "get_domain", lambda name=None: OBSERVATIONS)
+    hidden = SimpleNamespace(reports=[observation_line(f"obs-00{i}", "verified", 20.0 + i) for i in range(1, 5)])
+    task = Task("inst-000", "v1", [], hidden=hidden, domain="observations", genre="classic")
+    in_fahrenheit = [{"op": "dedupe"}, {"op": "max", "field": "temp"}, {"op": "convert", "to": "°F"},
+                     {"op": "round", "ndigits": 1}]
+    in_mph = [{"op": "dedupe"}, {"op": "min", "field": "wind"}, {"op": "convert", "to": "mph"},
+              {"op": "round", "ndigits": 1}]
+    compare = [{"op": "dedupe"}, {"op": "compare_groups", "a": "Pacific", "b": "South"}]
+    cases = [("temperature", "°F", in_fahrenheit, 70.3), ("temperature", None, in_fahrenheit[:2], 21.3),
+             ("wind_speed", "mph", in_mph, 12.4), ("observation_id", None, in_fahrenheit[:1] + [
+                 {"op": "argmax", "field": "temp"}], "obs-002"),
+             ("us_region", None, compare, "Pacific"), ("region", None, compare, "tie"),  # a group type named "region"
+             ("count", None, [{"op": "dedupe"}, {"op": "count"}], 3),
+             ("utc_time", None, [{"op": "dedupe"}, {"op": "time_of_max", "field": "temp"}], "23:55")]
+    for seed in range(20):
+        for answer_type, unit, chain, value in cases:
+            q = {"answer_type": answer_type, "unit": unit, "chain": chain}
+            wrong = _perturb(q, value, random.Random(seed), task)
+            assert not is_correct(answer_type, value, wrong, unit=unit), (answer_type, value, wrong)
+            assert not isinstance(value, float) or round(wrong, 1) == wrong  # to the question's places
+    with pytest.raises(ValueError, match="cannot get a probability answer"):
+        _perturb({"answer_type": "probability", "unit": None, "chain": []}, 0.3, random.Random(0), task)
 
 
 def observations(rng: random.Random, n: int) -> list[Record]:
