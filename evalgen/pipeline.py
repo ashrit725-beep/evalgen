@@ -23,10 +23,10 @@ import shutil
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, ClassVar, Sequence
 
 import requests
 
@@ -34,12 +34,16 @@ from . import __version__
 from .adapters import DEFAULT_MAX_TOKENS, AdapterError, Task, is_truncated, make_adapter, token_usage
 from .answers import parse_reply
 from .audit import write_audit_sample
-from .digest import choose_style, make_chatter, render_digest
-from .forecast import forecast_text, make_forecast, resolve_forecasts
+from .digest import make_chatter
+from .domains import get_domain
+from .domains.base import Domain
+from .domains.earthquakes import EARTHQUAKES
+from .genres.base import Genre, RenderContext
+from .genres.classic import CLASSIC
 from .models import Event, Instance, Rendering
-from .ops import FILTER_OPS, execute
+from .ops import execute, role
 from .prompt import build_prompt
-from .questions import PUBLIC_TEMPLATES, Context, Template, compose_new_templates, compose_questions, phrase_question
+from .questions import Context, Template, compose_new_templates, compose_questions, phrase_question, public_templates
 from .report import code_fingerprint, load_instances, write_report
 from .scoring import is_correct, normalize, same_answer
 from .seeds import SeedLog, derive_seed, fresh_nonce, seed_commitment
@@ -67,6 +71,18 @@ class GenerateConfig:
     questions_min: int = 3
     questions_max: int = 5
     audit_rate: float = 0.02
+    # How each instance's domain and genres are drawn, and the evaluator's private run config (held-out
+    # domains and genres, plugins). The mix draws of plan phase 4 read them.
+    mix: str = "legacy"  # "legacy" (0.2.0: earthquakes, classic), "random", or a list: "weather,neo:email"
+    private_config: str | None = None  # path of the private run config (JSON)
+
+    OPTIONAL_KEYS: ClassVar[tuple[str, ...]] = ("mix", "private_config")  # recorded only when not default
+
+    def to_dict(self) -> dict[str, Any]:
+        """The config as the manifest records it: asdict without the 0.3.0 options that keep their
+        defaults, so that a legacy run records exactly the 0.2.0 config."""
+        defaults = {f.name: f.default for f in fields(self)}
+        return {k: v for k, v in asdict(self).items() if k not in self.OPTIONAL_KEYS or v != defaults[k]}
 
 
 # ------------------------------------------------------------------------------ generate
@@ -104,63 +120,91 @@ def forecast_spec(inst: Instance) -> dict | None:
     return {"qid": inst.forecast["qid"], "rule": inst.forecast["rule"]} if inst.forecast else None
 
 
+def _recorded(**labels: str | None) -> dict[str, str]:
+    """The labels that are set: a non-legacy run records its domain and genres next to its scores
+    and forecasts, while a legacy run records none, so its files keep their 0.2.0 keys."""
+    return {name: value for name, value in labels.items() if value is not None}
+
+
 def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Template], seedlog: SeedLog,
-                   cfg: GenerateConfig, ctx: Context, used_chains: set[str], usage: dict[str, int]) -> Instance:
+                   cfg: GenerateConfig, ctx: Context, used_chains: set[str], usage: dict[str, int], *,
+                   domain: Domain = EARTHQUAKES, genre_plan: Sequence[Genre] | None = None) -> Instance:
+    """One test item about `domain`: its records, questions, answer key, traps and renderings.
+
+    `genre_plan` gives the genre of each rendering, the original first. None is the legacy path:
+    classic everywhere, with the 0.2.0 calls, random draws and output. Otherwise the instance records
+    its domain and each rendering its genre, and a variant avoids the original's style only when it
+    is in the original's genre."""
+    if genre_plan is None and domain.name != EARTHQUAKES.name:
+        raise ValueError(f"only earthquakes have a legacy rendering: {domain.name} needs a genre plan")
+    if genre_plan is not None and len(genre_plan) != cfg.variants + 1:
+        raise ValueError(f"the genre plan names {len(genre_plan)} genres for {cfg.variants + 1} renderings")
     events = sample_events(snapshot.events, seedlog.rng("instance", index, "events"), cfg.events_min, cfg.events_max)
     q_rng = seedlog.rng("instance", index, "questions")
-    questions = compose_questions(events, PUBLIC_TEMPLATES, new_templates, q_rng, ctx,
-                                  q_rng.randint(cfg.questions_min, cfg.questions_max), used_chains, usage)
-    answer_key = {q.qid: execute(q.chain, events) for q in questions}  # the key: code over the snapshot
+    questions = compose_questions(events, public_templates(domain), new_templates, q_rng, ctx,
+                                  q_rng.randint(cfg.questions_min, cfg.questions_max), used_chains, usage,
+                                  domain=domain)
+    units = domain.units
+    answer_key = {q.qid: execute(q.chain, events, units=units) for q in questions}  # the key: code over the snapshot
     trap_config = TrapConfig(id_style="sequence" if snapshot.source == "usgs" else "random")
     reports, notices, traps = inject_traps(events, questions, seedlog.rng("instance", index, "traps"),
                                            compiled_at=snapshot.compiled_at, window_hours=snapshot.window_hours,
-                                           config=trap_config)
+                                           config=trap_config, domain=domain)
     for q in questions:
-        unfiltered = [s for s in q.chain if s["op"] not in FILTER_OPS]
+        unfiltered = [s for s in q.chain if role(s["op"]) != "filter"]
         q.features = {
             "trap_exposure": min(2, sum(1 for t in traps if q.qid in t.affected)),
-            "filters_matter": not same_answer(q.answer_type, execute(unfiltered, events), answer_key[q.qid]),
+            "filters_matter": not same_answer(q.answer_type, execute(unfiltered, events, units=units),
+                                              answer_key[q.qid]),
         }
     chatter = make_chatter(seedlog.rng("instance", index, "chatter"), snapshot.compiled_at,
                            sorted({e.network for e in events}))
+    forecaster = domain.forecaster
     forecast = None
-    if snapshot.source == "usgs":
-        forecast = make_forecast(events, seedlog.rng("instance", index, "forecast"), snapshot.compiled_at,
-                                 snapshot.window_hours)
+    if forecaster is not None and snapshot.source == forecaster.source:
+        forecast = forecaster.make(events, seedlog.rng("instance", index, "forecast"), snapshot.compiled_at,
+                                   snapshot.window_hours)
 
     renderings: list[Rendering] = []
-    original_style = None
+    original: tuple[str, dict] | None = None  # the genre and style of the original rendering
     for v in range(cfg.variants + 1):
         seed = seedlog.seed("instance", index, "render", v)
         rng = random.Random(seed)
-        style = choose_style(rng, avoid=original_style)
-        digest = render_digest(reports, notices, chatter, compiled_at=snapshot.compiled_at,
-                               window_hours=snapshot.window_hours, style=style, rng=rng)
-        texts = {q.qid: phrase_question(q, rng, alt_units=v > 0 and rng.random() < 0.5) for q in questions}
+        genre = CLASSIC if genre_plan is None else genre_plan[v]
+        avoid = original[1] if original is not None and original[0] == genre.name else None
+        style = genre.choose_style(rng, domain, avoid=avoid)
+        digest = genre.render(RenderContext(reports, notices, chatter, compiled_at=snapshot.compiled_at,
+                                            window_hours=snapshot.window_hours, style=style, rng=rng, domain=domain))
+        texts = {q.qid: phrase_question(q, rng, alt_units=v > 0 and rng.random() < 0.5, domain=domain)
+                 for q in questions}
         items = [(q.qid, texts[q.qid], q.answer_type, q.unit) for q in questions]
         if forecast:
-            items.append((forecast["qid"], forecast_text(forecast), "probability", None))
-        prompt = build_prompt(digest, items)
+            items.append((forecast["qid"], forecaster.text(forecast), "probability", None))
+        # Non-legacy prompts will also print the domain's glossary (prompt assembly, plan phase 1b).
+        prompt = build_prompt(digest, items, rules=domain.rules_text())
         renderings.append(Rendering(variant=f"v{v}", seed=seed, style=style, digest=digest, question_text=texts,
-                                    prompt=prompt, prompt_sha256=sha256_hex(prompt)))
-        original_style = original_style or style
+                                    prompt=prompt, prompt_sha256=sha256_hex(prompt),
+                                    genre=None if genre_plan is None else genre.name))
+        original = original or (genre.name, style)
 
     return Instance(
         instance_id=f"inst-{index:03d}", seed=seedlog.seed("instance", index), compiled_at=snapshot.compiled_at,
         window_hours=snapshot.window_hours, event_ids=[e.id for e in events], reports=reports, notices=notices,
         chatter=chatter, traps=traps, questions=questions, answer_key=answer_key, renderings=renderings,
-        forecast=forecast,
+        forecast=forecast, domain=None if genre_plan is None else domain.name,
     )
 
 
 def generator_self_check(instances: Sequence[Instance]) -> dict:
-    """The generator audits itself: a solver that sees ONLY the digest text must reproduce the key."""
+    """The generator audits itself: a solver that sees ONLY the digest text must reproduce the key.
+    Each rendering is read in the domain and genre the run recorded for it (none in a legacy run,
+    whose prompts are read as 0.2.0 read them)."""
     checks = agreements = 0
     problems: list[str] = []
     for inst in instances:
         specs = question_specs(inst)
         for rendering in inst.renderings:
-            got = solve(rendering.prompt, specs, mode="oracle")
+            got = solve(rendering.prompt, specs, mode="oracle", domain=inst.domain, genre=rendering.genre)
             for q in inst.questions:
                 checks += 1
                 if same_answer(q.answer_type, got[q.qid], inst.answer_key[q.qid]):
@@ -199,7 +243,16 @@ def _replay_check(snapshot_file: str | None, log: Log) -> dict | None:
     return {"source_run": str(source_run), "same_code": same}
 
 
-def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = False, log: Log = print) -> Path:
+def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = False, log: Log = print,
+             domain: Domain = EARTHQUAKES, genre_plan: Sequence[Genre] | None = None) -> Path:
+    """Write a run: snapshot, instances, prompts, the generator's self-check, the audit sample and
+    the manifest. Every instance is about `domain` and rendered by `genre_plan` (see build_instance);
+    the defaults make the legacy (0.2.0) run."""
+    if cfg.mix != "legacy" or cfg.private_config is not None:
+        raise NotImplementedError("the mix draws and the private run config come with plan phase 4")
+    if domain.name != EARTHQUAKES.name:
+        raise NotImplementedError(f"snapshots of {domain.name} records come with the generic record path "
+                                  "(plan phase 1b)")
     run_dir = Path(run_dir) if run_dir else RUNS_DIR / f"{cfg.source}-seed{cfg.seed}"
     if run_dir.exists() and any(run_dir.iterdir()):
         if not force:
@@ -222,13 +275,14 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
     log(f"[generate] snapshot: {snapshot.source}, {len(snapshot.events)} events, sha256 {snapshot.events_sha256[:16]}…")
 
     replay = _replay_check(cfg.snapshot_file, log)
-    new_templates = compose_new_templates(seedlog.rng("templates", "new"))
+    new_templates = compose_new_templates(seedlog.rng("templates", "new"), domain)
     ctx = Context(snapshot.compiled_at, snapshot.window_hours)
     used_chains: set[str] = set()  # no concrete question is ever asked twice in a run
     usage: dict[str, int] = {}  # questions per template so far; keeps each public/twin pair in step
     instances = []
     for index in range(cfg.instances):
-        inst = build_instance(index, snapshot, new_templates, seedlog, cfg, ctx, used_chains, usage)
+        inst = build_instance(index, snapshot, new_templates, seedlog, cfg, ctx, used_chains, usage,
+                              domain=domain, genre_plan=genre_plan)
         instances.append(inst)
         write_json(run_dir / "instances" / f"{inst.instance_id}.json", inst.to_dict())
         for rendering in inst.renderings:
@@ -239,7 +293,8 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
     self_check = generator_self_check(instances)
     audit = write_audit_sample(run_dir, instances, {e.id: e for e in snapshot.events}, seedlog.rng("audit"),
                                cfg.audit_rate)
-    forecasts = [dict(inst.forecast, instance_id=inst.instance_id) for inst in instances if inst.forecast]
+    forecasts = [dict(inst.forecast, instance_id=inst.instance_id, **_recorded(domain=inst.domain))
+                 for inst in instances if inst.forecast]
     if forecasts:
         write_json(run_dir / "forecasts.json", forecasts)
     seedlog.seed("mock")  # the simulated model's seed, so it is logged too
@@ -250,10 +305,11 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
         "seed": cfg.seed,
         "seed_commitment": commitment,  # publishable before the evaluation
         "seed_nonce": nonce,  # secret until the reveal, like the seed itself (this file is private)
-        "config": asdict(cfg),
+        "config": cfg.to_dict(),
         "snapshot": snapshot.meta(),
         "replay": replay,
-        "templates": {"public": [t.to_dict() for t in PUBLIC_TEMPLATES], "new": [t.to_dict() for t in new_templates]},
+        "templates": {"public": [t.to_dict() for t in public_templates(domain)],
+                      "new": [t.to_dict() for t in new_templates]},
         "instances": [inst.instance_id for inst in instances],
         "self_check": self_check,
         "audit": audit,
@@ -289,7 +345,8 @@ def run_models(run_dir: Path, specs: Sequence[str], *, workers: int = 4, force: 
         def answer(job: tuple[Instance, Rendering]) -> bool:
             inst, rendering = job
             task = Task(inst.instance_id, rendering.variant, question_specs(inst), forecast_spec(inst),
-                        hidden=inst if adapter.kind == "simulated" else None)
+                        hidden=inst if adapter.kind == "simulated" else None, domain=inst.domain,
+                        genre=rendering.genre, split=inst.split)
             record = {"model": adapter.name, "kind": adapter.kind, "instance_id": inst.instance_id,
                       "variant": rendering.variant, "prompt_sha256": rendering.prompt_sha256}
             if adapter.kind == "api":
@@ -367,7 +424,8 @@ def score_run(run_dir: Path, *, log: Log = print) -> list[Path]:
                                  "template_id": q.template_id, "pool": q.pool, "answer_type": q.answer_type,
                                  "unit": q.unit, "key": key, "given": given,
                                  "normalized": normalize(q.answer_type, given),
-                                 "correct": is_correct(q.answer_type, key, given)})
+                                 "correct": is_correct(q.answer_type, key, given),
+                                 **_recorded(domain=inst.domain, genre=rendering.genre)})
                 if inst.forecast:
                     forecasts.append({"instance_id": inst.instance_id, "variant": rendering.variant,
                                       "probability": normalize("probability", parsed.answers.get(inst.forecast["qid"]))})
@@ -399,14 +457,23 @@ def build_report(run_dir: Path, *, log: Log = print) -> Path:
 
 
 def resolve_run(run_dir: Path, *, now: int | None = None, fetch: Callable | None = None, log: Log = print) -> dict:
+    """Grade the pending forecasts whose window has passed, each with the forecaster of the domain
+    that asked it, and refresh the report."""
     run_dir = Path(run_dir)
     path = run_dir / "forecasts.json"
     if not path.exists():
         log("[resolve] this run has no forecast questions (they are only generated with --source usgs)")
         return {}
     forecasts = read_json(path)
-    summary = resolve_forecasts(forecasts, int(time.time()) if now is None else now,
-                                **({"fetch": fetch} if fetch is not None else {}))
+    by_domain: dict[str | None, list[dict]] = {}  # a legacy run records no domain: its forecasts are earthquake ones
+    for forecast in forecasts:
+        by_domain.setdefault(forecast.get("domain"), []).append(forecast)
+    when = int(time.time()) if now is None else now
+    parts = [get_domain(name).forecaster.resolve(group, when, **({"fetch": fetch} if fetch is not None else {}))
+             for name, group in (by_domain or {None: []}).items()]
+    summary = parts[0]
+    for part in parts[1:]:  # counts add up and error lists join
+        summary = {key: summary[key] + part[key] for key in summary}
     write_json(path, forecasts)
     if (run_dir / "scores").exists():
         write_report(run_dir)

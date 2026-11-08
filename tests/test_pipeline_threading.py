@@ -1,0 +1,161 @@
+"""The domain and the genre plan are threaded through generation, prompts, adapters, scoring and
+forecast resolution. With the defaults (the legacy path) every call, file and manifest key is the
+0.2.0 one; the new options are recorded only when they are set."""
+from __future__ import annotations
+
+import shutil
+from dataclasses import asdict, fields, replace
+
+import pytest
+
+from evalgen import pipeline
+from evalgen.adapters import MockAdapter, Task
+from evalgen.domains.base import Domain
+from evalgen.domains.earthquakes import FORECASTER, Earthquakes
+from evalgen.genres.classic import CLASSIC
+from evalgen.pipeline import GenerateConfig, build_instance, question_specs
+from evalgen.prompt import ANSWER_SPECS, INTRO, build_prompt
+from evalgen.questions import Context, compose_new_templates
+from evalgen.report import PACKAGE_DIR, code_fingerprint
+from evalgen.rules import READING_RULES
+from evalgen.seeds import SeedLog
+from evalgen.sources import build_snapshot
+from evalgen.util import read_json
+
+from conftest import quiet
+from test_usgs_forecast import fake_feed
+
+CONFIG_020 = ["seed", "instances", "source", "feed", "snapshot_file", "variants", "pool_size", "events_min",
+              "events_max", "questions_min", "questions_max", "audit_rate"]
+SCORE_ROW_020 = ["instance_id", "variant", "qid", "template_id", "pool", "answer_type", "unit", "key", "given",
+                 "normalized", "correct"]
+
+
+class Toy(Domain):
+    name = "toy"
+
+
+# ------------------------------------------------------------------------------ the config
+
+
+def test_the_manifest_config_keeps_its_020_keys_on_the_default_path(small_run):
+    recorded = read_json(small_run / "manifest.json")["config"]
+    assert list(recorded) == CONFIG_020
+    cfg = GenerateConfig(seed=7, instances=8)
+    assert cfg.to_dict() == recorded == {k: v for k, v in asdict(cfg).items() if k in CONFIG_020}
+
+
+def test_new_options_are_recorded_only_when_set_and_refused_until_phase_4(tmp_path):
+    legacy = GenerateConfig(seed=1).to_dict()
+    assert GenerateConfig(seed=1, mix="random").to_dict() == {**legacy, "mix": "random"}
+    assert GenerateConfig(seed=1, private_config="p.json").to_dict() == {**legacy, "private_config": "p.json"}
+    for cfg in (GenerateConfig(seed=1, mix="random"), GenerateConfig(seed=1, private_config="p.json")):
+        with pytest.raises(NotImplementedError, match="phase 4"):
+            pipeline.generate(cfg, tmp_path / "run", log=quiet)
+    assert not (tmp_path / "run").exists()
+
+
+def test_generation_refuses_what_it_cannot_render_yet(tmp_path):
+    with pytest.raises(NotImplementedError, match="phase 1b"):
+        pipeline.generate(GenerateConfig(seed=1, instances=1), tmp_path / "toy", log=quiet, domain=Toy())
+    assert not (tmp_path / "toy").exists()
+    seedlog = SeedLog(1)
+    snapshot, _ = build_snapshot("synthetic", seedlog)
+    args = (0, snapshot, compose_new_templates(seedlog.rng("templates", "new")), seedlog, GenerateConfig(seed=1),
+            Context(snapshot.compiled_at, snapshot.window_hours), set(), {})
+    with pytest.raises(ValueError, match="2 genres for 3 renderings"):
+        build_instance(*args, genre_plan=(CLASSIC, CLASSIC))
+    with pytest.raises(ValueError, match="needs a genre plan"):
+        build_instance(*args, domain=Toy())
+
+
+def test_the_code_fingerprint_covers_subpackages(tmp_path):
+    copy = tmp_path / "evalgen"
+    shutil.copytree(PACKAGE_DIR, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    before = code_fingerprint(copy)
+    assert before == code_fingerprint()  # relative paths and contents count, not where the package lives
+    for name in ("domains/earthquakes.py", "genres/classic.py"):
+        source = copy / name
+        original = source.read_bytes()
+        source.write_bytes(original + b"\n")
+        assert code_fingerprint(copy) != before, name
+        source.write_bytes(original)
+    assert code_fingerprint(copy) == before
+    (copy / "genres" / "news.py").write_text("")
+    assert code_fingerprint(copy) != before
+
+
+# ------------------------------------------------------------------------------ the prompt
+
+
+def test_build_prompt_defaults_to_the_020_wording(instances):
+    for inst in instances:
+        for r in inst.renderings:
+            items = [(q.qid, r.question_text[q.qid], q.answer_type, q.unit) for q in inst.questions]
+            assert build_prompt(r.digest, items) == r.prompt
+            assert build_prompt(r.digest, items, intro=INTRO, rules=READING_RULES, glossary=None,
+                                specs=ANSWER_SPECS) == r.prompt
+
+
+def test_build_prompt_takes_a_domains_wording_and_glossary():
+    prompt = build_prompt("DIGEST", [("Q1", "How many?", "count", None), ("Q2", "How deep?", "depth", "mi")],
+                          intro="INTRO", rules="RULES\n", glossary="GLOSSARY\n",
+                          specs={**ANSWER_SPECS, "count": "a whole number"})
+    assert prompt.startswith("INTRO\n\nRULES\n\nGLOSSARY\n\n<digest>\nDIGEST\n</digest>\n\nQuestions:\n"
+                             "Q1. How many?\n    Answer type: a whole number.\n"
+                             "Q2. How deep?\n    Answer type: a number in miles, rounded to 1 decimal place.\n\n")
+
+
+# ------------------------------------------------------------------------- run and score
+
+
+def test_tasks_keep_their_positional_fields(instances):
+    inst = instances[0]
+    task = Task(inst.instance_id, "v0", question_specs(inst), None, inst)
+    assert (task.hidden, task.domain, task.genre, task.split) == (inst, None, None, None)
+    assert [f.name for f in fields(Task)] == ["instance_id", "variant", "questions", "forecast", "hidden",
+                                              "domain", "genre", "split"]
+
+
+def test_the_mock_answers_any_pool_with_the_draws_of_a_new_template(instances):
+    mock = MockAdapter(seed=99)
+    for inst in instances[:3]:
+        for r in inst.renderings:
+            def reply(pool: str) -> str:
+                specs = [dict(q, pool=pool) for q in question_specs(inst)]
+                return mock.complete(r.prompt, Task(inst.instance_id, r.variant, specs, hidden=inst)).text
+
+            assert reply("held_out") == reply("new")
+
+
+def test_legacy_score_rows_keep_their_020_keys(small_run):
+    for path in sorted((small_run / "scores").glob("*.json")):
+        assert all(list(row) == SCORE_ROW_020 for row in read_json(path)["rows"]), path.name
+
+
+# --------------------------------------------------------------------------------- resolve
+
+
+def test_forecasts_are_resolved_by_the_forecaster_of_the_domain_that_asked_them(tmp_path, monkeypatch):
+    raw, _ = fake_feed()
+    feed = tmp_path / "all_day.geojson"
+    feed.write_bytes(raw)
+    cfg = GenerateConfig(seed=11, instances=2, source="usgs", snapshot_file=str(feed))
+    legacy = pipeline.generate(cfg, tmp_path / "legacy", log=quiet)
+    planned = pipeline.generate(cfg, tmp_path / "planned", log=quiet, genre_plan=(CLASSIC,) * 3)
+    asked = read_json(legacy / "forecasts.json")
+    assert read_json(planned / "forecasts.json") == [dict(f, domain="earthquakes") for f in asked]
+
+    resolved = []
+
+    def resolve(forecasts, now, **kwargs):
+        resolved.append([f["instance_id"] for f in forecasts])
+        return FORECASTER.resolve(forecasts, now, **kwargs)
+
+    monkeypatch.setattr(Earthquakes, "forecaster", replace(FORECASTER, resolve=resolve))
+    after = asked[0]["rule"]["end"] + 3 * 3600
+    for run in (legacy, planned):
+        summary = pipeline.resolve_run(run, now=after, fetch=lambda rule: [], log=quiet)
+        assert (summary["newly_resolved"], summary["pending"]) == (2, 0)
+        assert [f["outcome"] for f in read_json(run / "forecasts.json")] == [0, 0]
+    assert resolved == [["inst-000", "inst-001"]] * 2

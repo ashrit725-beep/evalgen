@@ -12,6 +12,7 @@ templates, traps, genres and scoring are written once against this interface.
     Record        one real thing in a generic domain: the ground truth, like an earthquake Event
     RecordReport  one digest line about a record, like an earthquake Report
     LiveAdapter   a live source, fetched once, frozen and hashed
+    Forecaster    delayed-resolution questions about a live source, graded once their window has passed
     TrapVocab     how a domain words its traps: re-reporting sources, notes, reasons and notices
     Domain        the base class; each domain module exports an instance as ``DOMAIN``
 
@@ -23,7 +24,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Iterable, Mapping, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 from ..geo import KM_PER_MILE
 
@@ -211,6 +212,18 @@ class LiveAdapter(Protocol):
 
 
 @dataclass(frozen=True)
+class Forecaster:
+    """Delayed-resolution questions about a live source: asked when a digest is compiled and graded
+    once the window they ask about has passed, so their answers cannot be known in advance."""
+
+    source: str  # the snapshot source whose instances ask one: "usgs"
+    # (records, rng, compiled_at, window_hours): an instance's forecast question and its resolution rule
+    make: Callable[[Sequence[Any], random.Random, int, int], dict[str, Any]]
+    text: Callable[[dict[str, Any]], str]  # the question as a prompt words it
+    resolve: Callable[..., dict[str, Any]]  # (forecasts, now[, fetch]): grades, in place, those that can be
+
+
+@dataclass(frozen=True)
 class TrapVocab:
     """How a domain words its traps."""
 
@@ -241,6 +254,7 @@ class Domain:
     # names (ops.ALIASES). Any other kind is stored generically, e.g. {"op": "at_least", "field": "temp"}.
     op_names: Mapping[tuple[str, str | None], str] = MappingProxyType({})
     live: LiveAdapter | None = None
+    forecaster: Forecaster | None = None  # set when instances from a live source also ask forecasts
 
     id_pattern: str  # regex of a record ID in lower-cased text; the scorer uses it to find IDs too
     id_answer_type: str  # answer type naming a record (argmax, rank, nearest_to): "event_id"

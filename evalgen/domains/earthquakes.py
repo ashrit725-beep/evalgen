@@ -14,12 +14,13 @@ from __future__ import annotations
 import random
 from typing import Any, Mapping, Sequence
 
+from ..forecast import forecast_text, make_forecast, resolve_forecasts
 from ..geo import EARTH_RADIUS_KM
 from ..models import EVENT_ID_PATTERN, Event, Notice, Report
 from ..ops import ALIASES
 from ..rules import READING_RULES, Mishandle, resolve
 from ..sources import generate_synthetic, mimic_event_id, new_event_id
-from .base import LENGTH, Domain, FieldSpec, Lexicon, Spatial, TrapVocab, Unit
+from .base import LENGTH, Domain, FieldSpec, Forecaster, Lexicon, Spatial, TrapVocab, Unit
 
 # Margin guards: no event may sit this close to a threshold, so that display rounding (0.1 km or mi,
 # 0.001 degrees, minute-precision times) can never change a correct answer. Magnitudes need no
@@ -108,6 +109,10 @@ TRAP_VOCAB = TrapVocab(
     correction_notices=("revised to", "revised from", "magnitude now"),
 )
 
+# USGS-mode instances ask whether an M4.5+ quake will strike near a point in the next 24 hours; the
+# USGS catalogue answers it later (see forecast.py).
+FORECASTER = Forecaster(source="usgs", make=make_forecast, text=forecast_text, resolve=resolve_forecasts)
+
 
 def _units_text(units: Sequence[Unit], canonical: str) -> str:
     """'km or mi (1 mi = 1.609344 km)'."""
@@ -132,6 +137,7 @@ class Earthquakes(Domain):
     # The USGS feed is still fetched, frozen and replayed by sources.build_snapshot; it becomes this
     # domain's LiveAdapter with the generic snapshot (plan phase 1b).
     live = None
+    forecaster = FORECASTER
 
     id_pattern = EVENT_ID_PATTERN
     id_answer_type = "event_id"

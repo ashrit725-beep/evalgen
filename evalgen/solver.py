@@ -9,6 +9,9 @@ naive   parses the same lines but skips deduplication and ignores notices, i.e. 
 Both receive each question's operation chain (its machine-readable meaning) instead of parsing
 the English wording: the point is to test the digest, not to build a language-understanding
 system. Language models, of course, only ever get the English prompt.
+
+The line parsers below read the classic genre (the 0.2.0 digest). A prompt of a non-legacy run is
+read by the parser of its genre (see evalgen.genres), named by the caller or recognised by sniffing.
 """
 from __future__ import annotations
 
@@ -18,6 +21,10 @@ from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from .digest import MONTHS, MONTHS_LONG, WEEKDAYS
+from .domains import get_domain
+from .domains.base import Domain
+from .genres import detect_genre, get_genre
+from .genres.base import parse_glossary
 from .geo import KM_PER_MILE, haversine_km
 from .models import EVENT_ID_PATTERN, Notice, Report
 from .ops import DigestData, execute
@@ -205,18 +212,42 @@ def parse_digest(text: str) -> DigestData:
 # ---------------------------------------------------------------------------------- solving
 
 
-def solve(prompt: str, questions: Sequence[dict], mode: str = "oracle") -> dict[str, Any]:
-    """Answer every question from the prompt text. mode: "oracle" or "naive"."""
-    data = parse_digest(extract_digest(prompt))
+def read_digest(prompt: str, genre: str | None = None) -> DigestData:
+    """The reports and notices of a prompt's digest, read by the parser of the genre that wrote it:
+    `genre` when it is known, or else the genre that recognises the digest (genres.detect_genre)."""
+    text = extract_digest(prompt)
+    reader = get_genre(genre) if genre is not None else detect_genre(text)
+    return reader.parse(text, parse_glossary(prompt))
+
+
+def _reading(prompt: str, domain: str | None, genre: str | None) -> tuple[DigestData, Domain | None]:
+    """A prompt's digest data and its domain. Without a domain or a genre the prompt is a legacy one
+    (earthquakes, classic), read exactly as 0.2.0 read it, and the domain is None."""
+    if domain is None and genre is None:
+        return parse_digest(extract_digest(prompt)), None
+    return read_digest(prompt, genre), get_domain(domain)
+
+
+def solve(prompt: str, questions: Sequence[dict], mode: str = "oracle", *, domain: str | None = None,
+          genre: str | None = None) -> dict[str, Any]:
+    """Answer every question from the prompt text. mode: "oracle" or "naive".
+
+    `domain` and `genre` name the instance's domain and the rendering's genre, as a non-legacy run
+    records them; without either, the prompt is read as 0.2.0 read it."""
+    data, records_domain = _reading(prompt, domain, genre)
+    units = None if records_domain is None else records_domain.units
     skip = ("dedupe",) if mode == "naive" else ()
-    return {q["qid"]: execute(q["chain"], data, skip=skip) for q in questions}
+    return {q["qid"]: execute(q["chain"], data, skip=skip, units=units) for q in questions}
 
 
-def forecast_estimate(prompt: str, rule: dict) -> float:
-    """Oracle's forecast: a naive base rate from M>=min_mag events near the point in the digest."""
-    data = parse_digest(extract_digest(prompt))
+def forecast_estimate(prompt: str, rule: dict, *, domain: str | None = None, genre: str | None = None) -> float:
+    """Oracle's forecast: a naive base rate from M>=min_mag events near the point in the digest.
+    `domain` and `genre` are read as in ``solve``."""
+    data, records_domain = _reading(prompt, domain, genre)
+    events = (resolve(data.reports, data.notices) if records_domain is None
+              else records_domain.resolve(data.reports, data.notices))
     nearby = [
-        e for e in resolve(data.reports, data.notices)
+        e for e in events
         if e.mag >= rule["min_mag"] and haversine_km(rule["lat"], rule["lon"], e.lat, e.lon) <= rule["radius_km"]
     ]
     rate_per_day = len(nearby) * 24.0 / max(1, rule.get("digest_window_hours", 24))

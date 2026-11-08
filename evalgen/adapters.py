@@ -33,6 +33,11 @@ class Task:
     questions: list[dict]  # qid, chain, answer_type, unit, pool -- no answers
     forecast: dict | None = None  # {"qid": "F1", "rule": {...}}
     hidden: Instance | None = None  # only for the simulated mock model; never sent anywhere
+    # What a non-legacy run records (all None in a legacy run, whose prompts are read as 0.2.0 read
+    # them): the instance's domain and split, and the rendering's genre.
+    domain: str | None = None
+    genre: str | None = None
+    split: str | None = None  # "public" or "held_out"
 
 
 @dataclass
@@ -60,9 +65,10 @@ class OracleAdapter(Adapter):
     name = "oracle"
 
     def complete(self, prompt: str, task: Task) -> Completion:
-        answers = solve(prompt, task.questions, mode="oracle")
+        answers = solve(prompt, task.questions, mode="oracle", domain=task.domain, genre=task.genre)
         if task.forecast:
-            answers[task.forecast["qid"]] = forecast_estimate(prompt, task.forecast["rule"])
+            answers[task.forecast["qid"]] = forecast_estimate(prompt, task.forecast["rule"], domain=task.domain,
+                                                              genre=task.genre)
         return Completion(json.dumps({"answers": answers}))
 
 
@@ -72,7 +78,7 @@ class NaiveAdapter(Adapter):
     name = "naive"
 
     def complete(self, prompt: str, task: Task) -> Completion:
-        answers = solve(prompt, task.questions, mode="naive")
+        answers = solve(prompt, task.questions, mode="naive", domain=task.domain, genre=task.genre)
         if task.forecast:
             answers[task.forecast["qid"]] = 0.5
         return Completion(json.dumps({"answers": answers}))
@@ -84,7 +90,7 @@ class MockAdapter(Adapter):
     It reads the digest like the oracle, then gets each answer right with probability
         0.92  public template, original wording    (it has "memorised" these)
         0.80  public template, paraphrased wording
-        0.62  new template                          (it has to actually reason)
+        0.62  new template, or any other pool       (it has to actually reason)
     and otherwise errs, usually by falling for a trap when the question has one. All randomness
     is seeded by the exact prompt text, so any surface change (a metamorphic variant) produces
     different mistakes, which the consistency check detects. About one reply in five is formatted
@@ -94,13 +100,14 @@ class MockAdapter(Adapter):
     name = "mock"
     kind = "simulated"
     P_CORRECT = {("public", True): 0.92, ("public", False): 0.80, ("new", True): 0.62, ("new", False): 0.62}
+    P_UNSEEN = 0.62  # a pool it has no entry for: as unseen as a new template
 
     def __init__(self, seed: int = 0) -> None:
         self.seed = seed
 
     def complete(self, prompt: str, task: Task) -> Completion:
         rng = random.Random(derive_seed(self.seed, "mock", sha256_hex(prompt)))
-        truth = solve(prompt, task.questions, mode="oracle")
+        truth = solve(prompt, task.questions, mode="oracle", domain=task.domain, genre=task.genre)
         fallen: dict[str, list] = {}
         if task.hidden is not None:
             for trap in task.hidden.traps:
@@ -109,7 +116,7 @@ class MockAdapter(Adapter):
         answers: dict[str, Any] = {}
         for q in task.questions:
             qid = q["qid"]
-            if rng.random() < self.P_CORRECT[(q["pool"], task.variant == "v0")]:
+            if rng.random() < self.P_CORRECT.get((q["pool"], task.variant == "v0"), self.P_UNSEEN):
                 answers[qid] = truth[qid]
             elif qid in fallen and rng.random() < 0.75:
                 answers[qid] = rng.choice(fallen[qid])

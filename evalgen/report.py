@@ -22,6 +22,7 @@ from .scoring import (brier, difference_ci, equivalent, mcnemar_exact, normalize
                       stratified_difference, wilson)
 from .util import read_json, utc_iso, write_json
 
+PACKAGE_DIR = Path(__file__).resolve().parent  # the evalgen sources that code_fingerprint covers
 GAP_FLAG = 0.10  # flag a public-minus-new gap above 10 points whose 95% CI excludes zero
 TRAP_KINDS = ("duplicate", "retraction", "conflicting_magnitude")
 ANSWER_TYPE_ORDER = ("count", "event_id", "magnitude", "depth", "distance", "region", "utc_time")
@@ -32,12 +33,13 @@ def load_instances(run_dir: Path) -> list[Instance]:
     return [Instance.from_dict(read_json(p)) for p in sorted((Path(run_dir) / "instances").glob("inst-*.json"))]
 
 
-def code_fingerprint() -> str:
-    """SHA-256 over the evalgen sources, recorded at generation so a report can tell if code changed."""
+def code_fingerprint(root: Path = PACKAGE_DIR) -> str:
+    """SHA-256 over the evalgen sources, recorded at generation so a report can tell if code changed:
+    every .py file under `root`, subpackages (domains, genres) included, by its relative path."""
     digest = hashlib.sha256()
-    for path in sorted(Path(__file__).resolve().parent.glob("*.py")):
-        digest.update(path.name.encode("utf-8"))
-        digest.update(path.read_bytes())
+    for name in sorted(path.relative_to(root).as_posix() for path in root.rglob("*.py")):
+        digest.update(name.encode("utf-8"))
+        digest.update((root / name).read_bytes())
     return digest.hexdigest()
 
 
