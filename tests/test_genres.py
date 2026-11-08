@@ -162,7 +162,7 @@ def quoted(tmp_path, monkeypatch):
     registry = Registry()
     monkeypatch.setattr(genres, "REGISTRY", registry)
     genre = registry.load_plugin(path)
-    assert registry.load_plugin(path) is genre and [g.name for g in all_genres()] == ["classic", "quoted"]
+    assert registry.load_plugin(path) is genre and all_genres()[-1] is genre and CLASSIC in all_genres()
     return genre
 
 

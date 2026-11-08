@@ -697,6 +697,19 @@ class Domain:
 
         return resolve(reports, notices, mishandle, authoritative=self.statuses[0], qualifiers=self.qualifier_keys)
 
+    def to_generic(self, item: Any) -> Any:
+        """A report or notice of this domain's digests in the form that genres write and read: a
+        RecordReport, or a Notice whose correction names its field (field, new_value, old_value,
+        qualifier). A Record domain's are in that form already; a domain whose digests hold record
+        types of its own maps them (earthquakes: 0.2.0 Reports and magnitude corrections).
+        ``from_generic`` is its inverse."""
+        return item
+
+    def from_generic(self, item: Any) -> Any:
+        """A RecordReport or Notice that a genre read from a digest, as this domain's digests hold it:
+        the inverse of ``to_generic``."""
+        return item
+
 
 def _margin_problems(name: str, margin: float, units: Sequence[Unit], decimals: int) -> list[str]:
     """A threshold restated in another unit is rounded to that unit's places, so it moves by up to half

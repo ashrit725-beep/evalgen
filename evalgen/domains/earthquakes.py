@@ -4,7 +4,8 @@ Everything here reproduces 0.2.0 exactly. The field specs carry the 0.2.0 thresh
 margins, the op names are the 0.2.0 operation names (``ops.ALIASES``), the lexicon holds every 0.2.0
 question wording, the trap vocabulary is the one the 0.2.0 digests print, and the reading rules are
 ``rules.READING_RULES``. Records stay the 0.2.0 types: ``models.Event`` (the snapshot) and
-``models.Report`` (a digest line).
+``models.Report`` (a digest line); genres other than classic write and read Reports and magnitude
+corrections in the generic form of every domain (``to_generic``, ``from_generic``).
 
 Magnitude plays the *primary* role of the role-based templates (thresholds, rankings, the largest
 value and its time) and depth the *secondary* one (thresholds, the deepest and the shallowest value).
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import json
 import random
+from dataclasses import replace
 from typing import Sequence
 
 from ..digest import CHATTER
@@ -26,7 +28,7 @@ from ..rules import READING_RULES, Mishandle, resolve
 from ..sources import (MIN_POOL_EVENTS, USER_AGENT, fetch_usgs, generate_synthetic, mimic_event_id, new_event_id,
                        parse_usgs_geojson)
 from ..units import LENGTH
-from .base import Domain, FieldSpec, Forecaster, Lexicon, Spatial, TrapVocab
+from .base import Domain, FieldSpec, Forecaster, Lexicon, RecordReport, Spatial, TrapVocab
 
 # Margin guards: no event may sit this close to a threshold, so that display rounding (0.1 km or mi,
 # 0.001 degrees, minute-precision times) can never change a correct answer. Magnitudes need no
@@ -183,6 +185,36 @@ class Earthquakes(Domain):
     def resolve(self, reports: Sequence[Report], notices: Sequence[Notice],
                 mishandle: Mishandle | None = None) -> list[Event]:
         return resolve(reports, notices, mishandle)
+
+    def to_generic(self, item: Report | Notice) -> RecordReport | Notice:
+        """A 0.2.0 Report as a RecordReport (its magnitude type is the qualifier of its magnitude), and
+        a 0.2.0 magnitude correction as a correction of the field "mag". Anything else is unchanged."""
+        if isinstance(item, Report):
+            return RecordReport(ref=item.ref, source=item.network, status=item.status, time=item.time, lat=item.lat,
+                                lon=item.lon, group=item.region, values=item.values,
+                                qualifiers={MAGNITUDE.qualifier: item.mag_type}, place=item.place,
+                                same_as=item.same_as, role=item.role, trap_id=item.trap_id)
+        if isinstance(item, Notice) and item.kind == "correction" and item.field is None:
+            return replace(item, new_mag=None, old_mag=None, mag_type=None, field=MAGNITUDE.key,
+                           new_value=item.new_mag, old_value=item.old_mag, qualifier=item.mag_type)
+        return item
+
+    def from_generic(self, item: RecordReport | Notice) -> Report | Notice:
+        """A RecordReport or a correction of "mag", as read from a digest, as the 0.2.0 Report or
+        magnitude correction it stands for (the inverse of to_generic). A RecordReport that is not
+        exactly a magnitude with its type and a depth is no earthquake report (ValueError)."""
+        if isinstance(item, RecordReport):
+            if set(item.values) != {MAGNITUDE.key, DEPTH.key} or set(item.qualifiers) != {MAGNITUDE.qualifier}:
+                raise ValueError(f"{item.ref} is not an earthquake report: it gives {sorted(item.values)} and "
+                                 f"{sorted(item.qualifiers)}")
+            return Report(ref=item.ref, network=item.source, status=item.status, time=item.time, lat=item.lat,
+                          lon=item.lon, depth_km=item.values[DEPTH.key], mag=item.values[MAGNITUDE.key],
+                          mag_type=item.qualifiers[MAGNITUDE.qualifier], region=item.group, place=item.place,
+                          same_as=item.same_as, role=item.role, trap_id=item.trap_id)
+        if isinstance(item, Notice) and item.kind == "correction" and item.field == MAGNITUDE.key:
+            return replace(item, field=None, new_value=None, old_value=None, qualifier=None,
+                           new_mag=item.new_value, old_mag=item.old_value, mag_type=item.qualifier)
+        return item
 
 
 EARTHQUAKES = Earthquakes()
