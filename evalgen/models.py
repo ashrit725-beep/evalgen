@@ -7,20 +7,47 @@ Trap       a deliberately injected pitfall whose correct handling is known in ad
 Question   one composed question; its operation chain is its machine-readable meaning
 Rendering  one textual presentation of an instance (original or a metamorphic variant)
 Instance   everything needed to ask, answer and grade one test item
+
+Event and Report also answer to the generic names that evalgen.domains uses for every record type
+(``values``, ``group``, ``source``). The fields added in 0.3.0 are optional and left out of the JSON
+while unset, so an earthquake instance in the classic genre serializes exactly as in 0.2.0.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 # Event IDs look like USGS ones: nc75012345, us7000tvs3, aka2026vupcsv (always lower case).
 EVENT_ID_PATTERN = r"[a-z]{2,4}\d[0-9a-z]{3,14}"
 EVENT_ID_RE = re.compile(EVENT_ID_PATTERN)
 
 
+class _GenericNames:
+    """The generic record names of evalgen.domains, mapped onto the earthquake attributes. They are
+    read-only properties, not dataclass fields, so constructors, asdict and the JSON are unchanged."""
+
+    mag: float
+    depth_km: float
+    region: str
+    network: str
+
+    @property
+    def values(self) -> dict[str, float]:
+        """The numeric fields by generic key: 'mag', and 'depth' in km."""
+        return {"mag": self.mag, "depth": self.depth_km}
+
+    @property
+    def group(self) -> str:
+        return self.region
+
+    @property
+    def source(self) -> str:
+        return self.network
+
+
 @dataclass(frozen=True)
-class Event:
+class Event(_GenericNames):
     id: str
     time: int  # Unix seconds, UTC
     lat: float
@@ -34,7 +61,7 @@ class Event:
 
 
 @dataclass
-class Report:
+class Report(_GenericNames):
     ref: str  # the identifier printed on the line
     network: str
     status: str  # "reviewed" or "preliminary"
@@ -62,6 +89,14 @@ class Notice:
     old_mag: float | None = None
     mag_type: str | None = None
     trap_id: str | None = None
+    # A correction in a generic domain: the field it revises, the new and old value (canonical
+    # units) and the new qualifier. Earthquake corrections use new_mag, old_mag and mag_type instead.
+    field: str | None = None
+    new_value: float | None = None
+    old_value: float | None = None
+    qualifier: str | None = None
+
+    OPTIONAL_KEYS: ClassVar[tuple[str, ...]] = ("field", "new_value", "old_value", "qualifier")
 
 
 @dataclass
@@ -101,6 +136,9 @@ class Rendering:
     question_text: dict[str, str]
     prompt: str
     prompt_sha256: str
+    genre: str | None = None  # the genre it was rendered in; unset on the legacy (classic) path
+
+    OPTIONAL_KEYS: ClassVar[tuple[str, ...]] = ("genre",)
 
 
 @dataclass
@@ -118,9 +156,20 @@ class Instance:
     answer_key: dict[str, Any]
     renderings: list[Rendering]
     forecast: dict[str, Any] | None = None
+    # Set only in non-legacy runs: the domain, whether it is public or held out, and the drawn
+    # surface words of a domain that has them.
+    domain: str | None = None
+    split: str | None = None  # "public" or "held_out"
+    surface: dict[str, Any] | None = None
+
+    OPTIONAL_KEYS: ClassVar[tuple[str, ...]] = ("domain", "split", "surface")
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        """asdict, without the optional keys that are unset (here and in every notice and rendering)."""
+        d = _without_unset(asdict(self), Instance.OPTIONAL_KEYS)
+        d["notices"] = [_without_unset(n, Notice.OPTIONAL_KEYS) for n in d["notices"]]
+        d["renderings"] = [_without_unset(r, Rendering.OPTIONAL_KEYS) for r in d["renderings"]]
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Instance":
@@ -138,7 +187,15 @@ class Instance:
             answer_key=dict(d["answer_key"]),
             renderings=[Rendering(**r) for r in d["renderings"]],
             forecast=d.get("forecast"),
+            domain=d.get("domain"),
+            split=d.get("split"),
+            surface=d.get("surface"),
         )
 
     def question(self, qid: str) -> Question:
         return next(q for q in self.questions if q.qid == qid)
+
+
+def _without_unset(d: dict[str, Any], optional: tuple[str, ...]) -> dict[str, Any]:
+    """`d` without the optional keys whose value is None, in the same order."""
+    return {k: v for k, v in d.items() if v is not None or k not in optional}

@@ -11,16 +11,21 @@ Scoring rules (public, like everything else):
   probability       not scored for accuracy; Brier score once the forecast resolves
 A string answer is read only when it is unambiguous: "7 events" is 7 and "5,088.8 km" is 5088.8,
 but a string holding several different values ("7 or 8", "3-4", two event IDs) counts as no answer.
+
+Answer types live in a registry (``ANSWER_TYPES``). A type's kind (count, id, number, group, clock
+or probability) says how its answers are read; the type adds its tolerance, ID pattern, number
+parser or group suffix. The types above are built in, and a domain registers its own with
+``register_answer_type``: one per field, plus the types of its record IDs and its groups.
 """
 from __future__ import annotations
 
 import math
 import re
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
-from .models import EVENT_ID_RE
+from .models import EVENT_ID_PATTERN
 
-TOLERANCE = {"magnitude": (0.05, 0.0), "depth": (0.3, 0.02), "distance": (1.5, 0.03)}
 TIME_TOLERANCE_MIN = 1
 TIE_WORDS = {"tie", "tied", "equal", "same", "neither", "both", "draw", "even"}
 WORD_NUMBERS = {word: i for i, word in enumerate(
@@ -51,66 +56,148 @@ def _number(value: Any) -> float | None:
     return None
 
 
+def _parse_probability(value: Any) -> float | None:
+    """A number, a percentage ("15%"), a fraction ("1 in 3") or a decimal comma ("0,3")."""
+    if not isinstance(value, str):
+        return _number(value)
+    fraction = _FRACTION.match(value)
+    if fraction:
+        return float(fraction.group(1)) / float(fraction.group(2)) if float(fraction.group(2)) else None
+    x = _number(value.replace(",", ".") if re.fullmatch(r"\s*\d+,\d+\s*", value) else value)
+    return x / 100.0 if x is not None and "%" in value else x
+
+
+# ------------------------------------------------------------------------- answer types
+
+
+@dataclass(frozen=True)
+class AnswerType:
+    """How the answers of one type are read and compared.
+
+    kind        count | id | number | group | clock | probability
+    tolerance   number: (abs, rel), right when |answer - key| <= max(abs, rel × |key|);
+                clock: (minutes, 0), counted around midnight
+    id_pattern  id: the regex that picks the ID out of a longer answer, matched in lower case
+    parse       count, number, probability: a raw answer as one number, or None when ambiguous
+    suffix      group: a trailing word an answer may add, in lower case ("Nevada region" is "Nevada")
+    """
+
+    name: str
+    kind: str
+    tolerance: tuple[float, float] = (0.0, 0.0)
+    id_pattern: str | None = None
+    parse: Callable[[Any], float | None] = _number
+    suffix: str | None = None
+
+
+def _read_count(t: AnswerType, value: Any) -> int | None:
+    x = t.parse(value)
+    return int(round(x)) if x is not None and abs(x - round(x)) < 1e-6 else None
+
+
+def _read_number(t: AnswerType, value: Any) -> float | None:
+    return t.parse(value)
+
+
+def _read_probability(t: AnswerType, value: Any) -> float | None:
+    x = t.parse(value)
+    return x if x is not None and 0.0 <= x <= 1.0 else None
+
+
+def _read_id(t: AnswerType, value: Any) -> str | None:
+    text = str(value).strip().lower()
+    ids = {m.group(0) for m in re.finditer(t.id_pattern, text)} if t.id_pattern else set()
+    if len(ids) == 1:
+        return ids.pop()
+    return None if ids else (text or None)
+
+
+def _read_group(t: AnswerType, value: Any) -> str | None:
+    text = re.sub(r"\s+", " ", str(value)).strip().strip(".\"'").casefold()
+    if text.startswith("the "):
+        text = text[4:]
+    if text in TIE_WORDS or re.search(r"\btied?\b", text):
+        return "tie"
+    if re.search(r"\bor\b", text):
+        return None  # "Nevada or Utah" is not an answer
+    if t.suffix:
+        text = re.sub(r"\s+" + re.escape(t.suffix) + "$", "", text)
+    return text or None
+
+
+def _read_clock(t: AnswerType, value: Any) -> int | None:
+    clocks = {(int(h), int(m)) for h, m in _CLOCK.findall(str(value))}
+    if len(clocks) != 1:
+        return None
+    hh, mm = clocks.pop()
+    return hh * 60 + mm if hh < 24 and mm < 60 else None
+
+
+_READERS: dict[str, Callable[[AnswerType, Any], Any]] = {
+    "count": _read_count,
+    "id": _read_id,
+    "number": _read_number,
+    "group": _read_group,
+    "clock": _read_clock,
+    "probability": _read_probability,
+}
+
+ANSWER_TYPES: dict[str, AnswerType] = {t.name: t for t in (
+    AnswerType("count", "count"),
+    AnswerType("event_id", "id", id_pattern=EVENT_ID_PATTERN),
+    AnswerType("magnitude", "number", (0.05, 0.0)),
+    AnswerType("depth", "number", (0.3, 0.02)),
+    AnswerType("distance", "number", (1.5, 0.03)),
+    AnswerType("region", "group", suffix="region"),
+    AnswerType("utc_time", "clock", (TIME_TOLERANCE_MIN, 0)),
+    AnswerType("probability", "probability", parse=_parse_probability),
+)}
+# The numeric types and their (abs, rel) tolerance. Trap placement uses it too, to keep a misread
+# answer clear of the scoring edge.
+TOLERANCE: dict[str, tuple[float, float]] = {
+    name: t.tolerance for name, t in ANSWER_TYPES.items() if t.kind == "number"
+}
+
+
+def register_answer_type(answer_type: AnswerType) -> AnswerType:
+    """Add an answer type. Registering an identical type again is harmless; registering a different
+    type under a name that is taken is an error."""
+    if answer_type.kind not in _READERS:
+        raise ValueError(f"unknown answer kind {answer_type.kind!r}")
+    known = ANSWER_TYPES.get(answer_type.name)
+    if known is not None and known != answer_type:
+        raise ValueError(f"answer type {answer_type.name!r} is already registered differently")
+    ANSWER_TYPES[answer_type.name] = answer_type
+    if answer_type.kind == "number":
+        TOLERANCE[answer_type.name] = answer_type.tolerance
+    return answer_type
+
+
 def normalize(answer_type: str, value: Any) -> Any:
-    """Bring an answer (from a model, or the key) into a comparable canonical form, or None."""
+    """Bring an answer (from a model, or the key) into a comparable canonical form, or None.
+    An answer of an unregistered type is compared as it is."""
     if value is None:
         return None
     if isinstance(value, list):
         if len(value) != 1:
             return None  # several values offered: ambiguous
         value = value[0]
-    if answer_type == "count":
-        x = _number(value)
-        return int(round(x)) if x is not None and abs(x - round(x)) < 1e-6 else None
-    if answer_type in TOLERANCE:
-        return _number(value)
-    if answer_type == "probability":
-        if isinstance(value, str):
-            fraction = _FRACTION.match(value)
-            if fraction:
-                x = float(fraction.group(1)) / float(fraction.group(2)) if float(fraction.group(2)) else None
-            else:
-                x = _number(value.replace(",", ".") if re.fullmatch(r"\s*\d+,\d+\s*", value) else value)
-                if x is not None and "%" in value:
-                    x /= 100.0
-        else:
-            x = _number(value)
-        return x if x is not None and 0.0 <= x <= 1.0 else None
-    if answer_type == "event_id":
-        text = str(value).strip().lower()
-        ids = set(EVENT_ID_RE.findall(text))
-        if len(ids) == 1:
-            return ids.pop()
-        return None if ids else (text or None)
-    if answer_type == "region":
-        text = re.sub(r"\s+", " ", str(value)).strip().strip(".\"'").casefold()
-        if text.startswith("the "):
-            text = text[4:]
-        if text in TIE_WORDS or re.search(r"\btied?\b", text):
-            return "tie"
-        if re.search(r"\bor\b", text):
-            return None  # "Nevada or Utah" is not an answer
-        return re.sub(r"\s+region$", "", text) or None
-    if answer_type == "utc_time":
-        clocks = {(int(h), int(m)) for h, m in _CLOCK.findall(str(value))}
-        if len(clocks) != 1:
-            return None
-        hh, mm = clocks.pop()
-        return hh * 60 + mm if hh < 24 and mm < 60 else None
-    return value
+    known = ANSWER_TYPES.get(answer_type)
+    return _READERS[known.kind](known, value) if known else value
 
 
 def equivalent(answer_type: str, a: Any, b: Any, reference: Any = None) -> bool:
     """Are two *normalised* answers the same, up to the scoring tolerance?"""
     if a is None or b is None:
         return a is None and b is None
-    if answer_type in TOLERANCE:
-        abs_tol, rel_tol = TOLERANCE[answer_type]
+    known = ANSWER_TYPES.get(answer_type)
+    if known is not None and known.kind == "number":
+        abs_tol, rel_tol = known.tolerance
         scale = abs(reference) if reference is not None else max(abs(a), abs(b))
         return abs(a - b) <= max(abs_tol, rel_tol * scale) + 1e-9
-    if answer_type == "utc_time":
+    if known is not None and known.kind == "clock":
         diff = abs(a - b) % 1440
-        return min(diff, 1440 - diff) <= TIME_TOLERANCE_MIN
+        return min(diff, 1440 - diff) <= known.tolerance[0]
     return a == b
 
 
