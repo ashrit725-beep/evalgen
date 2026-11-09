@@ -6,12 +6,16 @@
     report    accuracy, consistency, seen-vs-new gap, trap catch rate, audit -> report.md / .json
     resolve   later: grade pending forecast questions against the USGS catalogue
 
-A run's mix (GenerateConfig.mix, see evalgen.mix) says which domain and genres its instances come
-from; the default, legacy, is the 0.2.0 run: earthquakes in the classic genre.
+A run's mix (GenerateConfig.mix, see evalgen.mix) says which domains and genres its instances come
+from; the default, legacy, is the 0.2.0 run: earthquakes in the classic genre. The evaluator's private
+run config (GenerateConfig.private_config) holds some of them out; the manifest commits to it by hash
+and lists its plugins, which every later step loads again.
 
 Run directory layout:
-    manifest.json          seeds, config, snapshot hash, templates, generator self-check
-    snapshot/              events.json, snapshot.json (+ the frozen feed of a live source, raw_feed.geojson for USGS)
+    manifest.json          seeds, config, snapshot hash, templates, generator self-check (+ the inventory
+                           of domains and genres off the legacy path, and the private config's commitment)
+    snapshot/              events.json, snapshot.json (+ the frozen feed of a live source, raw_feed.geojson for USGS);
+                           a run of several domains keeps one such folder per domain, snapshot/<domain>/
     instances/inst-*.json  full instance: reports, notices, traps, questions, key, renderings
     prompts/inst-*/v*.txt  the exact prompt texts sent to models
     responses/<model>/     raw replies         scores/<model>.json  graded rows
@@ -29,7 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Sequence
+from typing import Any, Callable, ClassVar, Mapping, Sequence
 
 import requests
 
@@ -44,7 +48,7 @@ from .domains.earthquakes import EARTHQUAKES
 from .genres import detect_genre
 from .genres.base import Genre, RenderContext
 from .genres.classic import CLASSIC
-from .mix import single_choice
+from .mix import LEGACY, Inventory, MixError, Plan, load_run_plugins, plan_mix, plugin_record
 from .models import Instance, Question, Rendering
 from .ops import execute, role
 from .prompt import build_prompt, domain_prompt
@@ -53,7 +57,7 @@ from .report import code_fingerprint, load_instances, write_report
 from .scoring import is_correct, normalize, same_answer
 from .seeds import SeedLog, derive_seed, fresh_nonce, seed_commitment
 from .solver import extract_digest, solve
-from .sources import Snapshot, build_domain_snapshot, build_snapshot, save_snapshot
+from .sources import LIVE, Snapshot, build_domain_snapshot, build_snapshot, save_snapshot
 from .traps import TrapConfig, inject_traps
 from .util import read_json, sha256_hex, slugify, write_json
 
@@ -76,10 +80,9 @@ class GenerateConfig:
     questions_min: int = 3
     questions_max: int = 5
     audit_rate: float = 0.02
-    # Which domain and genres the instances come from (evalgen.mix): "legacy" (0.2.0: earthquakes,
+    # Which domains and genres the instances come from (evalgen.mix): "legacy" (0.2.0: earthquakes,
     # classic), a list such as "toy:classic" or "weather,neo:email", or "random"; and the evaluator's
-    # private run config (held-out domains and genres, plugins). The per-instance draws over a mix
-    # that leaves a choice, and the private config, come with plan phase 4.
+    # private run config (held-out domains and genres, and the plugins that define them).
     mix: str = "legacy"
     private_config: str | None = None  # path of the private run config (JSON)
 
@@ -175,17 +178,19 @@ def compose_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Tem
 
 def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Template], seedlog: SeedLog,
                    cfg: GenerateConfig, ctx: Context, used_chains: set[str], usage: dict[str, int], *,
-                   domain: Domain = EARTHQUAKES, genre_plan: Sequence[Genre] | None = None) -> Instance:
+                   domain: Domain = EARTHQUAKES, genre_plan: Sequence[Genre] | None = None,
+                   split: str | None = None) -> Instance:
     """One test item about `domain`: its records, questions, answer key (compose_instance), traps and
     renderings.
 
     `genre_plan` gives the genre of each rendering, the original first. None is the legacy path:
     classic everywhere, with the 0.2.0 calls, random draws and output. Otherwise the instance records
-    its domain and each rendering its genre, a variant avoids the original's style only when it is in
-    the original's genre, and every prompt is a non-legacy one (prompt.domain_prompt), with the
-    domain's glossary, which the genre renders the records through. A domain with surface words draws
-    them for the instance (only off the legacy path, so the legacy seed paths never change), and every
-    step uses the bound domain."""
+    its domain and `split` (whether the domain is public or held out in this run) and each rendering
+    its genre, a variant avoids the original's style only when it is in the original's genre, and
+    every prompt is a non-legacy one (prompt.domain_prompt), with the domain's glossary, which the
+    genre renders the records through. A domain with surface words draws them for the instance (only
+    off the legacy path, so the legacy seed paths never change), and every step uses the bound
+    domain."""
     if genre_plan is None and domain.name != EARTHQUAKES.name:
         raise ValueError(f"only earthquakes have a legacy rendering: {domain.name} needs a genre plan")
     if genre_plan is not None and len(genre_plan) != cfg.variants + 1:
@@ -243,7 +248,8 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
         instance_id=f"inst-{index:03d}", seed=seedlog.seed("instance", index), compiled_at=snapshot.compiled_at,
         window_hours=snapshot.window_hours, event_ids=[e.id for e in events], reports=reports, notices=notices,
         chatter=chatter, traps=traps, questions=questions, answer_key=answer_key, renderings=renderings,
-        forecast=forecast, domain=None if genre_plan is None else domain.name, surface=composed.surface,
+        forecast=forecast, domain=None if genre_plan is None else domain.name,
+        split=None if genre_plan is None else split, surface=composed.surface,
     )
 
 
@@ -287,12 +293,17 @@ def is_run_dir(path: Path) -> bool:
     return isinstance(manifest, dict) and {"evalgen_version", "run_id", "self_check"} <= set(manifest)
 
 
-def _instance_records(instances: Sequence[Instance], snapshot: Snapshot, domain: Domain) -> dict[str, dict[str, Any]]:
-    """Each instance's records by ID: the snapshot's records, as the instance names them (renamed by
-    its surface words, when it has them)."""
-    by_id = {e.id: e for e in snapshot.events}
-    return {inst.instance_id: by_id if inst.surface is None else
-            {r.id: r for r in map(domain.bind(inst.surface).dress, snapshot.events)} for inst in instances}
+def _instance_records(instances: Sequence[Instance], snapshots: Mapping[str, Snapshot],
+                      domains: Mapping[str, Domain]) -> dict[str, dict[str, Any]]:
+    """Each instance's records by ID: those of its domain's snapshot (a legacy instance names no domain:
+    it is about earthquakes), as the instance names them (renamed by its surface words, when it has them)."""
+    by_id = {name: {e.id: e for e in snapshot.events} for name, snapshot in snapshots.items()}
+    records = {}
+    for inst in instances:
+        name = inst.domain or EARTHQUAKES.name
+        records[inst.instance_id] = by_id[name] if inst.surface is None else {
+            r.id: r for r in map(domains[name].bind(inst.surface).dress, snapshots[name].events)}
+    return records
 
 
 def _replay_check(snapshot_file: str | None, log: Log) -> dict | None:
@@ -309,17 +320,70 @@ def _replay_check(snapshot_file: str | None, log: Log) -> dict | None:
     return {"source_run": str(source_run), "same_code": same}
 
 
+def run_name(cfg: GenerateConfig) -> str:
+    """The default name of a run's directory: <source>-seed<seed>, and for any mix but legacy the mix
+    first ("random-synthetic-seed7"), so that it never takes the legacy run's place."""
+    name = f"{cfg.source}-seed{cfg.seed}"
+    return name if cfg.mix.strip() == LEGACY else f"{slugify(cfg.mix)}-{name}"
+
+
+def _check_sources(plan: Plan, cfg: GenerateConfig) -> None:
+    """Refuse, before anything is written, sources that a run off the legacy path cannot use: the USGS
+    hour feed, a frozen snapshot file for several domains, or a live source that a domain lacks."""
+    if cfg.feed != GenerateConfig.feed:
+        raise MixError("the USGS feed is chosen in legacy runs only: off the legacy path its live source is the "
+                       "day feed")
+    if cfg.snapshot_file and len(plan.domains) > 1:
+        raise MixError("a frozen snapshot file replays the live source of one domain, and this mix draws several")
+    for domain in plan.domains:
+        if cfg.source not in ("synthetic", LIVE) and (domain.live is None or domain.live.source != cfg.source):
+            raise MixError(f"unknown source {cfg.source!r} for {domain.name}: use synthetic or {LIVE}")
+
+
+def _snapshot_entry(snapshots: Mapping[str, Snapshot]) -> dict[str, Any]:
+    """The manifest's record of a run's snapshots: "snapshot", as in 0.2.0, for a run of one domain;
+    "snapshots", by domain, for a run of several."""
+    if len(snapshots) == 1:
+        return {"snapshot": next(iter(snapshots.values())).meta()}
+    return {"snapshots": {name: snapshot.meta() for name, snapshot in snapshots.items()}}
+
+
+def _templates_entry(plan: Plan, new_templates: Mapping[str, Sequence[Template]]) -> dict[str, list[dict]]:
+    """The manifest's record of a run's templates: P01-P12 and their twins, each tagged with its
+    domain in a run of several domains (P01 is one skeleton in every domain; its twin differs)."""
+    if plan.legacy or len(plan.domains) == 1:
+        new, = new_templates.values()
+        domain = EARTHQUAKES if plan.legacy else plan.domains[0]
+        return {"public": [t.to_dict() for t in public_templates(domain)], "new": [t.to_dict() for t in new]}
+    return {"public": [dict(t.to_dict(), domain=d.name) for d in plan.domains for t in public_templates(d)],
+            "new": [dict(t.to_dict(), domain=d.name) for d in plan.domains for t in new_templates[d.name]]}
+
+
+def _mix_entry(plan: Plan) -> dict[str, Any]:
+    """What the manifest records about the mix off the legacy path: the run's inventory and, when a
+    private run config was given, its commitment and the plugins that later steps load again."""
+    if plan.legacy:
+        return {}
+    entry: dict[str, Any] = {"inventory": plan.inventory.to_dict()}
+    if plan.config is not None:
+        entry["private_config_commitment"] = plan.config.commitment  # publishable, like the seed commitment
+        entry["plugins"] = plugin_record(plan.config)
+    return entry
+
+
 def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = False, log: Log = print) -> Path:
-    """Write a run: snapshot, instances, prompts, the generator's self-check, the audit sample and
-    the manifest. The run's mix (cfg.mix) names its domain and genre; the default is the legacy (0.2.0)
-    run, and any other mix is generated on seed paths of its own (see evalgen.mix)."""
-    if cfg.private_config is not None:
-        raise NotImplementedError("the private run config comes with plan phase 4")
-    choice = single_choice(cfg.mix)
-    if choice is not None and cfg.feed != GenerateConfig.feed:
-        raise ValueError("the USGS feed is chosen in legacy runs only: off the legacy path its live source is the "
-                         "day feed")
-    run_dir = Path(run_dir) if run_dir else RUNS_DIR / f"{cfg.source}-seed{cfg.seed}"
+    """Write a run: snapshots, instances, prompts, the generator's self-check, the audit sample and
+    the manifest. The run's mix (cfg.mix) says which domains and genres its instances are drawn from,
+    and the private run config (cfg.private_config) which of them are held out; the default is the
+    legacy (0.2.0) run, and any other mix is generated on seed paths of its own (see evalgen.mix). The
+    mix and the config are read, and their plugins loaded, before anything is written."""
+    plan = plan_mix(cfg.mix, cfg.private_config)
+    if not plan.legacy:
+        _check_sources(plan, cfg)
+    elif cfg.source == LIVE:
+        raise MixError(f"a legacy run reads synthetic data or the USGS feed: the {LIVE} source of each domain is "
+                       "read off the legacy path (give a mix)")
+    run_dir = Path(run_dir) if run_dir else RUNS_DIR / run_name(cfg)
     if run_dir.exists() and any(run_dir.iterdir()):
         if not force:
             raise FileExistsError(f"{run_dir} already exists (use --force to overwrite, or --out)")
@@ -333,34 +397,47 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
     nonce = fresh_nonce()
     commitment = seed_commitment(cfg.seed, nonce)
     log(f"[generate] master seed {cfg.seed} (publishable commitment {commitment[:16]}…)")
-    if choice is None:  # legacy: the 0.2.0 snapshot and seed paths
-        domain, genre_plan = EARTHQUAKES, None
-        snapshot, raw = build_snapshot(cfg.source, seedlog, feed=cfg.feed, pool_size=cfg.pool_size,
-                                       snapshot_file=cfg.snapshot_file)
-        save_snapshot(snapshot, raw, run_dir / "snapshot")
-    else:
-        domain, genre = choice
-        genre_plan = (genre,) * (cfg.variants + 1)
-        snapshot, raw = build_domain_snapshot(domain, cfg.source, seedlog, pool_size=cfg.pool_size,
-                                              snapshot_file=cfg.snapshot_file)
-        if raw is None:
-            save_snapshot(snapshot, raw, run_dir / "snapshot")
+    if plan.config is not None:
+        log(f"[generate] private run config committed as {plan.config.commitment[:16]}… (publishable)")
+    domains = [EARTHQUAKES] if plan.legacy else plan.domains
+    snapshots: dict[str, Snapshot] = {}
+    for domain in domains:
+        if plan.legacy:  # the 0.2.0 snapshot and seed paths
+            snapshot, raw = build_snapshot(cfg.source, seedlog, feed=cfg.feed, pool_size=cfg.pool_size,
+                                           snapshot_file=cfg.snapshot_file)
+        else:
+            snapshot, raw = build_domain_snapshot(domain, cfg.source, seedlog, pool_size=cfg.pool_size,
+                                                  snapshot_file=cfg.snapshot_file)
+        folder = run_dir / "snapshot" if len(domains) == 1 else run_dir / "snapshot" / domain.name
+        if raw is None or plan.legacy:
+            save_snapshot(snapshot, raw, folder)
         else:  # frozen bytes of the domain's live source
-            save_snapshot(snapshot, raw, run_dir / "snapshot", raw_filename=domain.live.raw_filename)
-    if snapshot.note:
-        log(f"[generate] note: {snapshot.note}")
-    log(f"[generate] snapshot: {snapshot.source}, {len(snapshot.events)} events, sha256 {snapshot.events_sha256[:16]}…")
+            save_snapshot(snapshot, raw, folder, raw_filename=domain.live.raw_filename)
+        snapshots[domain.name] = snapshot
+        about = "" if len(domains) == 1 else f" ({domain.name})"
+        if snapshot.note:
+            log(f"[generate] note{about}: {snapshot.note}")
+        log(f"[generate] snapshot{about}: {snapshot.source}, {len(snapshot.events)} events, "
+            f"sha256 {snapshot.events_sha256[:16]}…")
 
     replay = _replay_check(cfg.snapshot_file, log)
-    template_seeds = ("templates", "new") if choice is None else ("templates", "new", domain.name)
-    new_templates = compose_new_templates(seedlog.rng(*template_seeds), domain)
-    ctx = Context(snapshot.compiled_at, snapshot.window_hours)
+    if plan.legacy:
+        new_templates = {EARTHQUAKES.name: compose_new_templates(seedlog.rng("templates", "new"), EARTHQUAKES)}
+    else:
+        new_templates = {d.name: compose_new_templates(seedlog.rng("templates", "new", d.name), d) for d in domains}
+    contexts = {name: Context(s.compiled_at, s.window_hours) for name, s in snapshots.items()}
     used_chains: set[str] = set()  # no concrete question is ever asked twice in a run
-    usage: dict[str, int] = {}  # questions per template so far; keeps each public/twin pair in step
+    # Questions per template so far, per domain: keeps each domain's public/twin pairs in step, so that
+    # the template pools stay balanced within every domain (and so between public and held-out ones).
+    usage: dict[str, dict[str, int]] = {name: {} for name in snapshots}
     instances = []
     for index in range(cfg.instances):
-        inst = build_instance(index, snapshot, new_templates, seedlog, cfg, ctx, used_chains, usage,
-                              domain=domain, genre_plan=genre_plan)
+        drawn = plan.draw(index, seedlog, cfg.variants + 1)
+        domain = EARTHQUAKES if drawn is None else drawn.domain
+        inst = build_instance(index, snapshots[domain.name], new_templates[domain.name], seedlog, cfg,
+                              contexts[domain.name], used_chains, usage[domain.name], domain=domain,
+                              genre_plan=None if drawn is None else drawn.genres,
+                              split=None if drawn is None else drawn.split)
         instances.append(inst)
         write_json(run_dir / "instances" / f"{inst.instance_id}.json", inst.to_dict())
         for rendering in inst.renderings:
@@ -369,8 +446,8 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
             path.write_text(rendering.prompt, encoding="utf-8")
 
     self_check = generator_self_check(instances)
-    audit = write_audit_sample(run_dir, instances, _instance_records(instances, snapshot, domain),
-                               seedlog.rng("audit"), cfg.audit_rate)
+    records = _instance_records(instances, snapshots, {d.name: d for d in domains})
+    audit = write_audit_sample(run_dir, instances, records, seedlog.rng("audit"), cfg.audit_rate)
     forecasts = [dict(inst.forecast, instance_id=inst.instance_id, **_recorded(domain=inst.domain))
                  for inst in instances if inst.forecast]
     if forecasts:
@@ -384,10 +461,10 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
         "seed_commitment": commitment,  # publishable before the evaluation
         "seed_nonce": nonce,  # secret until the reveal, like the seed itself (this file is private)
         "config": cfg.to_dict(),
-        "snapshot": snapshot.meta(),
+        **_mix_entry(plan),
+        **_snapshot_entry(snapshots),
         "replay": replay,
-        "templates": {"public": [t.to_dict() for t in public_templates(domain)],
-                      "new": [t.to_dict() for t in new_templates]},
+        "templates": _templates_entry(plan, new_templates),
         "instances": [inst.instance_id for inst in instances],
         "self_check": self_check,
         "audit": audit,
@@ -406,8 +483,13 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
 
 def run_models(run_dir: Path, specs: Sequence[str], *, workers: int = 4, force: bool = False,
                max_tokens: int = DEFAULT_MAX_TOKENS, log: Log = print) -> list[str]:
+    """Ask each model (an adapter spec) every rendering's prompt, keeping replies already stored. A
+    run's plugins are loaded first; the simulated model also learns whether each instance's domain and
+    each rendering's genre are public or held out (Task.split, Task.genre_split)."""
     run_dir = Path(run_dir)
     manifest = read_json(run_dir / "manifest.json")
+    load_run_plugins(manifest, log=log)
+    inventory = Inventory.of_run(manifest)
     instances = load_instances(run_dir)
     finished = []
     for spec in specs:
@@ -422,9 +504,10 @@ def run_models(run_dir: Path, specs: Sequence[str], *, workers: int = 4, force: 
 
         def answer(job: tuple[Instance, Rendering]) -> bool:
             inst, rendering = job
+            genre_split = None if inventory is None or rendering.genre is None else inventory.genre_split(rendering.genre)
             task = Task(inst.instance_id, rendering.variant, question_specs(inst), forecast_spec(inst),
                         hidden=inst if adapter.kind == "simulated" else None, domain=inst.domain,
-                        genre=rendering.genre, split=inst.split)
+                        genre=rendering.genre, split=inst.split, genre_split=genre_split)
             record = {"model": adapter.name, "kind": adapter.kind, "instance_id": inst.instance_id,
                       "variant": rendering.variant, "prompt_sha256": rendering.prompt_sha256}
             if adapter.kind == "api":
@@ -454,6 +537,12 @@ def run_models(run_dir: Path, specs: Sequence[str], *, workers: int = 4, force: 
     return finished
 
 
+def _load_plugins_of(run_dir: Path, log: Log) -> None:
+    """Load the plugins the run in `run_dir` was generated with, if its manifest lists any."""
+    if (run_dir / "manifest.json").exists():
+        load_run_plugins(read_json(run_dir / "manifest.json"), log=log)
+
+
 def _has_reply(path: Path) -> bool:
     """A stored reply counts as done unless its API call failed or the reply was cut off at the
     output-token limit; those prompts are asked again on the next run."""
@@ -474,6 +563,7 @@ def score_run(run_dir: Path, *, log: Log = print) -> list[Path]:
     responses = run_dir / "responses"
     if not responses.exists():
         raise FileNotFoundError(f"no responses in {run_dir}; run `python cli.py run {run_dir}` first")
+    _load_plugins_of(run_dir, log)  # their domains' answer types score the answers
     instances = load_instances(run_dir)
     written = []
     for model_dir in sorted(p for p in responses.iterdir() if p.is_dir()):
@@ -529,6 +619,7 @@ def score_run(run_dir: Path, *, log: Log = print) -> list[Path]:
 
 
 def build_report(run_dir: Path, *, log: Log = print) -> Path:
+    _load_plugins_of(Path(run_dir), log)  # (the report loads them too; here a changed plugin is logged)
     path = write_report(Path(run_dir))
     log(f"[report] {path} (+ report.json)")
     return path
@@ -542,6 +633,7 @@ def resolve_run(run_dir: Path, *, now: int | None = None, fetch: Callable | None
     if not path.exists():
         log("[resolve] this run has no forecast questions (they are only generated with --source usgs)")
         return {}
+    _load_plugins_of(run_dir, log)  # a plugin domain resolves its own forecasts
     forecasts = read_json(path)
     by_domain: dict[str | None, list[dict]] = {}  # a legacy run records no domain: its forecasts are earthquake ones
     for forecast in forecasts:
@@ -560,39 +652,61 @@ def resolve_run(run_dir: Path, *, now: int | None = None, fetch: Callable | None
     return summary
 
 
-def demo(seed: int = 42, instances: int = 20, *, source: str = "synthetic", run_dir: Path | None = None,
-         force: bool = False, log: Log = print) -> Path:
+def demo(seed: int = 42, instances: int = 20, *, source: str = "synthetic", mix: str = LEGACY,
+         private_config: str | None = None, run_dir: Path | None = None, force: bool = False,
+         log: Log = print) -> Path:
     """Everything offline, no API keys: generate -> run (mock, oracle, naive) -> score -> report.
 
-    The default directory runs/demo-<source>-seed<seed> is overwritten on every demo; an explicit
-    run_dir is only overwritten with force=True (and only if it is an evalgen run directory)."""
-    default = RUNS_DIR / f"demo-{source}-seed{seed}"
+    `mix` and `private_config` are generate's (GenerateConfig). The default directory
+    runs/demo-<source>-seed<seed> (with the mix first for any mix but legacy) is overwritten on every
+    demo; an explicit run_dir is only overwritten with force=True (and only if it is an evalgen run
+    directory)."""
+    cfg = GenerateConfig(seed=seed, instances=instances, source=source, mix=mix, private_config=private_config)
+    default = RUNS_DIR / f"demo-{run_name(cfg)}"
     run_dir = Path(run_dir) if run_dir else default
-    generate(GenerateConfig(seed=seed, instances=instances, source=source), run_dir,
-             force=force or run_dir == default, log=log)
+    generate(cfg, run_dir, force=force or run_dir == default, log=log)
     run_models(run_dir, ["mock", "oracle", "naive"], log=log)
     score_run(run_dir, log=log)
     return build_report(run_dir, log=log)
 
 
+def _pct(x: float | None) -> str:
+    return "   n/a" if x is None else f"{100 * x:6.1f}%"
+
+
+def _points(gap: dict | None, key: str) -> str:
+    """An adjusted gap in points for the console ("+12.3"), or n/a."""
+    adjusted = (gap or {}).get("adjusted") or {}
+    return "     n/a" if adjusted.get(key) is None else f"{100 * adjusted[key]:+7.1f} "
+
+
 def summary_lines(run_dir: Path) -> list[str]:
-    """A compact console summary of report.json."""
+    """A compact console summary of report.json: per model, accuracy, consistency, the template pools
+    and their adjusted gap, and traps; off the legacy path, also the adjusted source and genre gaps
+    and cross-genre consistency, when the run has them; then the head-to-head comparisons."""
     data = read_json(Path(run_dir) / "report.json")
     lines = [f"{'model':<28} {'accuracy':>9} {'consist.':>9} {'public':>8} {'new':>8} {'adj.gap':>8} "
              f"{'traps':>8}  flag"]
     for m in data["models"]:
-        def pct(x):
-            return "   n/a" if x is None else f"{100 * x:6.1f}%"
-        adjusted = (m["gap"].get("adjusted") or {}).get("public_minus_new")
-        gap = "     n/a" if adjusted is None else f"{100 * adjusted:+7.1f} "
         note = "overfitting?" if m["gap"]["flagged"] else ""
         if m["format"]["api_errors"]:
             note = f"{m['format']['api_errors']}/{m['format']['replies']} API calls failed"
         if m["format"].get("truncated"):
             note = (note + "; " if note else "") + f"{m['format']['truncated']}/{m['format']['replies']} replies cut off"
-        lines.append(f"{m['model']:<28} {pct(m['accuracy']['rate']):>9} {pct(m['consistency']['rate']):>9} "
-                     f"{pct(m['pools']['public']['rate']):>8} {pct(m['pools']['new']['rate']):>8} "
-                     f"{gap:>8} {pct(m['traps']['caught']['rate']):>8}  {note}")
+        lines.append(f"{m['model']:<28} {_pct(m['accuracy']['rate']):>9} {_pct(m['consistency']['rate']):>9} "
+                     f"{_pct(m['pools']['public']['rate']):>8} {_pct(m['pools']['new']['rate']):>8} "
+                     f"{_points(m['gap'], 'public_minus_new'):>8} {_pct(m['traps']['caught']['rate']):>8}  {note}")
+    if any(m.get("source_gap") or m.get("genre_gap") or m.get("cross_genre_consistency") for m in data["models"]):
+        lines += ["", f"{'public minus held out':<28} {'sources':>9} {'genres':>9} {'x-genre':>9}  flag"]
+        for m in data["models"]:
+            flagged = [what for what, key in (("sources", "source_gap"), ("genres", "genre_gap"))
+                       if (m.get(key) or {}).get("flagged")]
+            consistency = (m.get("cross_genre_consistency") or {}).get("rate")
+            lines.append(f"{m['model']:<28} {_points(m.get('source_gap'), 'public_minus_held_out'):>9} "
+                         f"{_points(m.get('genre_gap'), 'public_minus_held_out'):>9} {_pct(consistency):>9}  "
+                         + (f"overfitting? ({', '.join(flagged)})" if flagged else ""))
+        lines.append("(adjusted gaps in points: domains on original renderings, genres on every rendering; "
+                     "x-genre: agreement between renderings in different genres)")
     for p in data.get("head_to_head", []):
         for label, c in (("original rendering", p), ("every rendering", p.get("all_renderings"))):
             if c:

@@ -23,7 +23,7 @@ from evalgen.domains.base import GENERIC_CHATTER, Lexicon, Record, RecordReport,
 from evalgen.domains.earthquakes import EARTHQUAKES
 from evalgen.genres import all_genres
 from evalgen.genres.classic import CLASSIC
-from evalgen.mix import Entry, choices, parse_mix, single_choice
+from evalgen.mix import Entry, MixError, choices, parse_mix, single_choice
 from evalgen.models import Instance, Notice, Rendering, Trap
 from evalgen.ops import Step, execute, rows_after_filters, terminal_step
 from evalgen.pipeline import GenerateConfig, compose_instance, sample_events
@@ -98,15 +98,16 @@ def test_a_tolerance_holds_in_every_unit_an_answer_can_be_asked_in(toys):
 # ----------------------------------------------------------------------------------- mixes
 
 
-def test_a_mix_names_one_domain_and_genre_until_phase_4(toys):
+def test_a_mix_names_its_domains_and_genres(toys):
     assert parse_mix("legacy") == () and single_choice("legacy") is None
     assert parse_mix(" toy : classic ") == (Entry("toy", "classic"),) and parse_mix("toy") == (Entry("toy"),)
     assert single_choice("toy:classic") == (toys.toy, CLASSIC)
     every = [(toys.toy, genre) for genre in all_genres()]  # a bare domain: any genre
     assert choices(parse_mix("toy")) == every
     assert choices(parse_mix("toy,toy-flat:classic")) == every + [(toys.flat, CLASSIC)]
-    for text in ("toy", "toy,toy-flat:classic", "random"):
-        with pytest.raises(NotImplementedError, match="phase 4"):
+    assert choices(parse_mix("toy,toy-flat:classic"), [CLASSIC]) == [(toys.toy, CLASSIC), (toys.flat, CLASSIC)]
+    for text in ("toy", "toy,toy-flat:classic", "random"):  # these are drawn per instance (test_mix.py)
+        with pytest.raises(MixError, match="leaves a choice"):
             single_choice(text)
     for text, error in (("nowhere", KeyError), ("toy:sonnet", KeyError), ("toy:", ValueError), (":classic", ValueError),
                         ("toy,toy", ValueError), ("", ValueError)):

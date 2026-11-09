@@ -48,12 +48,13 @@ def test_the_manifest_config_keeps_its_020_keys_on_the_default_path(small_run):
     assert cfg.to_dict() == recorded == {k: v for k, v in asdict(cfg).items() if k in CONFIG_020}
 
 
-def test_new_options_are_recorded_only_when_set_and_refused_until_phase_4(tmp_path):
+def test_new_options_are_recorded_only_when_set_and_checked_before_anything_is_written(tmp_path):
     legacy = GenerateConfig(seed=1).to_dict()
     assert GenerateConfig(seed=1, mix="random").to_dict() == {**legacy, "mix": "random"}
     assert GenerateConfig(seed=1, private_config="p.json").to_dict() == {**legacy, "private_config": "p.json"}
-    for cfg in (GenerateConfig(seed=1, mix="random"), GenerateConfig(seed=1, private_config="p.json")):
-        with pytest.raises(NotImplementedError, match="phase 4"):
+    missing = str(tmp_path / "p.json")  # the mixes and private run configs themselves: test_mix.py
+    for cfg in (GenerateConfig(seed=1, private_config=missing), GenerateConfig(seed=1, mix="random", private_config=missing)):
+        with pytest.raises(FileNotFoundError):
             pipeline.generate(cfg, tmp_path / "run", log=quiet)
     assert not (tmp_path / "run").exists()
 
@@ -172,9 +173,9 @@ def test_surface_words_are_drawn_and_bound_off_the_legacy_path_only():
 def test_tasks_keep_their_positional_fields(instances):
     inst = instances[0]
     task = Task(inst.instance_id, "v0", question_specs(inst), None, inst)
-    assert (task.hidden, task.domain, task.genre, task.split) == (inst, None, None, None)
+    assert (task.hidden, task.domain, task.genre, task.split, task.genre_split) == (inst, None, None, None, None)
     assert [f.name for f in fields(Task)] == ["instance_id", "variant", "questions", "forecast", "hidden",
-                                              "domain", "genre", "split"]
+                                              "domain", "genre", "split", "genre_split"]
 
 
 def test_the_mock_answers_any_pool_with_the_draws_of_a_new_template(instances):

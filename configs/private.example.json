@@ -1,0 +1,13 @@
+{
+  "note": "EXAMPLE ONLY, published to show the format. A real private run config, and the plugins that define its held-out domains and genres, must NOT be published or committed to a public repository before the evaluation: anyone who sees them can tune a model to the held-out sets. Keep them private, draw a fresh random nonce for every config (python -c \"import secrets; print(secrets.token_hex(16))\"), publish only the commitment that cli.py generate records in the run's manifest, and reveal the config after the evaluation, when anyone can check it with: python cli.py verify-config RUN_DIR CONFIG. Plugin paths are relative to this file. This example holds out the test-only toy domain and toy genre of tests/, which are public and hide nothing from anyone: use it to demo the held-out metrics offline, e.g. python cli.py demo --mix random --private-config configs/private.example.json",
+  "nonce": "EXAMPLE-ONLY-draw-your-own-with-secrets.token_hex",
+  "domains": {
+    "public": ["earthquakes"],
+    "held_out": ["toy"]
+  },
+  "genres": {
+    "public": ["classic"],
+    "held_out": ["toy-telex"]
+  },
+  "plugins": ["../tests/toy_domain.py", "../tests/toy_genre.py"]
+}
