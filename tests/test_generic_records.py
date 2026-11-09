@@ -18,7 +18,7 @@ import requests
 from evalgen import pipeline, scoring
 from evalgen.audit import write_audit_sample
 from evalgen.digest import make_chatter
-from evalgen.domains import all_domains, get_domain
+from evalgen.domains import Registry, all_domains, get_domain
 from evalgen.domains.base import GENERIC_CHATTER, Lexicon, Record, RecordReport, Surface, TrapVocab, standard_lexicon
 from evalgen.domains.earthquakes import EARTHQUAKES
 from evalgen.genres.classic import CLASSIC
@@ -46,8 +46,9 @@ SPATIAL_TEMPLATES = {"P02", "P07", "P09", "P12", "N02", "N07", "N09", "N12"}  # 
 
 def test_the_toy_domains_load_as_plugins_and_register_their_answer_types(toys):
     assert get_domain("toy") is toys.toy and get_domain("toy-dressed") is toys.dressed
-    names = [d.name for d in all_domains()]  # the built-in domains, then the plugins in load order
-    assert names[0] == "earthquakes" and names[-3:] == ["toy", "toy-flat", "toy-dressed"]
+    built_in = [d.name for d in Registry().all()]  # every built-in domain, in module order
+    assert built_in[0] == "earthquakes"
+    assert [d.name for d in all_domains()] == [*built_in, "toy", "toy-flat", "toy-dressed"]  # then the plugins
     assert type(toys.toy).__module__.startswith("evalgen_plugin_")  # loaded by path, as a held-out plugin is
     temperature, wave = (scoring.ANSWER_TYPES[name] for name in ("toy_temperature", "toy_wave_height"))
     assert (temperature.tolerance, dict(temperature.unit_tolerance)) == ((0.3, 0.0), {"°F": (0.3 / (5 / 9), 0.0)})
