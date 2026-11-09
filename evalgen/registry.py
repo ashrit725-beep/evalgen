@@ -66,12 +66,10 @@ class Registry(Generic[T]):
 
     def load_plugin(self, path: str | Path) -> T:
         """Register the entry defined in a Python file outside the package. The private run config
-        names these files (plan phase 4); loading the same file again returns the same entry."""
+        names these files (evalgen.mix); loading the same file again returns the same entry."""
         path = Path(path).resolve()
         self._discover()  # built-ins first, so that a plugin cannot take a built-in name
-        module_name = "evalgen_plugin_" + hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
-        module = sys.modules.get(module_name) or _exec_file(module_name, path)
-        return self.register(self._entry_in(module))
+        return self.register(self._entry_in(load_module(path)))
 
     def _discover(self) -> None:
         """Register the package's entry modules in sorted order, all or none: when one fails to import
@@ -97,6 +95,14 @@ class Registry(Generic[T]):
             raise TypeError(f"{module.__name__} must define {self.attribute}, an instance of "
                             f"{self.kind.__module__}.{self.kind.__qualname__}")
         return entry
+
+
+def load_module(path: str | Path) -> ModuleType:
+    """The module of a plugin file, executed once per process, so that a file defining both a domain
+    and a genre is loaded once for both registries."""
+    path = Path(path).resolve()
+    module_name = "evalgen_plugin_" + hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
+    return sys.modules.get(module_name) or _exec_file(module_name, path)
 
 
 def _exec_file(module_name: str, path: Path) -> ModuleType:

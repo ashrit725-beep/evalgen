@@ -1,7 +1,11 @@
 """Model adapters: everything that can answer a prompt.
 
 Spec strings accepted by ``make_adapter``:
-    oracle | naive | mock | anthropic[:model] | openai[:model]
+    oracle | naive | mock[:options] | anthropic[:model] | openai[:model]
+
+The simulated model's options give it a penalty on held-out sets: ``mock:held_out=0.3`` (held-out
+domains and genres), ``mock:held_out_domains=0.3`` or ``mock:held_out_genres=0.3``, joined with "+"
+for both kinds with different penalties. Each lowers its chance of a right answer by that much.
 
 API models (anthropic, openai) receive ONLY the prompt text. The reference solvers (oracle, naive)
 also receive each question's operation chain, and the simulated model (mock) may look at the
@@ -19,6 +23,7 @@ from typing import Any
 import requests
 
 from .domains import get_domain
+from .mix import HELD_OUT
 from .models import Instance
 from .ops import Step, terminal_step
 from .scoring import AnswerType, get_answer_type
@@ -37,10 +42,11 @@ class Task:
     forecast: dict | None = None  # {"qid": "F1", "rule": {...}}
     hidden: Instance | None = None  # only for the simulated mock model; never sent anywhere
     # What a non-legacy run records (all None in a legacy run, whose prompts are read as 0.2.0 read
-    # them): the instance's domain and split, and the rendering's genre.
+    # them): the instance's domain and split, and the rendering's genre and that genre's split.
     domain: str | None = None
     genre: str | None = None
     split: str | None = None  # "public" or "held_out"
+    genre_split: str | None = None  # "public" or "held_out"
 
 
 @dataclass
@@ -98,6 +104,11 @@ class MockAdapter(Adapter):
     is seeded by the exact prompt text, so any surface change (a metamorphic variant) produces
     different mistakes, which the consistency check detects. About one reply in five is formatted
     sloppily to exercise the robust JSON parser. It is NOT a language model.
+
+    It can also be given a penalty on held-out sets, as a model tuned to the public domains or genres
+    would have: `held_out_domains` is taken off each probability above for an instance whose domain is
+    held out (Task.split), and `held_out_genres` for a rendering whose genre is held out
+    (Task.genre_split). Without a penalty (the default) it draws exactly as before, on every run.
     """
 
     name = "mock"
@@ -105,8 +116,18 @@ class MockAdapter(Adapter):
     P_CORRECT = {("public", True): 0.92, ("public", False): 0.80, ("new", True): 0.62, ("new", False): 0.62}
     P_UNSEEN = 0.62  # a pool it has no entry for: as unseen as a new template
 
-    def __init__(self, seed: int = 0) -> None:
+    def __init__(self, seed: int = 0, *, held_out_domains: float = 0.0, held_out_genres: float = 0.0) -> None:
+        for value in (held_out_domains, held_out_genres):
+            if not 0.0 <= value <= 1.0:
+                raise AdapterError(f"a held-out penalty is a probability between 0 and 1, not {value!r}")
         self.seed = seed
+        self.held_out_domains, self.held_out_genres = held_out_domains, held_out_genres
+        self.name = _mock_name(held_out_domains, held_out_genres)
+
+    def penalty(self, task: Task) -> float:
+        """How much less likely a right answer is on this task: the penalty of each held-out set it is in."""
+        return ((self.held_out_domains if task.split == HELD_OUT else 0.0)
+                + (self.held_out_genres if task.genre_split == HELD_OUT else 0.0))
 
     def complete(self, prompt: str, task: Task) -> Completion:
         rng = random.Random(derive_seed(self.seed, "mock", sha256_hex(prompt)))
@@ -116,10 +137,11 @@ class MockAdapter(Adapter):
             for trap in task.hidden.traps:
                 for qid, value in trap.affected.items():
                     fallen.setdefault(qid, []).append(value)
+        penalty = self.penalty(task)
         answers: dict[str, Any] = {}
         for q in task.questions:
             qid = q["qid"]
-            if rng.random() < self.P_CORRECT.get((q["pool"], task.variant == "v0"), self.P_UNSEEN):
+            if rng.random() < self.P_CORRECT.get((q["pool"], task.variant == "v0"), self.P_UNSEEN) - penalty:
                 answers[qid] = truth[qid]
             elif qid in fallen and rng.random() < 0.75:
                 answers[qid] = rng.choice(fallen[qid])
@@ -128,6 +150,34 @@ class MockAdapter(Adapter):
         if task.forecast:
             answers[task.forecast["qid"]] = round(rng.uniform(0.05, 0.6), 2)
         return Completion(_sloppy_json(answers, rng))
+
+
+MOCK_OPTIONS = ("held_out", "held_out_domains", "held_out_genres")
+
+
+def _mock_name(held_out_domains: float, held_out_genres: float) -> str:
+    """A simulated model's name, written as its spec: "mock", or with its penalties ("mock:held_out=0.3")."""
+    if held_out_domains == held_out_genres:
+        return "mock" if not held_out_domains else f"mock:held_out={held_out_domains:g}"
+    return "mock:" + "+".join(f"{option}={value:g}" for option, value in (
+        ("held_out_domains", held_out_domains), ("held_out_genres", held_out_genres)) if value)
+
+
+def _mock(seed: int, options: str) -> MockAdapter:
+    """A simulated model from the options of its spec: none, or option=penalty pairs joined with "+"."""
+    penalties = {"held_out_domains": 0.0, "held_out_genres": 0.0}
+    for part in filter(None, (piece.strip() for piece in options.split("+"))):
+        option, equals, value = (piece.strip() for piece in part.partition("="))
+        try:
+            amount = float(value)
+        except ValueError:
+            amount = None
+        if option not in MOCK_OPTIONS or not equals or amount is None:
+            raise AdapterError(f"unknown mock option {part!r} (use held_out=P, held_out_domains=P or "
+                               "held_out_genres=P, joined with +)")
+        for key in ("held_out_domains", "held_out_genres") if option == "held_out" else (option,):
+            penalties[key] = amount
+    return MockAdapter(seed, **penalties)
 
 
 def _perturb(q: dict, value: Any, rng: random.Random, task: Task) -> Any:
@@ -346,9 +396,10 @@ def make_adapter(spec: str, seed: int = 0, max_tokens: int = DEFAULT_MAX_TOKENS)
     if name == "naive":
         return NaiveAdapter()
     if name == "mock":
-        return MockAdapter(seed)
+        return _mock(seed, model)
     if name == "anthropic":
         return AnthropicAdapter(model or None, max_tokens=max_tokens)
     if name == "openai":
         return OpenAIAdapter(model or None, max_tokens=max_tokens)
-    raise AdapterError(f"unknown model spec {spec!r} (use oracle, naive, mock, anthropic[:model], openai[:model])")
+    raise AdapterError(f"unknown model spec {spec!r} (use oracle, naive, mock[:options], anthropic[:model], "
+                       "openai[:model])")
