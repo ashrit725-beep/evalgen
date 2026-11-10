@@ -255,8 +255,9 @@ def read_value(field: GlossaryField, match: re.Match[str], name: str) -> float:
 
 
 def id_pattern(glossary: Glossary) -> str:
-    """A regex for a record ID in digest text: the glossary's pattern in any letter case (IDs are
-    printed as they are; the pattern describes them lower-cased), never inside a longer word."""
+    """A regex for a record ID in digest text: the glossary's pattern, ignoring letter case (IDs are
+    printed as they are, "KJFK-48213"; the pattern describes them lower-cased, and the glossary says
+    that it ignores letter case), never inside a longer word."""
     return rf"(?<![0-9A-Za-z])(?i:{glossary.id_pattern})(?![0-9A-Za-z])"
 
 
@@ -268,6 +269,10 @@ def alternation(words: Iterable[str]) -> str:
 # ---------------------------------------------------------------------------------- glossary
 
 GLOSSARY_TITLE = "Glossary: what the records in the digest are, and how their values are written."
+# How the glossary qualifies its ID pattern. A pattern describes IDs lower-cased, and digests print
+# IDs as their sources file them ("KJFK-48213", "KX/40512"), so the pattern is true of every printed
+# ID only once letter case is ignored, as every reader of a digest (id_pattern, the scorer) matches it.
+ID_CASE = "ignoring letter case"
 _GLOSSARY = re.compile(r"<glossary>\n(?P<body>.*?)\n</glossary>", re.DOTALL)
 _QUOTED = r'"(?:[^"\\]|\\.)*"'  # a word, written as a JSON string
 
@@ -290,7 +295,7 @@ def render_glossary(glossary: Glossary) -> str:
     final, draft = glossary.statuses
     lines = [GLOSSARY_TITLE,
              f"- Records: each is one {_quote(glossary.noun)} (plural {_quote(glossary.plural)}), identified by its "
-             f"{_quote(glossary.id_label)}; IDs match the pattern {glossary.id_pattern}.",
+             f"{_quote(glossary.id_label)}; IDs match the pattern {glossary.id_pattern}, {ID_CASE}.",
              f"- Sources: each report is filed by one {_quote(glossary.source_label)}.",
              f"- Groups: each record belongs to one {_quote(glossary.group_label)}.",
              f"- Statuses: a {_quote(final)} report settles a record's values; a {_quote(draft)} report does not."]
@@ -317,7 +322,7 @@ def _conversion(unit: Unit, canonical: str | None) -> str:
 
 
 _RECORDS = re.compile(rf"- Records: each is one (?P<noun>{_QUOTED}) \(plural (?P<plural>{_QUOTED})\), identified by "
-                      rf"its (?P<id_label>{_QUOTED}); IDs match the pattern (?P<pattern>.+)\.")
+                      rf"its (?P<id_label>{_QUOTED}); IDs match the pattern (?P<pattern>.+), {ID_CASE}\.")
 _SOURCES = re.compile(rf"- Sources: each report is filed by one (?P<label>{_QUOTED})\.")
 _GROUPS = re.compile(rf"- Groups: each record belongs to one (?P<label>{_QUOTED})\.")
 _STATUSES = re.compile(rf"- Statuses: a (?P<final>{_QUOTED}) report settles a record's values; a "

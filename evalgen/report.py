@@ -133,10 +133,15 @@ def model_metrics(score: dict, instances: list[Instance], forecasts: list[dict],
     for answer_type in answer_type_order(r["answer_type"] for r in original):
         chosen = [r for r in original if r["answer_type"] == answer_type]
         out["by_answer_type"][answer_type] = _rate(sum(r["correct"] for r in chosen), len(chosen))
-    out["by_template"] = {}
-    for template_id in sorted({r["template_id"] for r in original}):
-        chosen = [r for r in original if r["template_id"] == template_id]
-        out["by_template"][template_id] = _rate(sum(r["correct"] for r in chosen), len(chosen))
+    # By template: by its ID in a legacy run, as 0.2.0 keyed it; off the legacy path by domain and ID
+    # ("weather/N01"), since every domain has a P01 of its own, and its twins differ by domain.
+    domain_of = {} if legacy_run(instances) else {inst.instance_id: inst.domain for inst in instances}
+    by_template: dict[str, list[dict]] = {}
+    for r in original:
+        key = r["template_id"] if not domain_of else f"{domain_of[r['instance_id']]}/{r['template_id']}"
+        by_template.setdefault(key, []).append(r)
+    out["by_template"] = {key: _rate(sum(r["correct"] for r in chosen), len(chosen))
+                          for key, chosen in sorted(by_template.items())}
 
     # Metamorphic consistency: needs no ground truth, only the model's own answers.
     pairs = consistent = 0

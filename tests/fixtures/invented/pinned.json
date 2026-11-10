@@ -1,5 +1,5 @@
 {
-  "about": "What seed 20261108 draws in the invented domain alone: its synthetic snapshot (360 records) and the surfaces of the first three instances of a run (seed path instance/i/surface). tests/test_domain_invented.py checks that the same seed still draws exactly these.",
+  "about": "What seed 20261108 draws in the invented domain alone: its synthetic snapshot (360 records) and the surfaces of the first three instances of a run (seed path instance/i/surface). tests/test_domain_invented.py checks that the same seed still draws exactly these. The surfaces were pinned again when common English words of two and three letters joined the words no surface may coin (invented.COMMON_WORDS); the snapshot is as first pinned.",
   "seed": 20261108,
   "pool_size": 360,
   "compiled_at": 1787378400,
@@ -63,7 +63,7 @@
         "bay": "Glerlag",
         "cob": "Zalan",
         "dun": "Kesk",
-        "elk": "Mid Shipping"
+        "elk": "Dern"
       },
       "units": {
         "f1": [
@@ -95,34 +95,34 @@
       },
       "trap_vocab": {
         "rereporting_sources": [
-          "Dern",
           "Brorm",
+          "Watind Haulage",
           "Tumert"
         ],
         "duplicate_notes": [
-          "duplicate of",
-          "mirror of"
+          "re-entry of",
+          "also logged as"
         ],
         "retraction_reasons": [
-          "barcode collision",
-          "double scan",
-          "mislabelled crate"
+          "keying error",
+          "stale import",
+          "double scan"
         ],
         "retraction_notices": [
-          "rescinded",
-          "struck from the ledger"
+          "withdrawn",
+          "rescinded"
         ],
         "correction_notices": [
           "reset to",
-          "restated as"
+          "corrected to"
         ]
       },
       "chatter": [
-        "This digest is compiled automatically and has not been checked by an editor.",
+        "Ledger maintenance ran from {h1} to {h2} UTC; filing resumed afterwards.",
         "No {group_label} reported a closure in this period.",
         "Gate traffic at several {group_label}s was heavier than usual.",
-        "Reminder: each {source_label} files in its own units; the glossary gives every conversion.",
-        "Late {plural} may be listed in the next edition instead."
+        "The {source_label} feeds were briefly out of step between {h1} and {h2} UTC; nothing was lost.",
+        "Editor's note: entries are reproduced exactly as each {source_label} filed them, units included."
       ]
     },
     {
@@ -233,93 +233,93 @@
       "id_label": "shipment number",
       "source_label": "bureau",
       "group_label": "compound",
-      "id_prefix": "nk.",
+      "id_prefix": "TJH/",
       "labels": {
         "f1": "rated weight",
-        "f2": "sop spell"
+        "f2": "tuk spell"
       },
       "groups": {
-        "alder": "Skirnom Staithe",
-        "birch": "Fevib",
-        "cedar": "Kaskund",
-        "dogwood": "Kend",
-        "elm": "Snondark Mill",
-        "fir": "Nag",
-        "gorse": "Teroll",
-        "hazel": "Stok"
+        "alder": "Glurm Hollow",
+        "birch": "Kaskund",
+        "cedar": "Kend",
+        "dogwood": "Snondark Mill",
+        "elm": "Til",
+        "fir": "Ted",
+        "gorse": "Drulirn Mill",
+        "hazel": "Vern"
       },
       "sources": {
-        "ash": "Trurim",
-        "bay": "Vern",
-        "cob": "Bern",
-        "dun": "Suk",
-        "elk": "Mekum Logistics"
+        "ash": "Bern",
+        "bay": "Suk",
+        "cob": "Mekum Logistics",
+        "dun": "Wil",
+        "elk": "Lend"
       },
       "units": {
         "f1": [
           {
-            "symbol": "tk",
-            "words": "tuks"
-          },
-          {
-            "symbol": "le",
-            "words": "lerts",
-            "scale": 0.04,
-            "decimals": 0,
-            "step": 100.0
+            "symbol": "sn",
+            "words": "snets"
           },
           {
             "symbol": "vk",
             "words": "vosks",
-            "scale": 60.0,
+            "scale": 0.125,
+            "decimals": 1,
+            "step": 50.0
+          },
+          {
+            "symbol": "vu",
+            "words": "vusts",
+            "scale": 16.0,
             "decimals": 3,
-            "step": 0.1
+            "step": 0.25
           }
         ],
         "f2": [
           {
-            "symbol": "vu",
-            "words": "vusts"
+            "symbol": "pg",
+            "words": "plogs"
           },
           {
-            "symbol": "sl",
-            "words": "snuls",
-            "scale": 0.125,
+            "symbol": "ke",
+            "words": "kerns",
+            "scale": 0.25,
             "decimals": 1,
-            "step": 10.0
+            "step": 5.0
           }
         ]
       },
       "trap_vocab": {
         "rereporting_sources": [
-          "Wil",
-          "Lend",
-          "Trurim"
+          "Quikork",
+          "Wirn Haulage",
+          "Wil"
         ],
         "duplicate_notes": [
-          "mirror of",
-          "duplicate of"
+          "dup of",
+          "also logged as"
         ],
         "retraction_reasons": [
-          "training record",
-          "double scan",
-          "barcode collision"
+          "dummy entry",
+          "mislabelled crate",
+          "phantom tally"
         ],
         "retraction_notices": [
-          "voided",
-          "rescinded"
+          "cancelled",
+          "expunged"
         ],
         "correction_notices": [
-          "adjusted to",
+          "re-entered as",
           "restated as"
         ]
       },
       "chatter": [
+        "Reminder: each {source_label} files in its own units; the glossary gives every conversion.",
+        "Gate traffic at several {group_label}s was heavier than usual.",
         "The {source_label} feeds were briefly out of step between {h1} and {h2} UTC; nothing was lost.",
-        "No {group_label} reported a closure in this period.",
-        "Editor's note: entries are reproduced exactly as each {source_label} filed them, units included.",
-        "Ledger maintenance ran from {h1} to {h2} UTC; filing resumed afterwards.",
-        "Late {plural} may be listed in the next edition instead."
+        "Late {plural} may be listed in the next edition instead.",
+        "Ledger maintenance ran from {h1} to {h2} UTC; filing resumed afterwards."
       ]
     }
   ]

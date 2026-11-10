@@ -184,16 +184,19 @@ PIN = "\U0001f4cc"  # 📌, before each notice on the pinned board
 
 # Notice wordings. Each says RETRACTION or CORRECTION; a retraction may quote one of the domain's
 # retraction phrases, and the last correction wording a correction phrase that leads to the new
-# value ("revised to", "corrected to").
+# value ("revised to", "corrected to"). Each opens with its keyword and the time it was issued (after
+# "heads up: " at most), so that it reads as the notice itself: never as a pointer to a notice
+# printed elsewhere ("see the RETRACTION issued ..."), which the log never holds, nor as a relay of
+# one, which a reader might take for a repeat (rule 7).
 RETRACTIONS = (
     "RETRACTION [{when}]: {ref} was not a real {noun}{reason}; ignore that report.",
     "RETRACTION issued {when}: {ref} {phrase}{reason}. Please disregard it.",
-    "heads up: {ref} {phrase}{reason}, see the RETRACTION issued {when}",
+    "heads up: RETRACTION issued {when}: {ref} {phrase}{reason}",
 )
 CORRECTIONS = (
     "CORRECTION [{when}]: the {label} of {ref} is revised to {new}{qualifier}; it was first given as {old}.",
     "CORRECTION issued {when}: {ref} {label} revised from {old} to {new}{qualifier}.",
-    "heads up: {label} for {ref} revised to {new}{qualifier} (was {old}). CORRECTION issued {when}.",
+    "heads up: CORRECTION issued {when}: {label} for {ref} revised to {new}{qualifier} (was {old})",
     "CORRECTION issued {when}: the {label} of {ref} {phrase} {new}{qualifier}, first given as {old}.",
 )
 PHRASED_CORRECTION = CORRECTIONS[-1]

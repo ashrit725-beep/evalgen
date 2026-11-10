@@ -381,16 +381,12 @@ def build_domain_snapshot(domain: Domain, source: str, seedlog: SeedLog, *, pool
     "live", or the name of the domain's live source ("usgs"), fetches that source once (`fetch` stands
     in for the adapter's own) and falls back to synthetic records, with a note, when it cannot be
     reached, cannot be read or gives fewer records than its minimum; a domain without a live source
-    gets synthetic records. A snapshot file holds frozen bytes of the live source, which are replayed.
-    The records must suit the domain (record_problems), or ValueError is raised."""
+    gets synthetic records. A snapshot file holds frozen bytes of the live source, which are replayed
+    (read_frozen_feed). The records must suit the domain (record_problems), or ValueError is raised."""
     live = domain.live
     if snapshot_file:
-        if live is None:
-            raise ValueError(f"{domain.name} has no live source whose frozen bytes could be replayed")
-        path = Path(snapshot_file)
-        raw = path.read_bytes()
-        records, compiled_at, window = live.parse(raw)
-        window, url, note = _replayed(path, raw, window)
+        raw, records, compiled_at, window = read_frozen_feed(domain, snapshot_file)
+        window, url, note = _replayed(Path(snapshot_file), raw, window)
         return _live_domain_snapshot(domain, seedlog, raw, records, compiled_at, window, url, note), raw
     if source == "synthetic":
         return _synthetic_domain_snapshot(domain, seedlog, pool_size), None
@@ -409,6 +405,38 @@ def build_domain_snapshot(domain: Domain, source: str, seedlog: SeedLog, *, pool
         note = f"{live.source} unavailable ({type(exc).__name__}: {exc}); fell back to synthetic data"
         return _synthetic_domain_snapshot(domain, seedlog, pool_size, note=note), None
     return _live_domain_snapshot(domain, seedlog, raw, records, compiled_at, window, url, None), raw
+
+
+PARSE_ERRORS = (ValueError, KeyError, TypeError, AttributeError, IndexError)  # bytes a live parser cannot read
+
+
+def read_frozen_feed(domain: Domain, snapshot_file: str | Path) -> tuple[bytes, list[Any], int, int]:
+    """The frozen bytes of `domain`'s live source in `snapshot_file`, read and checked as a replay
+    reads them: (the bytes, their records, the snapshot's compiled_at, its window in hours). A run
+    calls it before it writes anything, so that a file it cannot replay is refused up front.
+
+    FileNotFoundError when the file is not there. ValueError when the domain has no live source, or the
+    bytes are not its live source's: its parser cannot read them, they give no record (another
+    source's feed can parse to none), or records that do not suit the domain (record_problems)."""
+    live = domain.live
+    if live is None:
+        raise ValueError(f"{domain.name} has no live source whose frozen bytes could be replayed")
+    path = Path(snapshot_file)
+    if not path.is_file():
+        raise FileNotFoundError(f"the frozen feed {path} is not a file")
+    raw = path.read_bytes()
+    source = f"the live source of {domain.name} ({live.source})"
+    try:
+        records, compiled_at, window = live.parse(raw)
+    except PARSE_ERRORS as exc:
+        raise ValueError(f"{path} is not a frozen feed of {source}: {type(exc).__name__}: {exc}") from None
+    if not records:
+        raise ValueError(f"{path} holds no usable record of {source}: is it that source's frozen feed?")
+    problems = record_problems(domain, records)
+    if problems:
+        raise ValueError(f"{path} is not a frozen feed of {source}: its records do not suit the domain: "
+                         + "; ".join(problems[:3]))
+    return raw, list(records), compiled_at, window
 
 
 def frozen_feed(directory: str | Path, domain: Domain) -> Path | None:

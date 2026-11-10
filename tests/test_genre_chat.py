@@ -284,6 +284,35 @@ def test_every_notice_wording_says_what_the_reading_rules_name(toys):
                    if phrase.endswith(" to"))
 
 
+def test_every_notice_wording_is_the_notice_itself(toys):
+    """A notice opens with its keyword and the time it was issued ("heads up: " at most before them), so that
+    it reads as the notice itself: never as a pointer to a notice printed elsewhere ("see the RETRACTION
+    issued ...", which no log holds), nor as a relay of one, which a reader could take for a repeat (rule
+    7). In a rendered log, every notice names its keyword and its time before the record it is about."""
+    opening = re.compile(r"(?:heads up: )?(?:RETRACTION|CORRECTION) (?:\[\{when\}\]|issued \{when\}): ")
+    for form in (*RETRACTIONS, *CORRECTIONS):
+        assert opening.match(form) and form.index("{when}") < form.index("{ref}") and "see " not in form, form
+    notices = [Notice("retraction", "by-12345", COMPILED_AT - 99, reason="probe fault"),
+               Notice("correction", "by-54321", COMPILED_AT - 9, field="temp", new_value=1.5, old_value=-2.0,
+                      qualifier="spar")]
+    glossary = toys.toy.glossary()
+    openings = set()
+    for seed in range(80):
+        style = CHAT.choose_style(random.Random(seed), toys.toy)
+        text = CHAT.render(RenderContext([], notices, [], COMPILED_AT, 24, style, random.Random(seed), toys.toy,
+                                         glossary))
+        for line in text.split("\n"):
+            body = re.sub(r"^(?:\[\d{2}:\d{2}\] [\w.-]+|\U0001f4cc Pinned by [\w.-]+): ", "", line)
+            for notice in notices:
+                if body == line or notice.target not in body or body.startswith(QUOTE):
+                    continue  # not a message about this notice's record, or a quote of one
+                keyword = "RETRACTION" if notice.kind == "retraction" else "CORRECTION"
+                head = body[:body.index(notice.target)]
+                assert keyword in head and re.search(r"\d{2}:\d{2}:\d{2}", head), body
+                openings.add(head.split(keyword)[0] + keyword)
+    assert openings == {"RETRACTION", "CORRECTION", "heads up: RETRACTION", "heads up: CORRECTION"}
+
+
 # ------------------------------------------------------------------------------- sniffing
 
 

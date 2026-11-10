@@ -15,8 +15,11 @@ create; see Domain.draw_surface):
               correction notices (Surface.trap_vocab), and the chatter lines
 
 So even the surface of the domain is unpredictable, and the glossary each prompt prints is the only
-definition of it: what a record is called, what its fields mean and how its units convert. A digest
-might read, in the classic genre's bulletin lines:
+definition of it: what a record is called, what its fields mean and how its units convert. No coined
+word or unit symbol is a real unit, a word the digests print around the data, a common English word
+of two or three letters ("so", "set": a symbol follows every value it writes, and must not read as
+prose) or a word that gives offence (RESERVED, UNFIT_PARTS). A digest might read, in the classic
+genre's bulletin lines:
 
     [Ostrel Haulage] KX/40512 | 2026-03-02T07:12:19Z | Varnholt | gross heft 15.308 tl | dwell time
         31.5 mr | verified
@@ -181,10 +184,11 @@ CODAS = ("b", "d", "g", "k", "l", "ll", "m", "n", "nd", "p", "rk", "rm", "rn", "
 UNFIT_PARTS = ("fuck", "slut", "nig", "fag", "porn", "dick", "cunt", "shit", "rape", "nazi", "kill", "dead", "bum",
                "tit", "wank", "cum", "sex", "god", "hell", "anal", "anus", "piss", "turd", "jew", "gay", "homo",
                "tard", "slag", "nob", "gun", "drug", "pot", "hag", "git", "wog", "fart", "prat", "slob", "snot",
-               "sod", "pig")
+               "sod", "pig", "wop", "kike", "paki")
 # Nor are coined words and unit symbols ever one of these: a real unit's name or symbol (so that no
 # outside knowledge applies to an invented unit), a word the digests print around the data ("lists",
-# "ref", "PM"), a word the scorer reads specially ("tie", "or"), or a word of the pools above.
+# "ref", "PM"), a word the scorer reads specially ("tie", "or"), a common English word of two or three
+# letters (COMMON_WORDS), or a word of the pools above.
 REAL_UNITS = frozenset((
     "ac", "amp", "atm", "au", "bar", "barn", "bbl", "bit", "btu", "bu", "byte", "cal", "cc", "cd", "ch", "cm", "ct",
     "ctn", "cup", "cwt", "dag", "dam", "day", "db", "deg", "dl", "dm", "doz", "dr", "dram", "dwt", "dyn", "dz", "ea",
@@ -198,11 +202,36 @@ DIGEST_WORDS = frozenset((
     "list", "lists", "ref", "src", "status", "group", "loc", "place", "note", "near", "wire", "digest", "edition",
     "notice", "update", "revised", "report", "utc", "gmt", "am", "pm", "id", "no", "nr", "was", "now", "not", "tie",
     "tied", "or", "and", "the", "same", "both", "even", "draw", "equal", "neither"))
+# Common English words of two and three letters. A unit symbol is printed after every value it writes,
+# so a symbol that is a word makes prose read two ways ("a gross heft of 15.3 so", "dwell time 4 set");
+# and no coined name, label or unit name is one of them either ("Nag Reach", "rags").
+COMMON_WORDS = frozenset("""
+    ad ah am an as at aw ax be by do eh fa go ha he hi hm ho if in is it la lo ma me mi mu my no nu of oh ok on or
+    ow ox pa pi re so ta ti to uh um up us we ya ye yo
+    ace act add ado aft age ago aid ail aim air ale all amp and ant any ape apt arc are ark arm art ash ask ate awe
+    awl axe aye bad bag bam ban bar bat bay bed bee beg bet bib bid big bin bit boa bob bod bog boo bop bot bow box
+    boy bra bud bug bum bun bus but buy bye cab can cap car cat cod cog con cop cot cow coy cry cub cud cue cup cur
+    cut dab dad dam day deb den dew did die dig dim din dip dis doc doe dog don dot dry dub dud due dug dun duo dye
+    ear eat ebb eel egg ego elf elk elm emu end era eve ewe eye fad fan far fat fax fed fee few fib fig fin fir fit
+    fix flu fly fob foe fog fop for fox fry fun fur gab gad gag gal gap gas gel gem gen get gig gin gnu gob god got
+    gum gun gut guy gym had hag ham has hat hay hem hen her hew hey hid him hip his hit hob hoe hog hon hop hot how
+    hub hue hug hum hut ice icy ill imp ink inn ion ire irk its ivy jab jag jam jar jaw jay jet jig job jog jot joy
+    jug jut keg ken key kid kin kip kit lab lad lag lam lap law lax lay led leg let lid lie lip lit lob log lop lot
+    low lug mad mag man map mar mat maw may men met mid mix mob mod mom mop mow mud mug mum nab nag nan nap nay net
+    new nib nil nip nit nod nor not now nub nun nut oaf oak oar oat odd ode off oft oil old one opt orb ore our out
+    owe owl own pad pal pan pap par pat paw pay pea peg pen pep per pet pew pie pig pin pip pit ply pod pom pop pot
+    pro pry pub pug pun pup pus put rag ram ran rap rat raw ray red rep rib rid rig rim rip rob rod roe rot row rub
+    rug rum run rut rye sad sag sap sat saw say sea set sew sex she shy sin sip sir sis sit six ski sky sly sob sod
+    sol son sop sot sow soy spa spy sty sub sue sum sun sup sus tab tad tag tan tap tar tat tax tea tee ten the thy
+    tic tie tin tip toe tog tom ton too top tot tow toy try tub tug tum tun tut two ugh urn use van vat vet vex via
+    vie vim vow wad wag wan war was wax way web wed wee wet who why wig win wit woe wok won woo wow yak yam yap yaw
+    yea yen yes yet yew yip you yum zag zap zed zen zig zip zit zoo
+""".split())
 POOL_WORDS = frozenset(word for phrase in (
     *(word for pair in NOUNS for word in pair), *ID_LABELS, *SOURCE_LABELS, *GROUP_LABELS, *F1_QUALIFIERS, *F1_HEADS,
     *F2_QUALIFIERS, *F2_HEADS, *PLACE_WORDS, *AGENCY_WORDS, *DUPLICATE_NOTES, *RETRACTION_REASONS,
     *RETRACTION_NOTICES, *CORRECTION_NOTICES) for word in re.findall(r"[a-z]+", phrase.casefold()))
-RESERVED = REAL_UNITS | DIGEST_WORDS | POOL_WORDS
+RESERVED = REAL_UNITS | DIGEST_WORDS | COMMON_WORDS | POOL_WORDS
 # A drawn unit is 1 of it = `scale` stored units: one larger unit, one smaller, or one of each.
 LARGER_SCALES = (2.0, 4.0, 5.0, 8.0, 10.0, 12.0, 16.0, 20.0, 24.0, 25.0, 40.0, 50.0, 60.0, 100.0)
 SMALLER_SCALES = (0.5, 0.25, 0.2, 0.125, 0.1, 0.05, 0.04)
@@ -231,10 +260,16 @@ def _literal(text: str) -> str:
     return text.replace("{", "{{").replace("}", "}}")
 
 
+def _fit(word: str) -> bool:
+    """Whether a coined word or a unit symbol may be printed: it is not RESERVED, and no part of it
+    gives offence."""
+    return word not in RESERVED and not any(part in word for part in UNFIT_PARTS)
+
+
 class _Coiner:
     """Draws the words of one surface from its stream, in a fixed order, and never uses a word twice
     (in any letter case): no name, label, unit or ID prefix of an instance can be taken for another.
-    A coined word or symbol is never RESERVED either."""
+    A coined word or symbol is always fit to print (``_fit``) too."""
 
     def __init__(self, rng: random.Random) -> None:
         self.rng = rng
@@ -264,7 +299,7 @@ class _Coiner:
             for _ in range(syllables - 1):
                 parts += [self.rng.choice(MIDDLES), self.rng.choice(VOWELS)]
             word = "".join(parts) + self.rng.choice(CODAS)
-            if self.fresh(word) and word not in RESERVED and not any(part in word for part in UNFIT_PARTS):
+            if self.fresh(word) and _fit(word):
                 self.take(word)
                 return word
 
@@ -278,12 +313,14 @@ class _Coiner:
 
     def unit(self) -> tuple[str, str]:
         """A coined unit: its symbol (two or three letters, from its name) and its words, the plural
-        of its name ("vk", "varks")."""
+        of its name ("vk", "varks"). The symbol is fit to print as the name is: never a common word
+        ("so", "set"), which would make the text after every value read as prose, and never offensive
+        (the name "flag" could give the symbol "f" + "ag")."""
         while True:
             name = self.coin(1)
             candidates = (name[0] + name[-1], name[:2], name[0] + name[-2:], name[:3])
             symbol = next((s for s in candidates if s.isalpha() and 2 <= len(s) <= 3 and self.fresh(s)
-                           and s not in RESERVED), None)
+                           and _fit(s)), None)
             if symbol is not None and _plural(name) not in RESERVED:
                 self.take(symbol, _plural(name))
                 return symbol, _plural(name)

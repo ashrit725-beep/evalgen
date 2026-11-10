@@ -4,10 +4,13 @@ replayed, with a synthetic fallback), and whole runs with the mix "weather:class
 of every report and notice, the guards, the traps, unique questions, metamorphic variants and the
 oracle at 100%.
 
-tests/fixtures/weather/raw_feed.json is a bundle as NwsObservations.fetch freezes one, made from the
-latest observations of five stations captured from api.weather.gov on 2026-11-08: each response with
-its "@context" trimmed, KSEA and KLAX in the FeatureCollection shape of the observations endpoint and
-the others as the latest-observation endpoint serves them. KDEN reported no pressure.
+tests/fixtures/weather/raw_feed.json is a bundle as NwsObservations.fetch freezes one (each station's
+HTTP status and the text of its body), made from the latest observations of five stations captured
+from api.weather.gov on 2026-11-08: each response with its "@context" trimmed, KSEA and KLAX in the
+FeatureCollection shape of the observations endpoint and the others as the latest-observation endpoint
+serves them. KDEN reported no pressure. The capture kept the parsed responses, so each body is the
+trimmed response written out again as the API writes its JSON (indented by four spaces), not the
+bytes it sent; a fetch freezes those bytes exactly (test_a_fetch_freezes_each_body_exactly_as_served).
 
 No test touches the network: every test here runs offline (``offline``), and a test that needs the
 API serves it from the fixture or from synthetic observations.
@@ -82,6 +85,17 @@ def offline(monkeypatch):
 
 def fixture_bundle() -> dict:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+def served(station: str) -> dict:
+    """A station's recorded response, read from the body the bundle keeps."""
+    return json.loads(fixture_bundle()["stations"][station]["body"])
+
+
+def answer(document: object, status: int = 200) -> dict:
+    """A station's response as a bundle keeps it: its status and the text of its body (a JSON document, or
+    text as it is)."""
+    return {"status": status, "body": document if isinstance(document, str) else json.dumps(document)}
 
 
 def ts(text: str) -> int:
@@ -263,7 +277,9 @@ def test_the_live_source_reads_the_recorded_observations():
     assert record_problems(WEATHER, records) == []
     assert WEATHER.live.parse(FIXTURE.read_bytes())[0] == records  # the IDs depend on the bytes alone
     head = {"format": wx.BUNDLE_FORMAT, "fetched_at": "2026-11-08T02:40:00Z"}
+    parsed_responses = {**head, "format": "evalgen-nws-bundle/1", "stations": {"KJFK": served("KJFK")}}
     for broken, error in ((b"<html>Service Unavailable</html>", ValueError), (b'{"format": "other"}', ValueError),
+                          (json.dumps(parsed_responses).encode(), ValueError),  # responses kept as parsed: not frozen
                           (json.dumps(head).encode(), KeyError),
                           (json.dumps({**head, "stations": []}).encode(), ValueError),
                           (json.dumps({**head, "stations": {}, "window_hours": None}).encode(), ValueError),
@@ -275,7 +291,7 @@ def test_the_live_source_reads_the_recorded_observations():
 def observation(when: str, *, temp=(11.0, "degC"), wind=(27.792, "km_h-1"), pressure=(101049.84, "Pa"),
                 metar: bool = False, qc: str = "V", station: str = "KJFK", point=(-73.78, 40.65)) -> dict:
     """The fixture's KJFK feature with other values, units, flags or time (test-made, not recorded)."""
-    feature = copy.deepcopy(fixture_bundle()["stations"]["KJFK"])
+    feature = copy.deepcopy(served("KJFK"))
     props = feature["properties"]
     props.update(timestamp=when, stationId=station, rawMessage="KJFK 080251Z 28015KT" if metar else "")
     for name, (value, unit) in (("temperature", temp), ("windSpeed", wind), ("barometricPressure", pressure)):
@@ -285,12 +301,13 @@ def observation(when: str, *, temp=(11.0, "degC"), wind=(27.792, "km_h-1"), pres
 
 
 def bundle_of(stations: dict, fetched_at: datetime = FETCHED) -> bytes:
+    """A bundle of `stations`: each a response as a bundle keeps it (answer), or a failed request's error."""
     return json.dumps({"format": wx.BUNDLE_FORMAT, "fetched_at": fetched_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
                        "window_hours": 24, "url": "test", "stations": stations}).encode("utf-8")
 
 
 def test_the_live_source_drops_what_it_cannot_use_and_keeps_one_observation_an_hour():
-    kept = {"KJFK": {"type": "FeatureCollection", "features": [
+    kept = {"KJFK": answer({"type": "FeatureCollection", "features": [
         observation("2026-11-08T01:51:00+00:00", metar=True),  # the hourly METAR: kept over ...
         observation("2026-11-08T01:55:00+00:00", temp=(12, "degC")),  # ... a later five-minute observation
         observation("2026-11-08T00:05:00+00:00", temp=(53.6, "degF"), wind=(7.72, "m_s-1"), point=None),
@@ -302,8 +319,11 @@ def test_the_live_source_drops_what_it_cannot_use_and_keeps_one_observation_an_h
         observation("2026-11-07T02:39:59+00:00"),  # before the window
         observation("2026-11-08T02:40:00+00:00"),  # at its end, which it excludes
         observation("2026-11-08T00:30:00+00:00", station="KLGA"),  # another station's observation
-    ]}, "KXYZ": fixture_bundle()["stations"]["KJFK"],  # a station the table does not know
-        "KSEA": {"error": "HTTPError: 503 Server Error"}}
+    ]}), "KXYZ": answer(served("KJFK")),  # a station the table does not know
+        "KSEA": answer(served("KSEA"), status=503),  # an error status, whatever its body says
+        "KLAX": {"error": "ReadTimeout: read timed out"},  # a request that failed
+        "KDEN": answer("<html>Service Unavailable</html>"),  # a success whose body is not JSON
+        "KORD": {"status": 200}}  # no body at all
     records, _, _ = WEATHER.live.parse(bundle_of(kept))
     jfk, table = (40.65, -73.78), next((s.lat, s.lon) for s in STATIONS if s.id == "KJFK")
     assert [(r.time, r.values, (r.lat, r.lon)) for r in records] == [
@@ -314,23 +334,21 @@ def test_the_live_source_drops_what_it_cannot_use_and_keeps_one_observation_an_h
 
 
 class FakeResponse:
+    """A response of the NWS API as the requests library gives it: its status and the bytes of its body
+    (a JSON document written as the API writes it, or text, or bytes, as they are)."""
+
     def __init__(self, body: object, status: int = 200) -> None:
-        self.body, self.status_code = body, status
-
-    def raise_for_status(self) -> None:
-        if self.status_code >= 400:
-            raise requests.HTTPError(f"{self.status_code} Server Error")
-
-    def json(self) -> object:
-        if isinstance(self.body, str):
-            raise ValueError("Expecting value: line 1 column 1 (char 0)")
-        return self.body
+        self.status_code = status
+        if isinstance(body, bytes):
+            self.content = body
+        else:
+            self.content = (body if isinstance(body, str) else json.dumps(body, indent=4)).encode("utf-8")
 
 
 def test_fetching_asks_every_station_once_and_freezes_one_bundle(monkeypatch):
     calls = []
-    answers = {"KJFK": FakeResponse({"type": "FeatureCollection", "features": [fixture_bundle()["stations"]["KJFK"]]}),
-               "KORD": FakeResponse("<html>", 200), "KSEA": FakeResponse(fixture_bundle()["stations"]["KSEA"]),
+    answers = {"KJFK": FakeResponse({"type": "FeatureCollection", "features": [served("KJFK")]}),
+               "KORD": FakeResponse("<html>", 200), "KSEA": FakeResponse(served("KSEA")),
                "KDEN": FakeResponse({}, 503)}
 
     def get(url, params=None, headers=None, timeout=None):
@@ -348,8 +366,9 @@ def test_fetching_asks_every_station_once_and_freezes_one_bundle(monkeypatch):
     bundle = json.loads(raw)
     assert (bundle["format"], bundle["fetched_at"], bundle["url"], bundle["user_agent"]) == (
         wx.BUNDLE_FORMAT, "2026-11-08T02:40:00Z", url, USER_AGENT)
-    assert bundle["stations"]["KORD"] == {"error": "ValueError: Expecting value: line 1 column 1 (char 0)"}
-    assert bundle["stations"]["KDEN"] == {"error": "HTTPError: 503 Server Error"}
+    assert {station: response["status"] for station, response in bundle["stations"].items()} == {
+        "KJFK": 200, "KORD": 200, "KSEA": 200, "KDEN": 503}  # every response kept, whatever its status
+    assert bundle["stations"]["KORD"]["body"] == "<html>" and bundle["stations"]["KDEN"]["body"] == "{}"
     records, compiled_at, _ = adapter.parse(raw)
     assert [r.source for r in records] == ["KJFK", "KSEA"] and compiled_at == COMPILED_AT
     def unreachable(url, **kwargs):
@@ -362,8 +381,75 @@ def test_fetching_asks_every_station_once_and_freezes_one_bundle(monkeypatch):
         adapter.fetch()
     assert len(calls) == 1
     monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResponse({}, 500))  # every station fails
-    with pytest.raises(requests.HTTPError, match="500"):
+    with pytest.raises(ValueError, match=r"no station answered with observations \(KJFK: HTTP 500; KORD: HTTP 500; "
+                                         r"KSEA: HTTP 500; KDEN: HTTP 500\)"):
         adapter.fetch()
+
+
+def test_a_fetch_freezes_each_body_exactly_as_served(monkeypatch):
+    """The bundle keeps the text of every body as the API sent it (its layout, its escapes, its non-ASCII
+    characters), so the snapshot's SHA-256 commits to what the NWS served rather than to evalgen's reading
+    of it; the replay reads the same observations from it, and so does any reader of the frozen file."""
+    document = served("KSEA")  # the FeatureCollection of the observations endpoint
+    document["features"][0]["properties"]["stationName"] = "Seattle–Tacoma Int’l, été ✈"
+    bodies = {"KSEA": json.dumps(document, indent=4, ensure_ascii=False).encode("utf-8"),
+              "KJFK": json.dumps(served("KJFK"), separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+              .replace(b'"Feature"', b'"\\u0046eature"', 1)}
+    monkeypatch.setattr(requests, "get", lambda url, **kwargs: FakeResponse(bodies[url.split("/")[-2]]))
+    monkeypatch.setattr(wx, "_utc_now", lambda: FETCHED)
+    adapter = replace(WEATHER.live, stations=("KSEA", "KJFK"), min_records=2)
+    raw, _ = adapter.fetch()
+    frozen = json.loads(raw)["stations"]
+    assert {station: frozen[station]["body"].encode("utf-8") for station in bodies} == bodies  # byte for byte
+    snapshot, again = build_domain_snapshot(Weather(live=adapter), "live", SeedLog(1), fetch=lambda: (raw, "nws://x"))
+    assert again == raw and snapshot.raw_sha256 == sha256_hex(raw) and [r.source for r in snapshot.events] == [
+        "KJFK", "KSEA"]
+    assert adapter.parse(raw) == adapter.parse(bytes(raw))  # the replay reads exactly these records
+
+
+def test_a_station_that_fails_on_its_own_is_recorded_and_the_others_are_kept(monkeypatch, offline):
+    """A timeout reading one station's answer, or a connection dropped after the first station answered, is
+    that station's failure: it is recorded in the bundle and every other station is still asked, so the
+    snapshot stays live. Only a first request that cannot connect ends the fetch at once (the network is
+    down, and every other request would wait for it too), and only a fetch that no station answered falls
+    back to synthetic observations."""
+    served_by = {s.id: [nws_feature(r) for r in WEATHER.synthetic(random.Random(8), 600, COMPILED_AT, 24)
+                        if r.source == s.id] for s in STATIONS}
+    failures = {"KBOS": requests.ReadTimeout("read timed out"), "KORD": requests.Timeout("too slow"),
+                "KDEN": requests.ConnectionError("connection reset by peer")}
+    calls: list[str] = []
+
+    def get(url, **kwargs):
+        station = url.split("/")[-2]
+        calls.append(station)
+        if station in failures:
+            raise failures[station]
+        return FakeResponse({"type": "FeatureCollection", "features": served_by[station]})
+
+    monkeypatch.setattr(requests, "get", get)
+    monkeypatch.setattr(wx, "_utc_now", lambda: FETCHED)
+    assert STATIONS[0].id == "KBOS"  # the first request times out: not a missing network
+    snapshot, raw = build_domain_snapshot(WEATHER, "live", SeedLog(2))
+    assert calls == [s.id for s in STATIONS] and snapshot.source == "nws" and snapshot.note is None
+    frozen = json.loads(raw)["stations"]
+    assert {station: frozen[station] for station in failures} == {
+        "KBOS": {"error": "ReadTimeout: read timed out"}, "KORD": {"error": "Timeout: too slow"},
+        "KDEN": {"error": "ConnectionError: connection reset by peer"}}
+    assert {r.source for r in snapshot.events} == {s.id for s in STATIONS} - set(failures)
+
+    for first in (requests.ConnectionError("Name or service not known"), requests.ConnectTimeout("connect timed out")):
+        calls.clear()
+        failures["KBOS"] = first  # the first request cannot connect: no network, no other request
+        snapshot, raw = build_domain_snapshot(WEATHER, "live", SeedLog(2))
+        assert calls == ["KBOS"] and (snapshot.source, raw) == ("synthetic", None)
+        assert f"nws unavailable ({type(first).__name__}: " in snapshot.note
+    calls.clear()
+    failures.update({s.id: requests.ReadTimeout("read timed out") for s in STATIONS})  # every station times out
+    snapshot, raw = build_domain_snapshot(WEATHER, "live", SeedLog(2))
+    assert calls == [s.id for s in STATIONS] and (snapshot.source, raw) == ("synthetic", None)
+    assert snapshot.note.startswith("nws unavailable (ValueError: no station answered with observations (KBOS: "
+                                    "ReadTimeout: read timed out; ") and f"and {len(STATIONS) - 4} more" in snapshot.note
+    assert offline == []
 
 
 def test_a_live_snapshot_is_frozen_hashed_replayed_and_falls_back(tmp_path, offline):

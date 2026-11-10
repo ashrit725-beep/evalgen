@@ -496,7 +496,9 @@ def test_the_naive_reader_falls_for_the_traps_and_only_for_them(email_runs):
         naive = models["naive"]["traps"]
         assert naive["caught"]["k"] + naive["fell_for_trap"]["k"] == naive["caught"]["n"] > 0
         assert models["naive"]["accuracy"]["rate"] < 1.0 == models["oracle"]["accuracy"]["rate"]
-        assert 0 < models["mock"]["accuracy"]["rate"] < 1 and models["mock"]["format"]["replies"] == 12
+        # The simulated model's errors are seeded by the prompt text, and a run of four instances has a dozen
+        # questions: over all their renderings it is right and wrong in every run.
+        assert 0 < models["mock"]["accuracy_all_renderings"]["rate"] < 1 and models["mock"]["format"]["replies"] == 12
         instances = load_instances(run)
         trapped = {(inst.instance_id, qid) for inst in instances for t in inst.traps for qid in t.fallen}
         for row in read_json(run / "scores" / "naive.json")["rows"]:
