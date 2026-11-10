@@ -37,6 +37,7 @@ class Registry(Generic[T]):
         self.default = default  # the entry a lookup without a name gets
         self.noun = kind.__name__.lower()  # "domain", "genre"
         self._entries: dict[str, T] = {}
+        self._builtin: set[str] = set()  # the names of the package's own entries
         self._discovered = False
 
     def get(self, name: str | None = None) -> T:
@@ -49,6 +50,12 @@ class Registry(Generic[T]):
     def all(self) -> list[T]:
         self._discover()
         return list(self._entries.values())
+
+    def is_builtin(self, name: str) -> bool:
+        """Whether `name` is one of the package's own entries, whose code is public, rather than a
+        plugin's (or no entry at all)."""
+        self._discover()
+        return name in self._builtin
 
     def register(self, entry: T) -> T:
         if not isinstance(entry, self.kind):
@@ -83,9 +90,11 @@ class Registry(Generic[T]):
             package = importlib.import_module(self.package)
             for info in sorted(pkgutil.iter_modules(package.__path__), key=lambda m: m.name):
                 if info.name != "base" and not info.name.startswith("_"):
-                    self.register(self._entry_in(importlib.import_module(f"{self.package}.{info.name}")))
+                    entry = self.register(self._entry_in(importlib.import_module(f"{self.package}.{info.name}")))
+                    self._builtin.add(entry.name)
         except BaseException:
             self._entries = before
+            self._builtin.clear()
             self._discovered = False
             raise
 

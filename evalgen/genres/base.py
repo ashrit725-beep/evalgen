@@ -337,6 +337,14 @@ _UNIT = re.compile(rf"  - (?P<symbol>{_QUOTED}) \((?P<words>{_QUOTED})\): (?:(?P
                    r"(?P<offset>\d+(?:\.\d+)?))?)\.")
 
 
+def printed_glossary(prompt: str) -> str | None:
+    """The glossary block of a prompt exactly as it prints it, its <glossary> tags included (None for a
+    prompt that prints none): what a report shows beside a digest, so that its reader has the words
+    and units the model had."""
+    found = _GLOSSARY.search(prompt)
+    return None if found is None else found.group(0)
+
+
 def parse_glossary(prompt: str) -> Glossary | None:
     """The glossary a prompt prints (render_glossary), read back from its text alone; None for a
     prompt that prints none, as every legacy (0.2.0) prompt does. A glossary with a line it cannot

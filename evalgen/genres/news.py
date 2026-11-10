@@ -4,8 +4,9 @@ An article opens with a headline and a byline that gives its publication time, t
 starts the lede. Every report is a paragraph of its own that states all of the report's fields in
 prose, in one of five sentence forms. Quotes from officials, a background paragraph, the domain's
 chatter lines, section subheads and a sign-off are mixed in. Notices are paragraphs too: an "Update",
-a "Correction" or an editor's note that says it is a retraction or correction notice, placed at the
-top of the article, among its paragraphs or at its end.
+a "Correction", a "Retraction notice" or a "Correction notice", placed at the top of the article, among
+its paragraphs or at its end. No notice is headed as an editor's note: the reading rules count
+editor's notes among the lines that carry no data, as the domains' chatter prints them.
 
     The ukmo operator reported reading by-12345 (reviewed), recorded at 06:12:19 UTC on 12 April 2026 in
     North Sea, at 56.512°N, 3.104°E, with water temperature 12.3 °C (spar) and wave height 1.85 m.
@@ -89,18 +90,18 @@ REPORT_FORMS = {
 NOTE_FRAMES = ("Filing note:", "The {source_label} adds:", "Note from the {source_label}:")
 PLACE_FRAMES = ("Location note:", "Location given:")
 
-# Every notice names itself with words that both the 0.2.0 rules and the record rules name.
+# Every notice names itself with words that both the 0.2.0 rules and the record rules name, and none is
+# headed as an editor's note, which the rules count among the lines without data.
 RETRACTION_FORMS = (
     "Update ({when}): report {ref} has been retracted{reason}; it was not a real {noun} and should be disregarded.",
     "Update, {when}: report {ref} is now marked {phrase}{reason}. This is a retraction: it was not a real {noun}.",
-    "Editor's note ({when}): this is a retraction notice. Report {ref}, listed in this article, was not a real "
-    "{noun}{reason}; disregard it.",
+    "Retraction notice ({when}): report {ref}, listed in this article, was not a real {noun}{reason}; disregard it.",
 )
 CORRECTION_FORMS = (
     "Correction ({when}): the {label} of {noun} {ref} was revised to {new}{qualifier}; it was first given as {old}.",
     "Update, {when}: in a correction, the {label} of report {ref} was revised from {old} to {new}{qualifier}.",
-    "Editor's note ({when}): this is a correction notice. The {label} of report {ref} has been revised to "
-    "{new}{qualifier}; it was first given as {old}.",
+    "Correction notice ({when}): the {label} of report {ref} has been revised to {new}{qualifier}; it was first "
+    "given as {old}.",
 )
 END_HEADINGS = ("Corrections and updates", "Updates to this article")  # over the notices at the end
 

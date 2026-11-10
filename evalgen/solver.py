@@ -4,7 +4,10 @@ oracle  parses every line, applies the reading rules (rules.resolve) and runs ea
         operation chain. It must score 100%: that proves every instance is answerable from the
         text alone, with nothing hidden.
 naive   parses the same lines but skips deduplication and ignores notices, i.e. it treats every
-        line as a separate earthquake. It should lose points exactly where traps matter.
+        report as a separate record. It should lose points exactly where traps matter. In the classic
+        genre every report is one line; the other genres' parsers have already set aside what their
+        rules say is no report (quoted and read-back repeats, message times), so naive never sees a
+        genre's noise: its answers depend only on the reports that a digest holds.
 
 Both receive each question's operation chain (its machine-readable meaning) instead of parsing
 the English wording: the point is to test the digest, not to build a language-understanding

@@ -60,7 +60,7 @@ import requests
 from ..sources import USER_AGENT
 from ..units import Unit
 from ..util import parse_utc_iso
-from .base import RULES_WIDTH, Domain, FieldSpec, Lexicon, Record, Spatial, TrapVocab, record_rules
+from .base import DISTANCE_WORDINGS, RULES_WIDTH, Domain, FieldSpec, Lexicon, Record, Spatial, TrapVocab, record_rules
 
 # ------------------------------------------------------------------------------ units and fields
 
@@ -222,7 +222,7 @@ LEXICON = Lexicon(
                            "whose wind speed was {value} or higher"),
         "at_least(pressure)": ("with a pressure of at least {value}", "whose pressure was {value} or higher"),
         "below(pressure)": ("with a pressure below {value}", "whose pressure was under {value}"),
-        "within_distance": ("within {value} of {place}", "no more than {value} from {place}"),
+        "within_distance": DISTANCE_WORDINGS,  # never read as a range of wind speeds or temperatures
         "time_between": ("recorded between {start} and {end}", "taken from {start} up to {end}"),
         "in_group": ("in the {group} region", "from stations in {group}", "whose region is {group}"),
     },

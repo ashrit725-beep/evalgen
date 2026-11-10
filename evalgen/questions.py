@@ -31,7 +31,7 @@ from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
 from .digest import MONTHS_LONG
-from .domains.base import Domain, FieldSpec, ResolvedRecord, Spatial
+from .domains.base import Domain, FieldSpec, Lexicon, ResolvedRecord, Spatial
 from .domains.earthquakes import EARTHQUAKES
 from .geo import destination
 from .models import Question
@@ -572,7 +572,8 @@ def _wordings(table: Mapping[str, tuple[str, ...]], step: Mapping[str, Any], dom
     return table[name]
 
 
-def _filter_phrase(step: Mapping[str, Any], rng: random.Random, alt_units: bool, domain: Domain) -> str:
+def _filter_phrase(step: Mapping[str, Any], rng: random.Random, alt_units: bool, domain: Domain,
+                   lexicon: Lexicon) -> str:
     s = Step(step, domain.units)
     if s.kind in ("at_least", "below"):
         symbol = s.get("unit")
@@ -589,7 +590,7 @@ def _filter_phrase(step: Mapping[str, Any], rng: random.Random, alt_units: bool,
         values = {"group": s["group"]}
     else:
         raise ValueError(f"unknown filter {s.op!r}")
-    return rng.choice(_wordings(domain.lexicon.filters, step, domain)).format(**values)
+    return rng.choice(_wordings(lexicon.filters, step, domain)).format(**values)
 
 
 def _join(clauses: list[str]) -> str:
@@ -609,10 +610,13 @@ def rounding_text(chain: Sequence[Mapping[str, Any]]) -> str:
 
 
 def phrase_question(question: Question, rng: random.Random, alt_units: bool = False, *,
-                    domain: Domain = EARTHQUAKES) -> str:
-    """Wording for a question. Different RNG draws give paraphrases with the same meaning."""
-    lexicon = domain.lexicon
-    clauses = [_filter_phrase(s, rng, alt_units, domain) for s in question.chain if role(s["op"]) == "filter"]
+                    domain: Domain = EARTHQUAKES, lexicon: Lexicon | None = None) -> str:
+    """Wording for a question. Different RNG draws give paraphrases with the same meaning. `lexicon`
+    words it: the domain's own by default, as legacy prompts are worded, while prompts off the legacy
+    path pass Domain.prompt_lexicon."""
+    lexicon = domain.lexicon if lexicon is None else lexicon
+    clauses = [_filter_phrase(s, rng, alt_units, domain, lexicon) for s in question.chain
+               if role(s["op"]) == "filter"]
     clauses.sort(key=lambda c: c.startswith(RELATIVE_CLAUSES))  # relative clauses read best last
     term = terminal_step(question.chain)
     s = Step(term, domain.units)

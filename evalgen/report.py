@@ -9,9 +9,10 @@ generator audit, and two example instances with digest, questions, answer key an
 A run off the legacy path (any mix but legacy, see evalgen.mix) also gets, per model, accuracy by
 domain (original renderings) and by genre (every rendering, by its own genre), the source gap (public
 minus held-out domains) and the genre gap (public minus held-out genres), each adjusted like the
-template gap, and cross-genre consistency; and, per run, its mix, its inventory of domains and genres
-and the commitment to its private run config. A legacy report has none of these, so it is exactly the
-0.2.0 report.
+template gap, and cross-genre consistency; and, per run, its mix, its inventory of domains and genres,
+which of its held-out sets are public code, and the commitment to its private run config. Its examples
+print their glossary, its answer types that 0.2.0 did not have are explained, and it names the run by
+its ID, never by its folder. A legacy report has none of these, so it is exactly the 0.2.0 report.
 """
 from __future__ import annotations
 
@@ -22,8 +23,10 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any, Callable, Iterable, Mapping
 
+from . import domains, genres
 from .audit import audit_status
 from .domains import get_domain
+from .genres.base import printed_glossary
 from .mix import HELD_OUT, LEGACY, PUBLIC, RANDOM, SPLITS, Inventory, load_run_plugins
 from .models import Instance, Question
 from .ops import KINDS, Step, describe, terminal_step
@@ -251,9 +254,11 @@ def held_out_metrics(rows: list[dict], index: Mapping[tuple, dict], instances: l
     domain in the toy genre alone), and then a model weak on held-out genres alone would otherwise show
     a source gap too, and one weak on held-out domains a genre gap; where the two splits are entirely
     confounded, no stratum compares them and the adjusted gap is n/a rather than a flag on the wrong
-    set. (The template pool needs no stratum: every instance asks about as many public as new
-    questions, and each domain's twin pairs are kept in step.) An instance's split is the one it
-    records; a genre's comes from `inventory`."""
+    set. (The template pool needs no stratum: every instance asks as many public as new questions, give
+    or take one, since an odd number of questions draws the pool of the last one at random (rarely two,
+    when no template of one pool fits its records), and within each domain a twin pair never drifts
+    more than one question apart.) An instance's split is the one it records; a genre's comes from
+    `inventory`."""
     inventory = inventory or Inventory({}, {})
     by_id = {inst.instance_id: inst for inst in instances}
     questions = {(inst.instance_id, q.qid): q for inst in instances for q in inst.questions}
@@ -436,11 +441,22 @@ def _ordered(splits: Mapping[str, str]) -> list[tuple[str, str]]:
     return sorted(splits.items(), key=lambda item: _split_rank(item[1]))
 
 
+def built_in_held_out(inventory: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> dict[str, list[str]]:
+    """The held-out domains and genres of an inventory (as mix_summary words it) that are built into
+    evalgen rather than defined in a plugin: their code is public, so a gap on them tests nothing that
+    a model could not have practised on."""
+    registries = {"domains": domains.REGISTRY, "genres": genres.REGISTRY}
+    return {kind: [name for name, entry in inventory[kind].items()
+                   if entry["split"] == HELD_OUT and registries[kind].is_builtin(name)] for kind in registries}
+
+
 def mix_summary(manifest: Mapping[str, Any], instances: list[Instance]) -> dict:
     """What the run summary says about a run off the legacy path: its mix; its inventory, each domain
-    and genre with its split and how many instances (domains) or renderings (genres) it has; the
-    commitment to its private run config (None without one); and, for a run of several domains, each
-    domain's snapshot. A run that records no inventory is read from its instances (all public)."""
+    and genre with its split and how many instances (domains) or renderings (genres) it has; which of
+    the held-out ones are built in (built_in_held_out); the commitment to its private run config (None
+    without one), and whether that config keeps a published EXAMPLE's nonce; and, for a run of several
+    domains, each domain's snapshot. A run that records no inventory is read from its instances (all
+    public)."""
     inventory = Inventory.of_run(manifest) or Inventory(
         {inst.domain: inst.split or PUBLIC for inst in instances if inst.domain is not None},
         {r.genre: PUBLIC for inst in instances for r in inst.renderings if r.genre is not None})
@@ -456,6 +472,9 @@ def mix_summary(manifest: Mapping[str, Any], instances: list[Instance]) -> dict:
         },
         "private_config_commitment": manifest.get("private_config_commitment"),
     }
+    summary["held_out_built_in"] = built_in_held_out(summary["inventory"])
+    if manifest.get("private_config_example"):  # the config keeps a published EXAMPLE's nonce
+        summary["private_config_example"] = True
     if "snapshots" in manifest:
         summary["snapshots"] = {name: _snapshot_summary(s) for name, s in manifest["snapshots"].items()}
     return summary
@@ -614,9 +633,10 @@ def _sources_lines(run: dict) -> list[str]:
     return lines
 
 
-def _mix_lines(run: dict, run_dir: Path) -> list[str]:
+def _mix_lines(run: dict) -> list[str]:
     """The run bullets of a run off the legacy path: its mix, its domains and genres with their splits,
-    and its private run config."""
+    and its private run config. They name the run by its ID, never by its folder: a report is published,
+    and a folder names a place on the evaluator's machine."""
     inventory = run["inventory"]
 
     def listed(entries: Mapping[str, dict], count: str) -> str:
@@ -635,8 +655,8 @@ def _mix_lines(run: dict, run_dir: Path) -> list[str]:
     if commitment:
         lines.append(f"- **Private run config:** committed as `{commitment[:24]}…`, the SHA-256 of its canonical JSON, "
                      "which can be published before the evaluation; once the config is revealed, "
-                     f"`python cli.py verify-config {run_dir} CONFIG` checks it. The domains and genres it holds out "
-                     "are marked held out above.")
+                     f"`python cli.py verify-config RUN_DIR CONFIG`, with RUN_DIR the folder of this run "
+                     f"(`{run['run_id']}`), checks it. The domains and genres it holds out are marked held out above.")
     else:
         lines.append("- **Private run config:** none, so every domain and genre is public.")
     return lines
@@ -659,11 +679,52 @@ def _cross_genre_section(models: list[dict]) -> list[str]:
     return md + _table(["model", "consistent cross-genre pairs", "95% CI", "questions consistent across genres"], rows)
 
 
-def _held_out_section(models: list[dict]) -> list[str]:
-    """The source and genre gaps of a run with held-out domains or genres; nothing otherwise."""
+def _public_held_out_note(run: dict) -> list[str]:
+    """A warning, for a run whose held-out domains or genres are public, that its gaps test nothing held
+    out: those built into evalgen (held_out_built_in), and every one when the run's private config keeps
+    the nonce of a published EXAMPLE (configs/private.example.json, whose held-out sets are public test
+    code). Nothing when every held-out set comes from a private plugin."""
+    built_in = run.get("held_out_built_in") or {}
+    example = bool(run.get("private_config_example"))
+    parts, count = [], 0
+    for kind in ("domains", "genres"):
+        names = built_in.get(kind) or []
+        if names:
+            parts.append(f"the {kind if len(names) > 1 else kind[:-1]} {_listed(names)}")
+            count += len(names)
+    if not parts and not example:
+        return []
+    held_out = sum(1 for kind in ("domains", "genres") for e in run["inventory"][kind].values()
+                   if e["split"] == HELD_OUT)
+    said = []
+    if parts:
+        said.append(f"{' and '.join(parts)} {'are' if count > 1 else 'is'} held out in this run but built into "
+                    "evalgen, whose code is published.")
+    if example:
+        said.append("This run's private run config keeps the nonce of a published EXAMPLE: it is for demos, its "
+                    "commitment can be guessed, and the published example holds out test code that is public too.")
+    if example or count == held_out:
+        said.append("Anyone can practise on what this run holds out, so the gaps below exercise the metrics, but they "
+                    "test a model on nothing it could not have practised on.")
+    else:
+        said.append(f"Anyone can practise on {'them' if count > 1 else 'it'}: only the held-out domains and genres "
+                    "that private plugins define are new to a model.")
+    said.append("A real evaluation holds out domains and genres defined in private plugins, under a config with a "
+                "nonce of its own.")
+    return ["> ⚠ **Held out, but public:** " + " ".join(said), ""]
+
+
+def _listed(names: list[str]) -> str:
+    """'a', 'a and b', 'a, b and c'."""
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _held_out_section(models: list[dict], run: dict) -> list[str]:
+    """The source and genre gaps of a run with held-out domains or genres; nothing otherwise. A run whose
+    held-out sets are public says so (_public_held_out_note)."""
     if not any(m.get("source_gap") or m.get("genre_gap") for m in models):
         return []
-    md = ["## Public vs held-out domains and genres", "",
+    md = ["## Public vs held-out domains and genres", "", *_public_held_out_note(run),
           "The private run config holds some domains and genres out. In a real evaluation they are defined in private "
           "plugins, so no model can have been tuned to them, while the public ones are in the published code. The "
           "*source gap* compares accuracy on the original renderings of instances from public and from held-out "
@@ -699,6 +760,37 @@ def _held_out_section(models: list[dict]) -> list[str]:
     return md
 
 
+def _a(word: str) -> str:
+    return f"{'an' if word[:1].lower() in 'aeiou' else 'a'} {word}"
+
+
+def _answer_type_legend(types: list[str], instances: Iterable[Instance]) -> list[str]:
+    """What each answer type of the table asks for, when it is not one of the 0.2.0 types: a domain's
+    types are named after it ("weather_temperature"), and a domain whose words are drawn per instance
+    names its fields afresh in every instance, so its types are named after its field keys ("invented_f1")."""
+    meanings: dict[str, str] = {}
+    for name in dict.fromkeys(inst.domain for inst in instances if inst.domain is not None):
+        domain = get_domain(name)
+        if domain.has_surface:
+            words = "which each instance words afresh, as its glossary shows"
+            for spec in domain.fields:
+                meanings.setdefault(spec.answer_type, f'field "{spec.key}" of the {name} domain\'s records, {words}')
+            meanings.setdefault(domain.id_answer_type, f"a record of the {name} domain, named by its ID, {words}")
+            meanings.setdefault(domain.group_answer_type,
+                                f"a group, which the {name} domain's records are counted by, {words}")
+            continue
+        for spec in domain.fields:
+            meanings.setdefault(spec.answer_type, f"the {spec.label} of {_a(domain.noun)}")
+        meanings.setdefault(domain.id_answer_type, f"{_a(domain.noun)}, named by its {domain.id_label}")
+        meanings.setdefault(domain.group_answer_type,
+                            f"{_a(domain.group_label)}, the group that {domain.plural} are counted by")
+    listed = [t for t in types if t not in ANSWER_TYPE_ORDER and t in meanings]
+    if not listed:
+        return []
+    return ["The answer types that the 0.2.0 report did not have:", "",
+            *(f"- `{t}`: {meanings[t]}" for t in listed), ""]
+
+
 def _by_domain_and_genre_section(models: list[dict]) -> list[str]:
     """Accuracy by domain and by genre, for a run off the legacy path; nothing otherwise."""
     if not any("by_domain" in m for m in models):
@@ -719,6 +811,7 @@ def render_markdown(data: dict, run_dir: Path) -> str:
     run, models, audit = data["run"], data["models"], data["generator_audit"]
     instances = {inst.instance_id: inst for inst in load_instances(run_dir)}
     scores = {s["model"]: s for s in (read_json(p) for p in sorted((Path(run_dir) / "scores").glob("*.json")))}
+    legacy = legacy_run(instances.values())  # a legacy report is the 0.2.0 one, word for word
     t = run["traps"]
     planted = ", ".join(f"{_words(kind)} {n}" for kind, n in t["by_kind"].items())
     pools = run["questions_by_pool"]
@@ -761,7 +854,7 @@ def render_markdown(data: dict, run_dir: Path) -> str:
         f"mishandling them changes the answers of {t['affected_questions']} of the {run['questions']} questions "
         f"({t['affected_question_pairs']} trap–question pairs). The rest stay in as plain noise."]
     if "inventory" in run:  # a run off the legacy path
-        md += _mix_lines(run, run_dir)
+        md += _mix_lines(run)
     md += [""]
 
     md += ["## Model accuracy (original renderings)", ""]
@@ -771,10 +864,17 @@ def render_markdown(data: dict, run_dir: Path) -> str:
                    _pct(m["accuracy_all_renderings"]["rate"]),
                    f"{m['format']['strict']} / {m['format']['lenient']} / {m['format']['failed']} "
                    f"({m['format']['api_errors']})"] for m in models])
+    record = _record_word(instances.values())
+    naive = (f"`naive` treats every line as a separate {record} and ignores notices." if legacy else
+             "`naive` reads each digest with its genre's parser, as the oracle does, so the quoted and read-back "
+             "repeats and the message times that the reading rules set aside never reach it; it then treats "
+             f"every report as a separate {record} and ignores notices. Its answers depend only on which reports "
+             "a digest holds, and every rendering of an instance holds the same ones, so its consistency across "
+             "renderings and genres is high by construction: it says nothing about how a reader copes with a "
+             "genre's noise.")
     md += ["`oracle` reads only the digest text and applies the reading rules, so it should score 100%. That shows every "
-           f"item is answerable from the text. `naive` treats every line as a separate {_record_word(instances.values())} "
-           "and ignores notices. `mock` is a *simulated* model with built-in benchmark contamination, used to exercise "
-           "the metrics without API keys; it is not a language model.", ""]
+           f"item is answerable from the text. {naive} `mock` is a *simulated* model with built-in benchmark "
+           "contamination, used to exercise the metrics without API keys; it is not a language model.", ""]
     for m in models:
         f = m["format"]
         if f["api_errors"]:
@@ -822,10 +922,14 @@ def render_markdown(data: dict, run_dir: Path) -> str:
                    _frac(m["consistency"]["questions_fully_consistent"])] for m in models])
     md += _cross_genre_section(models)
 
+    # The 0.2.0 sentence "each twin pair is used equally often" overstates the balance, but a legacy report
+    # keeps it: legacy reports are the 0.2.0 ones, byte for byte. A run off the legacy path says what holds.
+    balance = ("each twin pair is used equally often" if legacy else
+               "within each domain the two templates of a twin pair are never more than one question apart")
     md += ["## Seen vs new templates", "",
            "Public templates are published (a model may have trained on them). Each new template is composed for this "
            "run as a twin of one public template: the same final operation and number of filters, but a different "
-           "filter combination, and each twin pair is used equally often. The *adjusted* gap compares the pools like "
+           f"filter combination, and {balance}. The *adjusted* gap compares the pools like "
            "for like, within strata of equal code-computed difficulty (how many traps change the answer, and whether "
            "the filters matter), so that the pools' different trap exposure is not mistaken for overfitting. A large "
            f"positive adjusted gap flags overfitting to the published skeletons (flag: > {int(GAP_FLAG * 100)} points "
@@ -842,7 +946,7 @@ def render_markdown(data: dict, run_dir: Path) -> str:
                    f"{100 * m['gap']['public_minus_new']:+.1f} pts ({100 * m['gap']['ci95'][0]:+.0f} to "
                    f"{100 * m['gap']['ci95'][1]:+.0f})", adjusted(m),
                    "⚠ overfitting?" if m["gap"]["flagged"] else "—"] for m in models])
-    md += _held_out_section(models)
+    md += _held_out_section(models, run)
 
     md += ["## Trap catch rate", "",
            "Counted over (load-bearing trap, affected question, rendering) triples. *Caught* = answered correctly; "
@@ -857,6 +961,8 @@ def render_markdown(data: dict, run_dir: Path) -> str:
     md += ["## Accuracy by answer type (original renderings)", ""]
     md += _table(["model"] + types, [[m["model"]] + [_frac(m["by_answer_type"][a]) if a in m["by_answer_type"] else "—"
                                                     for a in types] for m in models])
+    if not legacy:
+        md += _answer_type_legend(types, instances.values())
     md += _by_domain_and_genre_section(models)
 
     sc, sample, verdicts = audit["self_check"], audit["human_sample"], audit["verdicts"]
@@ -885,8 +991,10 @@ def render_markdown(data: dict, run_dir: Path) -> str:
         pending = sum(1 for f in data["forecasts"] if f.get("status") != "resolved")
         outcomes = [f["outcome"] for f in data["forecasts"] if f.get("status") == "resolved"]
         if pending:
+            where = run_dir if legacy else "RUN_DIR"  # off the legacy path, no folder of the evaluator's machine
             md += [f"{len(data['forecasts'])} forecast question(s); {pending} still pending. Run `python cli.py resolve "
-                   f"{run_dir}` after the window closes (+2 h grace) to grade them.", ""]
+                   f"{where}` after the window closes (+2 h grace) to grade them"
+                   + ("" if legacy else f", with RUN_DIR the folder of this run (`{run['run_id']}`)") + ".", ""]
         else:
             md += [f"All {len(outcomes)} forecast question(s) resolved against the USGS catalogue "
                    f"({sum(outcomes)} with a qualifying earthquake). Unanswered forecasts count as 0.5.", ""]
@@ -926,10 +1034,14 @@ def _example(number: int, inst: Instance, scores: dict, model_names: list[str]) 
     records = ("earthquake", "earthquakes") if inst.domain is None else _nouns(inst)
     md = [f"### Example {number}: `{inst.instance_id}` ({count(len(inst.event_ids), *records)}, "
           f"{count(len(inst.reports), 'report line')}, {count(len(inst.notices), 'notice')}, "
-          f"{count(len(inst.questions), 'question')})", "",
-          f"**Digest (original rendering `v0`{_in_genre(v0.genre, ', ')}, exactly as sent to the models):**", "",
-          "```text", v0.digest, "```", "",
-          "**Questions, code-computed key and model answers (`v0`):**", ""]
+          f"{count(len(inst.questions), 'question')})", ""]
+    glossary = printed_glossary(v0.prompt)
+    if glossary is not None:  # off the legacy path: the words and units the digest is written in
+        md += ["**Glossary (printed before the digest in every prompt of this instance, exactly as sent to the "
+               "models):**", "", "```text", glossary, "```", ""]
+    md += [f"**Digest (original rendering `v0`{_in_genre(v0.genre, ', ')}, exactly as sent to the models):**", "",
+           "```text", v0.digest, "```", "",
+           "**Questions, code-computed key and model answers (`v0`):**", ""]
     table_rows = []
     for q in inst.questions:
         cells = [q.qid, f"{q.template_id} ({q.pool})", v0.question_text[q.qid], _show_answer(inst.answer_key[q.qid], q.answer_type)]

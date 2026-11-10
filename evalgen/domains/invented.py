@@ -184,7 +184,7 @@ CODAS = ("b", "d", "g", "k", "l", "ll", "m", "n", "nd", "p", "rk", "rm", "rn", "
 UNFIT_PARTS = ("fuck", "slut", "nig", "fag", "porn", "dick", "cunt", "shit", "rape", "nazi", "kill", "dead", "bum",
                "tit", "wank", "cum", "sex", "god", "hell", "anal", "anus", "piss", "turd", "jew", "gay", "homo",
                "tard", "slag", "nob", "gun", "drug", "pot", "hag", "git", "wog", "fart", "prat", "slob", "snot",
-               "sod", "pig", "wop", "kike", "paki")
+               "sod", "pig", "wop", "kike", "paki", "fuk")  # "fuk": syllables coin it ("f" "u" "k"; a unit "fuks")
 # Nor are coined words and unit symbols ever one of these: a real unit's name or symbol (so that no
 # outside knowledge applies to an invented unit), a word the digests print around the data ("lists",
 # "ref", "PM"), a word the scorer reads specially ("tie", "or"), a common English word of two or three

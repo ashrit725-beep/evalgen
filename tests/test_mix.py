@@ -33,7 +33,8 @@ from evalgen.mix import (HELD_OUT, NONCE_ADVICE, PUBLIC, Inventory, MixError, Un
                          config_commitment, config_problems, is_example_nonce, load_plugin, plan_mix, verify_config,
                          verify_private_config)
 from evalgen.pipeline import GenerateConfig, question_specs, run_name
-from evalgen.report import answer_family, load_instances, model_metrics
+from evalgen.genres.base import printed_glossary
+from evalgen.report import ANSWER_TYPE_ORDER, _public_held_out_note, answer_family, load_instances, model_metrics
 from evalgen.scoring import is_correct, normalize
 from evalgen.seeds import SeedLog, derive_seed
 from evalgen.util import canonical_json, read_json, slugify, write_json
@@ -411,6 +412,13 @@ def test_a_config_commits_to_the_bytes_of_the_plugins_it_pins(registries, tmp_pa
     assert manifest["private_config_commitment"] == config_commitment(data)  # the SHA-256 is part of what is committed
     assert [entry["sha256"] for entry in manifest["plugins"]] == [
         sha, hashlib.sha256(genre_file.read_bytes()).hexdigest()]
+    # The run names its plugins as the config does and the config by its file name, so it names no folder of
+    # this machine that the revealed config does not; a later step of the same process finds them all the same.
+    assert [entry["path"] for entry in manifest["plugins"]] == ["private/toy_domain.py", "private/toy_genre.py"]
+    assert manifest["config"]["private_config"] == "private.json"
+    assert str(tmp_path) not in (run / "manifest.json").read_text(encoding="utf-8")
+    pipeline.run_models(run, ["oracle"], log=quiet)
+    assert get_domain("toy").name == "toy" and get_genre("toy-telex").name == "toy-telex"
 
     marker = tmp_path / "EXECUTED.txt"
     planted = f"\nfrom pathlib import Path as _P\n_P({str(marker)!r}).write_text('ran')\n"
@@ -497,6 +505,8 @@ def test_a_guessable_nonce_is_refused_and_the_example_nonce_is_flagged(registrie
         warnings = [line for line in log if "WARNING" in line]
         assert bool(warnings) == warned
         assert all("EXAMPLE" in line and "recover which domains and genres" in line for line in warnings)
+        # The manifest says so too, for the report's warning that the held-out sets are public.
+        assert read_json(tmp_path / path.stem / "manifest.json").get("private_config_example", False) == warned
 
 
 # ----------------------------------------------------------------------------------- plugins
@@ -844,6 +854,66 @@ def test_the_report_records_the_inventory_the_commitment_and_the_gaps(held_out_r
                  "| model | classic (public) | toy-telex (held out) |", "in the toy-telex genre"):
         assert text in markdown, text
     assert any(commitment[:16] in line for line in held_out_run.log)
+    # Every held-out set of this run comes from a plugin, so the report gives no warning that one is public.
+    assert run["held_out_built_in"] == {"domains": [], "genres": []} and "Held out, but public" not in markdown
+
+
+def test_a_report_says_which_held_out_sets_are_public_code_and_shows_what_the_models_read(registries, tmp_path):
+    """Off the legacy path a report says which held-out domains and genres are built into evalgen (their
+    code is public), prints each example's glossary before its digest, words the balance of the template
+    pools and the naive reader as they are, says what the answer types that 0.2.0 did not have ask for, and
+    names the run by its ID, never by its folder."""
+    config = write_config(tmp_path / "private.json", held_out_genres=("news",), plugins=(TOY_PLUGIN,))
+    run = pipeline.generate(GenerateConfig(seed=5, instances=10, mix="random", private_config=str(config)),
+                            tmp_path / "run", log=quiet)
+    pipeline.run_models(run, ["oracle", "naive", "mock"], log=quiet)
+    pipeline.score_run(run, log=quiet)
+    pipeline.build_report(run, log=quiet)
+    data = read_json(run / "report.json")
+    markdown = (run / "report.md").read_text(encoding="utf-8")
+    assert data["run"]["held_out_built_in"] == {"domains": [], "genres": ["news"]}
+    assert any(m.get("genre_gap") for m in data["models"]) and "## Public vs held-out domains and genres" in markdown
+    assert ("> ⚠ **Held out, but public:** the genre news is held out in this run but built into evalgen" in markdown
+            and "only the held-out domains and genres that private plugins define are new to a model" in markdown)
+    instances = {inst.instance_id: inst for inst in load_instances(run)}
+    for iid in data["examples"]:
+        glossary = printed_glossary(instances[iid].renderings[0].prompt)
+        assert glossary.startswith("<glossary>\n") and f"```text\n{glossary}\n```" in markdown
+        assert markdown.index(glossary) < markdown.index(instances[iid].renderings[0].digest)
+    assert "the two templates of a twin pair are never more than one question apart" in markdown
+    assert "each twin pair is used equally often" not in markdown  # the 0.2.0 sentence, which legacy reports keep
+    assert "`naive` reads each digest with its genre's parser" in markdown and "treats every line" not in markdown
+    types = {t for m in data["models"] for t in m["by_answer_type"]} - set(ANSWER_TYPE_ORDER)
+    assert types and all(f"- `{t}`: " in markdown for t in types)
+    for text in (markdown, (run / "report.json").read_text(encoding="utf-8")):
+        assert str(tmp_path) not in text and str(run) not in text
+    hint = f"`python cli.py verify-config RUN_DIR CONFIG`, with RUN_DIR the folder of this run (`{run.name}`)"
+    assert hint in markdown
+
+
+def test_the_warning_on_public_held_out_sets_says_whether_anything_is_held_out_at_all():
+    inventory = {"domains": {"neo": {"split": PUBLIC}, "weather": {"split": HELD_OUT}},
+                 "genres": {"news": {"split": PUBLIC}, "email": {"split": HELD_OUT}, "radio": {"split": HELD_OUT}}}
+    every = {"inventory": inventory, "held_out_built_in": {"domains": ["weather"], "genres": ["email", "radio"]}}
+    (note, blank), = [_public_held_out_note(every)]
+    assert note.startswith("> ⚠ **Held out, but public:** the domain weather and the genres email and radio are held "
+                           "out in this run but built into evalgen") and blank == ""
+    assert "Anyone can practise on what this run holds out, so the gaps below exercise the metrics" in note
+    some = {"inventory": inventory, "held_out_built_in": {"domains": [], "genres": ["radio"]}}
+    note = _public_held_out_note(some)[0]
+    assert "the genre radio is held out" in note and "Anyone can practise on it: only the held-out domains" in note
+    none = {"inventory": inventory, "held_out_built_in": {"domains": [], "genres": []}}
+    assert _public_held_out_note(none) == []
+    # A config that keeps the published example's nonce: whatever it holds out is public.
+    note = _public_held_out_note(dict(none, private_config_example=True))[0]
+    assert "keeps the nonce of a published EXAMPLE" in note and "Anyone can practise on what this run holds out" in note
+
+
+def test_a_registry_knows_its_built_in_entries_from_its_plugins(registries):
+    assert domains.REGISTRY.is_builtin("weather") and genres.REGISTRY.is_builtin("radio")
+    load_plugin(TOY_PLUGIN)
+    assert get_domain("toy").name == "toy" and not domains.REGISTRY.is_builtin("toy")
+    assert not domains.REGISTRY.is_builtin("tides") and not genres.REGISTRY.is_builtin("weather")
 
 
 # ------------------------------------------------------------------------------------ legacy

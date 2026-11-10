@@ -228,7 +228,8 @@ def test_every_broadcast_is_named_by_the_reading_rules_and_reads_back_alone(toys
     for domain in (EARTHQUAKES, toys.toy, dressed):
         rules = " ".join(domain.rules_text().split()).lower()
         if domain is EARTHQUAKES:
-            assert domain.rules_text().startswith(READING_RULES)
+            # its prompts off the legacy path print the 0.2.0 rules 1-8 word for word
+            assert READING_RULES[READING_RULES.index("1. "):READING_RULES.index("\n9. ")] in domain.rules_text()
             words = RULE_WORDS
             notices = [Notice("retraction", "us7000abcd", 1_780_000_000, reason="quarry blast"),
                        Notice("correction", "us7000abcd", 1_780_000_900, new_mag=4.2, old_mag=4.57, mag_type="mb")]

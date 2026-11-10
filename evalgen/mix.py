@@ -31,7 +31,9 @@ Plugins are Python files outside the public repository (paths relative to the co
 domain (``DOMAIN``), a genre (``GENRE``) or both. Each is given by its path and the SHA-256 of its
 bytes, or by its path alone (a string). They are loaded before any name is looked up, and a plugin
 whose bytes differ from the SHA-256 its config gives is refused, unexecuted, at generation and at every
-later step; a run records each plugin's path and SHA-256. Every later step (run, score, report,
+later step; a run records each plugin's path as the config names it, and the SHA-256 of its bytes (it
+records the config itself by its file name alone: a run names no folder of the evaluator's machine that
+the revealed config does not). Every later step (run, score, report,
 resolve) loads them again from the config, which the evaluator passes again (``--private-config``)
 and the run's commitment authenticates (``load_run_plugins``): evalgen never executes a file that a
 run directory names by itself, so reporting on a run received from someone else runs none of its
@@ -356,6 +358,12 @@ def verify_private_config(path: str | Path, run_dir: str | Path) -> bool:
 
 Entrant = Union[Domain, Genre]  # Union, not "X | Y": this alias is evaluated at import (Python 3.9)
 
+# The plugin files of each private run config whose plugins this process has loaded (plan_mix, or
+# load_run_plugins with the config), by the config's commitment: what a later step of the same process
+# registers again without the config. A run names its plugins as its config does, often relative to the
+# config's folder, so the run alone does not say where they are on this machine.
+_CONFIG_PLUGINS: dict[str, tuple[Path, ...]] = {}
+
 
 def load_plugin(path: str | Path, sha256: str | None = None) -> list[Entrant]:
     """Register what a plugin file defines: its domain (``DOMAIN``), its genre (``GENRE``) or both,
@@ -386,17 +394,20 @@ def load_plugin(path: str | Path, sha256: str | None = None) -> list[Entrant]:
 
 
 def plugin_record(config: PrivateConfig) -> list[dict[str, str]]:
-    """The plugins of a config as a manifest records them, in the config's order: each file's absolute
-    path and SHA-256."""
-    return [{"path": str(path), "sha256": sha256_hex(path.read_bytes())} for path in config.plugins]
+    """The plugins of a config as a manifest records them, in the config's order: each file's path as
+    the config names it (relative to the config, unless the config gives an absolute path), so that a
+    run names no folder of the evaluator's machine that the revealed config does not, and the SHA-256
+    of its bytes."""
+    named = [entry if isinstance(entry, str) else entry["path"] for entry in config.data.get("plugins", [])]
+    return [{"path": name, "sha256": sha256_hex(path.read_bytes())} for name, path in zip(named, config.plugins)]
 
 
 def load_run_plugins(manifest: Mapping[str, Any], private_config: str | Path | None = None,
                      log: Log = None) -> list[str]:
     """Register the plugins a run was generated with (its manifest lists them, each with its SHA-256),
     so that a later step, maybe in a new process, can read, answer, score and report the run's domains
-    and genres; and return the paths of those whose bytes have changed since generation, which a report
-    records. A legacy run, or any run without plugins, needs none.
+    and genres; and return those whose bytes have changed since generation, as the manifest names them
+    (plugin_record), which a report records. A legacy run, or any run without plugins, needs none.
 
     evalgen never runs code that a run directory names by itself: a run received from someone else
     could name any file. A plugin is loaded from the evaluator's private run config (`private_config`):
@@ -404,34 +415,41 @@ def load_run_plugins(manifest: Mapping[str, Any], private_config: str | Path | N
     to the config. A plugin that the config gives with a SHA-256 is refused (MixError) if its bytes
     differ from it, as at generation: the commitment covers it. One given by its path alone whose bytes
     differ from the manifest's record is loaded all the same, as the evaluator asked, with a warning to
-    `log`. Without a config, only plugins that this process has run already (it generated the run) are
-    registered again; any other plugin, and a config the run did not commit to, raise MixError, as does
-    a plugin that is gone."""
+    `log`. Without a config, only plugins that this process has run already, as the plugins of the config
+    that the run committed to (it generated the run, or loaded them for an earlier step), are registered
+    again (_CONFIG_PLUGINS), and none of their code runs again; any other plugin, and a config the run did
+    not commit to, raise MixError, as does a plugin that is gone."""
     entries = list(manifest.get("plugins") or ())
+    recorded = manifest.get("private_config_commitment")
     if private_config is not None:
         config = read_private_config(private_config)
-        recorded = manifest.get("private_config_commitment")
         if recorded is None or not verify_config(config.data, recorded):
             raise MixError(f"{private_config} is not the private run config that this run committed to")
         plugins = config.pinned()
         if len(plugins) != len(entries):
             raise MixError("the run's manifest does not list the plugins of its private run config")
     else:
-        plugins = [(Path(entry["path"]), None) for entry in entries]
-        strange = [str(path) for path, _ in plugins if not registry.executed(path)]
+        paths = _CONFIG_PLUGINS.get(recorded) if isinstance(recorded, str) else None
+        if paths is None or len(paths) != len(entries):
+            paths = (None,) * len(entries)
+        strange = [str(entry["path"]) for entry, path in zip(entries, paths)
+                   if path is None or not registry.executed(path)]
         if strange:
             raise MixError(f"the run was generated with the plugins {', '.join(strange)}: pass its private run config "
                            "(--private-config) to load them. evalgen never runs code that a run directory names by "
                            "itself")
+        plugins = [(path, None) for path in paths]
     changed = []
     for (path, sha256), entry in zip(plugins, entries):
         if not path.is_file():
             raise MixError(f"the run was generated with the plugin {path}, which is gone: restore it to read the run")
         if sha256 is None and entry.get("sha256") and sha256_hex(path.read_bytes()) != entry["sha256"]:
-            changed.append(str(path))
+            changed.append(str(entry["path"]))
             if log is not None:
                 log(f"warning: the plugin {path} has changed since the run was generated")
         load_plugin(path, sha256=sha256)
+    if private_config is not None and plugins:
+        _CONFIG_PLUGINS[recorded] = tuple(path for path, _ in plugins)
     return changed
 
 
@@ -560,6 +578,8 @@ def plan_mix(mix: str, private_config: str | Path | None = None) -> Plan:
     else:
         for path, sha256 in config.pinned():  # a plugin whose bytes are not those the config gives is refused
             load_plugin(path, sha256=sha256)
+        if config.plugins:
+            _CONFIG_PLUGINS[config.commitment] = config.plugins
         for name in config.domains:
             _domain(name)
         for name in config.genres:

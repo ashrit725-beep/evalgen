@@ -1,6 +1,7 @@
 """The news genre (evalgen/genres/news.py): a digest as a news article, with a headline, a byline, a
 dateline and lede, one paragraph per report, quotes, a background paragraph, chatter and a sign-off,
-and notices as "Update", "Correction" or editor's-note paragraphs. It is written and read from the
+and notices as "Update", "Correction", "Retraction notice" or "Correction notice" paragraphs (never an
+editor's note, which the rules count among the lines without data). It is written and read from the
 prompt's glossary alone, for the earthquake domain's 0.2.0 reports and notices and for the records of
 the test-only toy domain (toy_domain.py) with and without a position and with a surface drawn per
 instance. Every style reads back to exactly its reports and notices, every notice wording is named
@@ -49,8 +50,8 @@ RULE_WORDS_020 = {"retraction": ("retraction", "retracted", "withdrawn"), "corre
 RECORD_RULE_WORDS = {"retraction": ("retraction", "was not a real"), "correction": ("correction", "revised")}
 NOTICE_FORMS = {  # how each wording opens, and a phrase only it has
     ("retraction", "Update ("): "has been retracted", ("retraction", "Update, "): "is now marked",
-    ("retraction", "Editor's note ("): "this is a retraction notice", ("correction", "Correction ("): "was revised to",
-    ("correction", "Update, "): "in a correction", ("correction", "Editor's note ("): "this is a correction notice",
+    ("retraction", "Retraction notice ("): "listed in this article", ("correction", "Correction ("): "was revised to",
+    ("correction", "Update, "): "in a correction", ("correction", "Correction notice ("): "has been revised to",
 }
 FORM_MARKERS = {
     "attributed": re.compile(r"^The .+ reported .+ \(.+\), recorded at .+, with .+\."),
@@ -263,6 +264,7 @@ def test_every_notice_wording_is_named_by_the_reading_rules_and_reads_back_alone
             assert any(word.lower() in lowered for word in words[notice.kind]), paragraph
             assert any(word in lowered for word in RULE_WORDS_020[notice.kind]), paragraph
             assert (f"was not a real {domain.noun}" if notice.kind == "retraction" else "revised") in lowered
+            assert not lowered.startswith("editor's note"), paragraph  # the rules call those lines without data
             forms.update((kind, opening) for (kind, opening), phrase in NOTICE_FORMS.items()
                          if kind == notice.kind and paragraph.startswith(opening) and phrase in paragraph)
         assert forms == set(NOTICE_FORMS), sorted(set(NOTICE_FORMS) - forms)

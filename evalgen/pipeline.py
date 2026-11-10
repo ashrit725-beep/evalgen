@@ -94,9 +94,14 @@ class GenerateConfig:
 
     def to_dict(self) -> dict[str, Any]:
         """The config as the manifest records it: asdict without the 0.3.0 options that keep their
-        defaults, so that a legacy run records exactly the 0.2.0 config."""
+        defaults, so that a legacy run records exactly the 0.2.0 config. The private run config is
+        recorded by its file name alone: the manifest commits to its content (private_config_commitment),
+        and its folder names a place on the evaluator's machine, which a published run should not."""
         defaults = {f.name: f.default for f in fields(self)}
-        return {k: v for k, v in asdict(self).items() if k not in self.OPTIONAL_KEYS or v != defaults[k]}
+        recorded = {k: v for k, v in asdict(self).items() if k not in self.OPTIONAL_KEYS or v != defaults[k]}
+        if recorded.get("private_config") is not None:
+            recorded["private_config"] = Path(recorded["private_config"]).name
+        return recorded
 
 
 # ------------------------------------------------------------------------------ generate
@@ -193,9 +198,9 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
     its domain and `split` (whether the domain is public or held out in this run) and each rendering
     its genre, a variant avoids the original's style only when it is in the original's genre, and
     every prompt is a non-legacy one (prompt.domain_prompt), with the domain's glossary, which the
-    genre renders the records through. A domain with surface words draws them for the instance (only
-    off the legacy path, so the legacy seed paths never change), and every step uses the bound
-    domain."""
+    genre renders the records through, and questions worded by Domain.prompt_lexicon. A domain with
+    surface words draws them for the instance (only off the legacy path, so the legacy seed paths never
+    change), and every step uses the bound domain."""
     if genre_plan is None and domain.name != EARTHQUAKES.name:
         raise ValueError(f"only earthquakes have a legacy rendering: {domain.name} needs a genre plan")
     if genre_plan is not None and len(genre_plan) != cfg.variants + 1:
@@ -205,6 +210,7 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
     domain, events, questions, answer_key = composed.domain, composed.events, composed.questions, composed.answer_key
     units = domain.units
     glossary = None if genre_plan is None else domain.glossary()
+    lexicon = None if genre_plan is None else domain.prompt_lexicon()  # None: the 0.2.0 wording
     # Off the legacy path a trap counts only careless readings that hold at the printed precision (traps).
     trap_config = TrapConfig(id_style="sequence" if snapshot.source == "usgs" else "random",
                              guarded=genre_plan is not None)
@@ -237,7 +243,8 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
         digest = genre.render(RenderContext(reports, notices, chatter, compiled_at=snapshot.compiled_at,
                                             window_hours=snapshot.window_hours, style=style, rng=rng, domain=domain,
                                             glossary=glossary))
-        texts = {q.qid: phrase_question(q, rng, alt_units=v > 0 and rng.random() < 0.5, domain=domain)
+        texts = {q.qid: phrase_question(q, rng, alt_units=v > 0 and rng.random() < 0.5, domain=domain,
+                                        lexicon=lexicon)
                  for q in questions}
         items = [(q.qid, texts[q.qid], q.answer_type, q.unit) for q in questions]
         if forecast:
@@ -402,12 +409,15 @@ def _templates_entry(plan: Plan, new_templates: Mapping[str, Sequence[Template]]
 
 def _mix_entry(plan: Plan) -> dict[str, Any]:
     """What the manifest records about the mix off the legacy path: the run's inventory and, when a
-    private run config was given, its commitment and the plugins that later steps load again."""
+    private run config was given, its commitment, whether it keeps a published EXAMPLE's nonce, and the
+    plugins that later steps load again."""
     if plan.legacy:
         return {}
     entry: dict[str, Any] = {"inventory": plan.inventory.to_dict()}
     if plan.config is not None:
         entry["private_config_commitment"] = plan.config.commitment  # publishable, like the seed commitment
+        if plan.config.example:  # a published example's config: for demos, its held-out sets public
+            entry["private_config_example"] = True
         entry["plugins"] = plugin_record(plan.config)
     return entry
 

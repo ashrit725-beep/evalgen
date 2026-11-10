@@ -20,8 +20,8 @@ Without the new options, 0.3.0 writes the 0.2.0 run byte for byte.
 ```bash
 python3 -m pip install -r requirements.txt     # requests + pytest (Python 3.10+)
 python3 cli.py demo --seed 42 --instances 20  # fully offline, no API keys, ~1 second
-python3 cli.py demo --mix random               # 0.3.0: every domain and genre, offline, ~4 seconds
-python3 -m pytest -q                           # 675 tests, ~2 minutes
+python3 cli.py demo --mix random               # 0.3.0: every domain and genre, offline, ~3 seconds
+python3 -m pytest -q                           # 697 tests, ~2 minutes
 ```
 
 The demo writes `runs/demo-synthetic-seed42/report.md` (and `report.json`); with `--mix random` it
@@ -54,10 +54,13 @@ Why fine-tuning on the benchmark buys nothing beyond the real skill:
    is an inconsistency. This needs no ground truth and catches surface-pattern memorisation.
 5. **Seen vs new templates.** Public templates are assumed to be in training data. Each run
    composes a "twin" of every public template, with the same final operation and the same number
-   of filters but a different filter combination, and each twin pair is used equally often. The
-   gap is then compared like for like: within strata of equal code-computed difficulty (how many
-   traps can change the answer, and whether the filters matter). A large adjusted gap therefore
-   flags overfitting to the published skeletons, not a difference in trap exposure.
+   of filters but a different filter combination, and the composer keeps the two pools in balance:
+   each instance asks about as many public as new questions, and a template never runs
+   more than one question ahead of its twin once the twin has been used (off the legacy path, from
+   the first question; see [Questions](#3-questions-evalgenquestionspy-evalgenopspy)). The gap is
+   then compared like for like: within strata of equal code-computed difficulty (how many traps can
+   change the answer, and whether the filters matter). A large adjusted gap therefore flags
+   overfitting to the published skeletons, not a difference in trap exposure.
 6. **Delayed-resolution forecasts** (`--source usgs`): "Will an M4.5+ quake occur within R km of L in
    the next 24 h?" The answer does not exist yet, so it cannot be memorised. It is graded later with
    `resolve` (Brier score).
@@ -106,18 +109,28 @@ evaluation is over. It looks like this (`configs/private.example.json` is a publ
 {"nonce": "<at least 32 random hexadecimal digits: secrets.token_hex(16)>",
  "domains": {"public": ["earthquakes", "weather"], "held_out": ["tides"]},
  "genres": {"public": ["classic", "news"], "held_out": ["fax"]},
- "plugins": ["plugins/tides.py", "plugins/fax.py"],
+ "plugins": [{"path": "plugins/tides.py", "sha256": "<the SHA-256 of the file's bytes>"},
+             {"path": "plugins/fax.py", "sha256": "<...>"}],
  "note": "optional"}
 ```
 
+A plugin is given by its path (relative to the config) and the SHA-256 of its bytes, or by its path
+alone, as a plain string.
+
 `generate --private-config` checks the config whole before it writes anything. It needs the three
 required keys, distinct names that each appear in one list only, and names the registries know
-once the plugins (paths relative to the config) are loaded. The manifest then records:
+once the plugins are loaded. The config is read strictly: a file that gives a key twice in one JSON
+object is malformed (JSON readers keep one of the two values, so such a file could show one config
+and verify as another), and so is a plugin whose registry refuses its entry, for example one that
+takes a built-in name such as `earthquakes` or `classic`. Both stop `generate` with `error: ...`
+(exit status 2) before anything is written. The manifest then records:
 
 - the **commitment**, `sha256(canonical_json(config))` (sorted keys, no whitespace). It covers the
-  whole config (the nonce, both lists, the plugin paths and the note), and it can be published
-  before the evaluation, like the seed commitment;
-- each **plugin's** path and SHA-256.
+  whole config (the nonce, both lists, the plugin entries with their SHA-256 and the note), and it
+  can be published before the evaluation, like the seed commitment;
+- each **plugin**, by its path as the config names it and the SHA-256 of its bytes, and the config
+  itself by its file name alone. A run names no folder of the evaluator's machine that the revealed
+  config does not.
 
 The random nonce stops anyone from recovering a config of a few names from its hash, so `generate`
 refuses a nonce that looks typed: fewer than 32 hexadecimal digits, fewer than 8 different digits,
@@ -125,23 +138,37 @@ or one run of digits repeated. No check can prove a nonce random. A nonce that c
 as the published example's does, is accepted with a loud warning that its commitment can be
 guessed, so that the held-out metrics can be demonstrated offline.
 
-**Verifying a revealed config.** After the evaluation, the evaluator reveals the config and its
-plugins, and, as in 0.2.0, the seed and its nonce. `python3 cli.py verify-config RUN_DIR CONFIG`
-prints `ok` (exit status 0) when the config hashes to the run's commitment, and `MISMATCH` (1)
-otherwise; a run generated without a config has no commitment to check (2). The hash is over
-canonical JSON, so re-indenting the file changes nothing, while any change to a name, the nonce, a
-plugin path or the note breaks the match. The commitment does not cover the plugins' bytes. They
-are pinned by the SHA-256 that the manifest records, and by regeneration: with the same evalgen
-code, `generate` with the revealed seed, mix and config, its plugins at the same relative paths,
-rebuilds the same instances and prompts byte for byte.
+**What the evaluator publishes, and when.** Before the evaluation: the two commitments that
+`generate` records in the manifest, `seed_commitment` and `private_config_commitment`, and nothing
+else (not the manifest, which holds the seed, nor the config or its plugins). After it: the config,
+its plugin files, and the seed with its nonce.
+
+**Verifying a revealed config.** `python3 cli.py verify-config RUN_DIR CONFIG` prints `ok` (exit
+status 0) when the config hashes to the run's commitment, and `MISMATCH` (1) otherwise, including
+for a file that is not JSON. It exits with `error: ...` (2) for a run generated without a config,
+which has no commitment to check, and for a config that gives a key twice in one object, which reads
+as two configs. The hash is over canonical JSON, so re-indenting the file or reordering its keys
+changes nothing, while any change to a name, to the order of a list, the nonce, a plugin entry or the
+note breaks the match.
+
+**What the commitment pins of a plugin.** A plugin given with its SHA-256 is pinned by the
+commitment: `generate` and every later step check its bytes before any of it runs and refuse a file
+whose bytes differ, so a held-out domain or genre cannot change once the commitment is published,
+and what runs is exactly the bytes that were checked (compiled from them, with no bytecode cache read
+or written beside the plugin). A plugin given by its path alone is committed to by that path only:
+the manifest records its SHA-256, a later step loads a changed file with a warning and lists it in
+`report.json` (`plugins_changed`), and only a regeneration of the revealed run shows what it was.
+Regenerating the run with the same evalgen code, the revealed seed, mix and config, and its plugins
+at the same relative paths, rebuilds the same instances and prompts byte for byte.
 
 **Plugins never come from a run directory.** A plugin is a Python file that defines `DOMAIN`,
 `GENRE` or both. `generate` loads the config's plugins before it looks up any name. Every later
 step in a new process (`run`, `score`, `report`, `resolve`) loads them only from the config that
 the evaluator passes with `--private-config`, after checking that config against the run's
-commitment. A plugin whose bytes changed since generation is loaded with a warning and listed in
-`report.json` (`plugins_changed`). evalgen never executes a file that a run directory names by
-itself, so reporting on a run received from someone else runs none of its code.
+commitment; within one process, a later step registers again the plugins that the process already
+ran for that config, without running any of their code again. evalgen never executes a file that a
+run directory names by itself, so reporting on a run received from someone else runs none of its
+code.
 
 ---
 
@@ -250,7 +277,7 @@ whatever text it returned (usually none), flagged in the report, and asked again
 | model spec | what it is |
 |---|---|
 | `oracle` | rule-based solver that reads **only the digest text**, applies the reading rules and runs each question's operation chain; must score 100% |
-| `naive` | the same parser, but every line counts as a separate quake and notices are ignored; it loses points only where traps (alone or combined) change the answer, apart from rare display-rounding effects |
+| `naive` | the same parser, but every report counts as a separate quake and notices are ignored; it loses points only where traps (alone or combined) change the answer, apart from rare display-rounding effects. Off the legacy path it reads each digest with its genre's parser, as the oracle does, which has already set aside the quoted and read-back repeats and the message times that the rules say are no reports. So it never meets a genre's noise, and its consistency across renderings and genres is high by construction |
 | `mock` | a **simulated** contaminated model, not a language model. It answers public-template questions correctly 92% of the time (80% when paraphrased) and new-template questions 62% of the time; its errors are seeded by the prompt text and usually fall into the traps. It exists to exercise every metric without API keys. `mock:held_out=P` (0.3.0) also lowers each of those chances by P on an instance from a held-out domain and by P on a rendering in a held-out genre, as a model tuned to the public ones would be (`held_out_domains=P` or `held_out_genres=P` for one kind, joined with `+` for different penalties) |
 | `anthropic[:model]` | Anthropic Messages API (`ANTHROPIC_API_KEY`; default model `claude-opus-5-5`, override with `:model` or `EVALGEN_ANTHROPIC_MODEL`) |
 | `openai[:model]` | OpenAI Chat Completions (`OPENAI_API_KEY`; default `gpt-4.1`, override with `:model` or `EVALGEN_OPENAI_MODEL`; `OPENAI_BASE_URL` points it at any compatible server) |
@@ -342,9 +369,15 @@ and may restate thresholds in the other unit, which the guards make safe.
 **Templates.** Public `P01–P12` cover all ten final operations (assume they have been trained on).
 New `N01–N12` are composed each run, one twin per public template: the same terminal and number of
 filters, a different filter set, and never a public skeleton. Questions are balanced between the
-two pools, and a template never runs more than one question ahead of its twin. That matters when
-run-wide uniqueness exhausts a template with few possible parameters: a region-only template
-cannot run out while its twin keeps going.
+two pools: each instance asks as many public as new questions, give or take one (an odd number of
+questions draws the pool of its last one at random), or rarely two, when no template of one pool fits
+an instance's records (2 instances in 300). And once a template's twin has been used, the
+template never runs more than one question ahead of it. That matters when run-wide uniqueness
+exhausts a template with few possible parameters: a region-only template cannot run out while its
+twin keeps going. Under the 0.2.0 rule, which legacy runs keep, a template can run ahead freely until
+its twin is first used, so a legacy run can end with a pair several questions apart (the legacy
+demo, `cli.py demo`, asks P12 four times and N12 once). Off the legacy path the rule holds from a
+run's first question, so every twin pair of every domain ends at most one question apart.
 
 **No repeats.** A question's identity ignores station labels and the order of the two regions in a
 comparison, so "Utah or Nevada?" and "Nevada or Utah?" count as the same question.
@@ -509,8 +542,18 @@ genre-neutral and say:
 - that lines which are neither reports nor notices change nothing.
 
 Weather, neo and invented add rules of their own. Earthquake prompts off the legacy path print the
-0.2.0 rules followed by the rules on message times and repeats (rules 10 and 11). Legacy prompts
-print the 0.2.0 rules alone.
+0.2.0 rules 1–8 word for word, followed by three rules: rule 9, which now also names the section
+titles, greetings and signatures that the other genres print among the lines without data, and the
+rules on message times and repeats (rules 10 and 11). They are headed `Reading rules:`, as every
+domain's are, since the 0.2.0 heading ("identical for every digest") is not true of a run whose
+domains print different rules. Legacy prompts print the 0.2.0 rules alone, heading included.
+
+**Question wording.** Off the legacy path, a radius is worded "within 40 km of …" or "at a distance
+of no more than 40 km from …", in every domain with a location. The 0.2.0 wording "no more than 40 km
+from …", joined to a depth threshold, reads as a range of depths ("with a depth of 16 km or more and
+no more than 40 km from station US-28"). Earthquake questions off the legacy path keep every other
+0.2.0 wording and draw exactly as before (`Domain.prompt_lexicon`); legacy prompts keep the 0.2.0
+wording (see Limitations).
 
 **The glossary.** Every prompt off the legacy path prints its domain's glossary between the reading
 rules and the digest, in `<glossary>` tags. It gives:
@@ -521,21 +564,24 @@ rules and the digest, in `<glossary>` tags. It gives:
 
 Words are quoted as JSON strings. `render_glossary` refuses a glossary that would not read back
 exactly, and `parse_glossary` reads it from the prompt text. A glossary never names the domain's
-registry name, which a held-out plugin keeps private. One instance of the invented domain printed:
+registry name, which a held-out plugin keeps private. The ID pattern describes IDs lower-cased, and
+digests print them as their sources file them (`KJFK-48213`, `KX/40512`), so the glossary says that
+the pattern ignores letter case. One instance of the invented domain printed (seed 7, mix
+`invented:classic`, `inst-000`):
 
 ```
 <glossary>
 Glossary: what the records in the digest are, and how their values are written.
-- Records: each is one "krag" (plural "krags"), identified by its "chit number"; IDs match the pattern [a-z]{2,3}[-/.]\d{5}.
+- Records: each is one "crate" (plural "crates"), identified by its "tally number"; IDs match the pattern [a-z]{2,3}[-/.]\d{5}, ignoring letter case.
 - Sources: each report is filed by one "carrier".
-- Groups: each record belongs to one "bay".
+- Groups: each record belongs to one "warehouse".
 - Statuses: a "verified" report settles a record's values; a "provisional" report does not.
-- Field "f1": "tallied cubage", stored in "pd" to 1 decimal place.
-  - "pd" ("plods"): the stored unit.
-  - "ru" ("ruds"): a value in "pd" is the value in "ru" × 0.1.
-- Field "f2": "storage spell", stored in "pn" to 1 decimal place.
-  - "pn" ("prurns"): the stored unit.
-  - "hl" ("hols"): a value in "pn" is the value in "hl" × 0.25.
+- Field "f1": "tal bulk", stored in "lg" to 1 decimal place.
+  - "lg" ("ligs"): the stored unit.
+  - "bl" ("bals"): a value in "lg" is the value in "bl" × 50.
+- Field "f2": "pik stretch", stored in "bb" to 1 decimal place.
+  - "bb" ("brubs"): the stored unit.
+  - "zk" ("zisks"): a value in "bb" is the value in "zk" × 60.
 </glossary>
 ```
 
@@ -574,11 +620,18 @@ instance stores its surface, so that scoring and the audit can read it back.
   - Synthetic observations follow each station's climate normals, a daily cycle and a weather
     system per region.
   - The live source asks api.weather.gov for the last 24 hours of each station's observations,
-    with the User-Agent the API requires, and freezes them as one JSON bundle (`raw_feed.json`). It
-    drops every observation that lacks a value, or holds one that NWS quality control rejected or
-    questioned, so no value is ever invented, and keeps one observation per station and UTC hour
-    (the hourly METAR when there is one). Fewer than 40 usable observations fall back to synthetic
-    data.
+    with the User-Agent the API requires, and freezes every response as it was served, its HTTP
+    status and the exact text of its body, in one JSON bundle (`raw_feed.json`, format
+    `evalgen-nws-bundle/2`). The snapshot's `raw_sha256` therefore commits to what NWS served;
+    bundles of the earlier format 1 can no longer be replayed. Reading the bundle back drops every
+    observation that lacks a value, or holds one that NWS quality control rejected or questioned, so
+    no value is ever invented, and keeps one observation per station and UTC hour (the hourly METAR
+    when there is one).
+  - A station that fails on its own (an error status, a timeout, a dropped connection after the
+    first station answered, a body that is not UTF-8) is recorded as failed, and the others are
+    kept. Only a first request that cannot connect, a fetch in which no station answers with
+    observations, or fewer than 40 usable observations fall back to synthetic data, with a note
+    naming the failures.
 - **neo**: relative velocity plays the primary role and miss distance the secondary one; H appears
   in thresholds only.
   - 1 au is 149,597,870.7 km, and 1 LD is 384,400 km as this domain defines it.
@@ -597,8 +650,12 @@ instance stores its surface, so that scoring and the audit can read it back.
   - Each instance draws its record noun, ID label and prefix, source and group labels, a coined
     name for every depot and agency, its field labels, its units (a stored unit and one or two
     others with exact stated conversions such as × 12 or × 0.25), its trap words and its chatter.
-  - Coined words never repeat within an instance. They are never a real unit, a word the digests
-    print around the data, or a word that gives offence.
+  - Coined words never repeat within an instance. No coined name, label, unit name or unit symbol
+    is a real unit, a word the digests print around the data, a common English word of two or three
+    letters (a symbol follows every value, so "a heft of 15.3 so" must not read as prose) or a word
+    with an offensive part; unit symbols are checked like names. Some seeds therefore draw other
+    surfaces than they did before this check (`tests/fixtures/invented/pinned.json` was pinned again;
+    the synthetic world is unchanged).
   - Values come from fixed log-normal distributions per canonical depot, so margins and steps keep
     their meaning under every surface. Tolerances are relative, so they hold in every drawn unit.
   - An extra rule says that the glossary is the only definition of its words.
@@ -613,16 +670,18 @@ exact inverse of `render`).
 | genre | a digest is | notices appear as | noise that carries no data |
 |---|---|---|---|
 | `classic` | the 0.2.0 bulletin, prose, wire and log lines, and their version for every other domain | NOTICE, RETRACTION, UPDATE, CORRECTION and Revised lines | header, section heads, chatter lines |
-| `news` | an article: headline, byline and dateline, then one paragraph per report, in five sentence forms | "Update" and "Correction" paragraphs and editor's notes, at the top, among the paragraphs or at the end | quotes from officials, a background paragraph, subheads, a sign-off |
+| `news` | an article: headline, byline and dateline, then one paragraph per report, in five sentence forms | "Update", "Correction", "Retraction notice" and "Correction notice" paragraphs, at the top, among the paragraphs or at the end | quotes from officials, a background paragraph, subheads, a sign-off, editor's notes |
 | `email` | a thread of messages with From, To, Date and Subject headers; reports as bullets, sentences or pasted blocks | a forwarded message, every one | greetings, sign-offs, signatures, remarks; replies that quote earlier messages with ">" |
-| `chat` | a channel log of `[HH:MM] user: message` lines; reports in four voices | messages, pinned messages, or the pinned board above the log | joins, greetings, acknowledgements, off-topic remarks; quotes and read-backs of earlier messages |
+| `chat` | a channel log of `[HH:MM] user: message` lines; reports in four voices | messages, pinned messages, or the pinned board above the log; the casual ones open with their keyword and time ("heads up: RETRACTION issued …: …") | joins, greetings, acknowledgements, off-topic remarks; quotes and read-backs of earlier messages |
 | `table` | CSV or markdown, one row per report, columns named in the glossary's words | numbered footnotes | a caption, comment lines |
-| `form` | one field or incident report form per report, in four frames (boxed, ruled, numbered, dotted) | amendment forms | form codes and serial numbers, sent and relayed times, preparers, blank checker and signature fields |
+| `form` | one field or incident report form per report, in four frames (boxed, ruled, numbered, dotted) | amendment forms | form codes and serial numbers, sent and relayed times, preparers, blank checker and signature fields (a blank field that shares a boxed row with another shows a line, `________`, so the row cannot be misread) |
 | `radio` | the transcript of a reporting net: stations call in and read out their reports | dispatch broadcasts to all stations | call signs, procedure words, radio checks, acknowledgements; Control's read-backs |
 
 - **The rules settle every line.** A notice names itself with words every domain's rules name:
   RETRACTION, CORRECTION, "revised", or a phrase of the domain's trap vocabulary, which its rules
-  quote. A test per genre checks every wording that genre can print.
+  quote. Every notice is worded as the notice itself, never as a pointer to another notice, and none
+  is headed as a kind of line that the rules say carries no data (an editor's note, a reminder). A
+  test per genre checks every wording that genre can print.
   - Quotes (email, chat) repeat an earlier report or notice word for word, and read-backs (chat,
     radio) repeat a report's ID and values; the rules say that a repeat is not a new report or
     notice. Forwarded and relayed messages count, once: every email notice is forwarded, and chat
@@ -686,7 +745,13 @@ legacy path is named after its mix, as in `runs/random-synthetic-seed7`.
 | `--source live` | generate, demo | off the legacy path, each domain's own live source: USGS, NWS or JPL, and synthetic data, with a note, for a domain without one. `--source usgs` still names the USGS feed (off the legacy path, only for a mix of earthquakes alone), and `--feed hour` is for legacy runs only |
 | `--snapshot-file PATH` | generate | replays one frozen live feed: the USGS GeoJSON of a legacy run, as in 0.2.0, or the frozen feed of the one domain of a mix |
 | `--snapshot-dir DIR` | generate | replays an earlier run's snapshot folder, off the legacy path. Each domain is rebuilt as that run read it: from its frozen bytes, or from the seed where that run drew synthetic records. A live run of several domains thus regenerates byte for byte, offline |
-| `verify-config RUN CONFIG` | its own command | checks a revealed config against a run's commitment: `ok` (exit status 0), `MISMATCH` (1), or no commitment to check (2) |
+| `verify-config RUN CONFIG` | its own command | checks a revealed config against a run's commitment: `ok` (exit status 0), `MISMATCH` (1, also for a file that is not JSON), or `error:` (2: no commitment to check, or a config that gives a key twice) |
+
+Frozen bytes are parsed and checked before the run directory is created, on the legacy path too: a
+`--snapshot-file`, and every frozen feed under `--snapshot-dir`. A domain without a live source,
+another source's bytes (even bytes that parse to no records) or a missing file stops `generate` with
+`error: ...` and exit status 2, as does a private config that is malformed or names a plugin that its
+registry refuses.
 | `mock:held_out=P` | run `--models` | the simulated model with a penalty for held-out sets (see the model table above). Without a penalty it draws exactly as before |
 
 ### Report additions
@@ -713,7 +778,8 @@ the share of rows in strata that both sides have.
   a group or a time), the trap exposure (0, 1 or 2+) and whether the filters matter; the template
   gap uses the last two. The genre gap's strata also tell the original rendering from a reworded
   variant. Neither gap needs a stratum for the template pool, because every instance asks about as
-  many public questions as new ones, and each domain's twin pairs are kept in step.
+  many public questions as new ones (see Templates), and within each domain a twin pair never drifts
+  more than one question apart.
 - **Each gap is also stratified by the other split.** The source gap's strata hold the split of the
   original rendering's genre, and the genre gap's strata the split of the instance's domain. A mix
   that ties held-out domains to held-out genres therefore cannot make a model that is weak on one
@@ -723,8 +789,27 @@ the share of rows in strata that both sides have.
 
 The run section adds the mix, the inventory (each domain with its instances, each genre with its
 renderings), each domain's snapshot and the config's commitment. The console summary shows each
-model's adjusted source and genre gaps and its cross-genre consistency. Legacy reports are
-unchanged.
+model's adjusted source and genre gaps and its cross-genre consistency. Besides:
+
+- **Held-out sets that are public code.** `report.json` lists the held-out domains and genres that
+  are built into evalgen (`run.held_out_built_in`), and the held-out section then warns that anyone
+  can practise on them. It warns, too, when the run's config keeps the nonce of the published example
+  (the manifest's `private_config_example`), whose held-out sets are public test code. So a demo is
+  not taken for a test of anything held out.
+- **What the models read.** Each example instance prints its glossary before its digest, exactly as
+  the prompts print it: an invented domain's digest cannot be read without it. The answer types that
+  0.2.0 did not have (`weather_temperature`, `invented_f1`, ...) are explained under their table.
+- **Templates by domain.** `by_template` in `report.json` is keyed `<domain>/<template>`
+  (`weather/N01`), since every domain has a P01 of its own and twins of its own; legacy reports keep
+  the bare template IDs.
+- **Accurate wording.** The naive reader and the balance of the template pools are described as
+  they are off the legacy path (see the model table and Templates above).
+- **No local paths.** The report names the run by its ID, never by its folder (in the
+  `verify-config` hint and the forecast hint), and a changed plugin by its path as the config names
+  it.
+
+Legacy reports are unchanged, word for word, including two sentences of the 0.2.0 text that say more
+than holds (see Limitations).
 
 Validation with the simulated model, on synthetic data, one run per row. Each run was answered by
 the oracle, the naive reader, the mock, and the mock with a penalty of 0.2 or 0.3 on held-out
@@ -735,16 +820,18 @@ points:
 |---|---|---|---|---|---|
 | random; neo, invented; table, form, radio | 42 | 100 | ±10, 87% | ±6, 97% | each flagged by its own gap only |
 | the same | 43 | 300 | ±6, 93% | ±3, 99% | each flagged by its own gap only |
-| random; invented; radio | 44 | 300 | ±6, 93% | ±5, 95% | each flagged by its own gap only |
+| random; invented; radio | 44 | 300 | ±7, 93% | ±5, 96% | each flagged by its own gap only |
 | random; toy; toy-telex (the example config) | 45 | 300 | ±6, 89% | ±3, 99% | each flagged by its own gap only |
-| the same (the demo, 0.3 penalties only) | 42 | 20 | ±33, 41% | ±15, 60% | the genre penalty flagged; the domain penalty missed |
-| `earthquakes,toy:toy-telex`; toy; toy-telex | 46 | 100 | ±14, 60% | ±8, 49% | each flagged by its own gap only, but a 0.2 domain penalty missed |
+| the same (the demo, 0.3 penalties only) | 42 | 20 | ±35, 41% | ±17, 60% | the genre penalty flagged; the domain penalty missed |
+| `earthquakes,toy:toy-telex`; toy; toy-telex | 46 | 100 | ±14, 60% | ±8, 49% | each flagged by its own gap only |
 | `earthquakes:classic,toy:toy-telex`; toy; toy-telex | 47 | 60 | n/a | n/a | neither: the raw gaps move together |
 
+(The half-widths are those of the penalised mocks, measured with the released code; a reworded
+prompt reseeds the mock's errors, so a gap's value moves a little with the code, its width hardly.)
 In every one of these runs, the oracle, the naive reader and the mock without a penalty were
 flagged by neither gap. In the partly tied mix, a penalty on held-out domains also raised the raw
-genre gap (by 12 to 19 points), and a penalty on held-out genres the raw source gap; the adjusted
-gaps kept each penalty on its own gap.
+genre gap (by 12 to 18 points), and a penalty on held-out genres the raw source gap (by 11 to 14);
+the adjusted gaps kept each penalty on its own gap.
 
 ### The 0.2.0 regression guarantee
 
@@ -787,9 +874,12 @@ So the 0.2.0 study in the README regenerates byte for byte under 0.3.0.
   calls.
 * Runs off the legacy path (0.3.0) regenerate exactly from the seed, the mix and the private config
   with its plugins. Live sources are frozen per domain, and `--snapshot-dir` replays them. Runs off
-  the legacy path made by development versions of 0.3.0 before commit `f8a0835` (their manifests
-  still say 0.2.0) do not regenerate byte for byte: traps, twins, the codec and the rules changed
-  in that commit. Legacy runs from those versions do.
+  the legacy path made by development versions of 0.3.0 do not regenerate byte for byte under the
+  release. Before commit `f8a0835` (their manifests still say 0.2.0) traps, twins, the codec and the
+  rules changed. The last commits before the release changed what those prompts print (the
+  glossary's ID line, the earthquake rules' heading and rule 9, the wording of radii, some news,
+  chat and form wordings, and the invented domain's surfaces) and the format of the frozen NWS
+  bundle. Legacy runs from every one of those versions do regenerate.
 * Python 3.9 for 0.3.0 was checked by script, because pytest is not installed for the system
   Python 3.9 of the machine that built it. `tests/test_python39.py` scans the code for what 3.9
   cannot run. Under Python 3.9.6, the 0.2.0 regression run matches the hashes its test pins, and
@@ -825,7 +915,7 @@ evalgen/
   forecast.py           delayed-resolution questions and resolution (USGS FDSN)
   audit.py report.py    audit sample; report.md / report.json
   pipeline.py           one cycle end to end
-tests/                  675 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
+tests/                  697 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
                         digest parsing, reply parsing and scoring, USGS and forecasts, adapters, report,
                         head to head, reading-rules coverage, CLI; each domain and genre, every domain in
                         every genre (test_matrix.py), mixes and held-out sets, the 0.2.0 regression test;
@@ -886,12 +976,21 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
 * **Built-in held-out examples are public.** `configs/private.example.json` holds out the test-only
   toy domain and toy-telex genre from `tests/`, and a config may mark built-in domains and genres
   held out. Both exercise the machinery and the metrics, but they hide nothing from an adversary
-  who reads the repository, and the example's nonce is public, so its commitment can be guessed.
+  who reads the repository (a report says so, for a built-in held-out set and for a config that keeps
+  the example's nonce), and the example's nonce is public, so its commitment can be guessed.
   Real held-out sets come from private plugins, with a nonce of their own.
-* **What the commitment binds.** It binds the config's content: the names, the nonce and the
-  plugin paths. It does not bind the plugins' bytes, which the private manifest records and a
-  regeneration of the revealed run checks. The nonce check refuses words, constants and patterns,
-  but it cannot prove a nonce random.
+* **What the commitment binds.** It binds the config's content: the names, the nonce and each
+  plugin's entry. A plugin given with its SHA-256 is bound by its bytes too, and evalgen refuses to
+  run one whose bytes differ. A plugin given by its path alone is bound by that path only: its bytes
+  could change after the commitment is published, which the manifest's record and a regeneration of
+  the revealed run show only afterwards. Give every real plugin its SHA-256. The nonce check refuses
+  words, constants and patterns, but it cannot prove a nonce random.
+* **What a run's manifest names.** It names the private config by its file name and each plugin by
+  its path as the config gives it, so a run names no folder that the revealed config does not. The
+  0.2.0 fields that name files are as they were: the frozen feed a run replays (`snapshot_file`, as
+  given on the command line), the run it came from (`replay.source_run`, an absolute path), and
+  `--snapshot-dir` as given. A legacy report also names the run's folder, as given, in its forecast
+  hint. Check those before publishing a run directory.
 * **Plugins are code.** They run in the evaluator's process, and a run that uses them needs
   `--private-config` again for `run`, `score`, `report` and `resolve` in a new process.
 
@@ -918,6 +1017,16 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
 
 **Domains and genres**
 
+* **The 0.2.0 text that legacy output keeps.** Legacy prompts and reports are the 0.2.0 ones, byte
+  for byte, so three flaws that 0.3.0 fixes off the legacy path remain in them. A radius can be
+  worded "no more than 40 km from …" beside a depth threshold, which reads as a range of depths
+  (rarely: none of the 1,191 question texts of the 0.2.0 regression run; 2 of 471 in a 40-instance
+  random mix before 0.3.0 reworded it there). The report says that "each twin pair is used
+  equally often", which the 0.2.0 composer does not do (see Templates). And it describes the naive
+  reader as treating "every line" as a separate quake, which is true of the classic digest only.
+* **Invented words.** Coined names of four or five letters, and their unit words, can still be English
+  words (a unit called "halls"), and the list of offensive parts that no coined word may contain is a
+  list: it is not a filter of every word that gives offence.
 * **Live sources: USGS, NWS and JPL only.** The invented domain has none, by design. The NWS and
   JPL CAD adapters have been exercised only against recorded API responses and fake transports,
   not yet against the live APIs.

@@ -4,10 +4,14 @@ Everything here reproduces 0.2.0 exactly. The field specs carry the 0.2.0 thresh
 margins, the op names are the 0.2.0 operation names (``ops.ALIASES``), the lexicon holds every 0.2.0
 question wording, and the trap vocabulary is the one the 0.2.0 digests print. Legacy prompts print the
 0.2.0 reading rules (``rules.READING_RULES``) alone; a prompt off the legacy path, in any genre, prints
-them followed by the two genre-neutral rules that every genre's quotes, read-backs, forwards and message
-times need (``GENRE_READING_RULES``, ``rules_text``). Records stay the 0.2.0 types: ``models.Event``
-(the snapshot) and ``models.Report`` (a digest line); genres other than classic write and read Reports
-and magnitude corrections in the generic form of every domain (``to_generic``, ``from_generic``).
+them as every other domain's prompts head theirs ("Reading rules:", since the rules of a run's domains
+differ), with rule 9 naming the greetings and signatures that emails and chats print, followed by the
+two genre-neutral rules that every genre's quotes, read-backs, forwards and message times need
+(``GENRE_READING_RULES``, ``rules_text``). Its questions there drop the one 0.2.0 wording that reads as
+a range beside a depth ("with a depth of 16 km or more and no more than 40 km from ..."):
+``GENRE_LEXICON``, ``prompt_lexicon``. Records stay the 0.2.0 types: ``models.Event`` (the snapshot)
+and ``models.Report`` (a digest line); genres other than classic write and read Reports and magnitude
+corrections in the generic form of every domain (``to_generic``, ``from_generic``).
 
 Magnitude plays the *primary* role of the role-based templates (thresholds, rankings, the largest
 value and its time) and depth the *secondary* one (thresholds, the deepest and the shallowest value).
@@ -31,8 +35,8 @@ from ..rules import READING_RULES, Mishandle, resolve
 from ..sources import (MIN_POOL_EVENTS, USER_AGENT, fetch_usgs, generate_synthetic, mimic_event_id, new_event_id,
                        parse_usgs_geojson)
 from ..units import LENGTH
-from .base import (REPEAT_RULE, Domain, FieldSpec, Forecaster, Lexicon, RecordReport, Spatial, TrapVocab,
-                   message_time_rule, numbered_rules)
+from .base import (DISTANCE_WORDINGS, REPEAT_RULE, Domain, FieldSpec, Forecaster, Lexicon, RecordReport, Spatial,
+                   TrapVocab, message_time_rule, numbered_rules)
 
 # Margin guards: no event may sit this close to a threshold, so that display rounding (0.1 km or mi,
 # 0.001 degrees, minute-precision times) can never change a correct answer. Magnitudes need no
@@ -111,6 +115,21 @@ LEXICON = Lexicon(
     },
 )
 
+
+def genre_lexicon(lexicon: Lexicon) -> Lexicon:
+    """The wording of earthquake questions off the legacy path: `lexicon`, except that a radius is never
+    worded "no more than {value} from {place}", which beside a depth threshold reads as a range of depths
+    ("with a depth of 16 km or more and no more than 40 km from station US-28"). A lexicon that still
+    words radii as 0.2.0 did takes DISTANCE_WORDINGS instead, which name the distance before the number
+    (as many wordings, so the draws stay the same); any other wording of its own is kept. Legacy prompts
+    keep the 0.2.0 wording."""
+    if lexicon.filters.get("within_distance") != LEXICON.filters["within_distance"]:
+        return lexicon
+    return replace(lexicon, filters={**lexicon.filters, "within_distance": DISTANCE_WORDINGS})
+
+
+GENRE_LEXICON = genre_lexicon(LEXICON)
+
 # The wording of the 0.2.0 traps. traps.py plants with the sources and reasons; digest.py prints the
 # notes and notices (solver.py parses exactly these phrases), and rules.READING_RULES names them.
 TRAP_VOCAB = TrapVocab(
@@ -127,9 +146,31 @@ TRAP_VOCAB = TrapVocab(
 # repeats that every record domain's rules give (domains.base.record_rules, rules 6 and 7). Chat logs,
 # email threads and radio transcripts all carry repeats and message times; a legacy prompt is the 0.2.0
 # classic digest, which carries neither, and prints READING_RULES alone.
-GENRE_READING_RULES = READING_RULES + numbered_rules(
-    (message_time_rule("an earthquake"), REPEAT_RULE),
-    start=len(re.findall(r"^\d+\. ", READING_RULES, flags=re.MULTILINE)) + 1)
+#
+# Two parts of the 0.2.0 text change off the legacy path. Its heading says the rules are "identical for
+# every digest", which a run of several domains contradicts (each prints its own), so the rules are
+# headed as every domain's are (record_rules). And rule 9 lists the lines without data that the 0.2.0
+# digest prints; the other genres also print section titles (subheads, captions), greetings and
+# signatures, which the rule now names as the record rules do.
+LEGACY_RULES_HEADING = "Reading rules (identical for every digest):\n"
+RULES_HEADING = "Reading rules:\n"
+LEGACY_RULE_9 = ("9. Lines that are neither reports nor notices (headers, station status, editor's notes,\n"
+                 "   reminders) carry no data and change nothing.\n")
+OTHER_LINES_RULE = ("Lines that are neither reports nor notices (headers, section titles, station status, editor's "
+                    "notes, reminders, greetings, signatures) carry no data and change nothing.")
+
+
+def _genre_reading_rules() -> str:
+    """GENRE_READING_RULES, from the 0.2.0 text: refuses to build if that text ever changes."""
+    if not READING_RULES.startswith(LEGACY_RULES_HEADING) or not READING_RULES.endswith(LEGACY_RULE_9):
+        raise ValueError("the 0.2.0 reading rules no longer open and end as GENRE_READING_RULES expects")
+    rules_1_to_8 = READING_RULES[len(LEGACY_RULES_HEADING):-len(LEGACY_RULE_9)]
+    last = len(re.findall(r"^\d+\. ", READING_RULES, flags=re.MULTILINE))
+    return RULES_HEADING + rules_1_to_8 + numbered_rules(
+        (OTHER_LINES_RULE, message_time_rule("an earthquake"), REPEAT_RULE), start=last)
+
+
+GENRE_READING_RULES = _genre_reading_rules()
 
 # USGS-mode instances ask whether an M4.5+ quake will strike near a point in the next 24 hours; the
 # USGS catalogue answers it later (see forecast.py).
@@ -194,9 +235,16 @@ class Earthquakes(Domain):
 
     def rules_text(self) -> str:
         """The reading rules of an earthquake prompt off the legacy path (GENRE_READING_RULES): the 0.2.0
-        rules and the genre-neutral rules on message times and repeats. A legacy prompt prints the 0.2.0
-        rules (rules.READING_RULES) alone."""
+        rules, headed as every domain's are and with rule 9 naming every kind of line without data, and
+        the genre-neutral rules on message times and repeats. A legacy prompt prints the 0.2.0 rules
+        (rules.READING_RULES) alone."""
         return GENRE_READING_RULES
+
+    def prompt_lexicon(self) -> Lexicon:
+        """The wording of questions off the legacy path (genre_lexicon; GENRE_LEXICON for this domain's
+        own words): its lexicon, as bound to an instance's words, less the 0.2.0 wording of a radius that
+        reads as a range of depths. Legacy prompts word them with the 0.2.0 lexicon (``lexicon``)."""
+        return genre_lexicon(self.lexicon)
 
     def resolve(self, reports: Sequence[Report], notices: Sequence[Notice],
                 mishandle: Mishandle | None = None) -> list[Event]:

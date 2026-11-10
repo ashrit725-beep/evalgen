@@ -7,6 +7,7 @@ import hashlib
 import itertools
 import json
 import random
+import re
 from dataclasses import asdict, fields, replace
 from types import SimpleNamespace
 
@@ -17,8 +18,10 @@ from evalgen.adapters import Task, _perturb
 from evalgen.digest import render_notice, render_report
 from evalgen.domains import DEFAULT_DOMAIN, get_domain
 from evalgen.domains.base import (REPEAT_RULE, Domain, FieldSpec, Glossary, Lexicon, Record, RecordReport, TrapVocab,
-                                  numbered_rules)
-from evalgen.domains.earthquakes import DOMAIN, EARTHQUAKES
+                                  numbered_rules, record_rules)
+from evalgen.domains.base import DISTANCE_WORDINGS, standard_lexicon
+from evalgen.domains.earthquakes import DOMAIN, EARTHQUAKES, GENRE_LEXICON, LEXICON, genre_lexicon
+from evalgen.domains.weather import WEATHER
 from evalgen.geo import KM_PER_MILE, from_km
 from evalgen.models import EVENT_ID_PATTERN, Notice, Question, Trap
 from evalgen.ops import FILTER_OPS, DigestData, execute, rows_after_filters
@@ -283,6 +286,42 @@ def test_thresholds_round_to_their_step():
 # ------------------------------------------------------------------ the earthquake domain
 
 
+RANGE = re.compile(r"\d (?:km|miles?) or more and no more than \d")  # "16 km or more and no more than 40 km"
+
+
+def test_off_the_legacy_path_no_radius_reads_as_the_end_of_a_range():
+    """Joined to a depth threshold, the 0.2.0 wording of a radius reads as a range of depths: "with a depth
+    of 16 km or more and no more than 40 km from station US-28" (16 to 40 km deep?). Legacy prompts keep it,
+    word for word; prompts off the legacy path word every radius by naming the distance before its number
+    (DISTANCE_WORDINGS), in every domain with a location, and draw exactly as often."""
+    assert LEXICON.filters["within_distance"] == ("within {value} of {place}", "no more than {value} from {place}")
+    assert EARTHQUAKES.lexicon is LEXICON  # what legacy prompts are worded with
+    assert EARTHQUAKES.prompt_lexicon() == GENRE_LEXICON == genre_lexicon(LEXICON)
+    assert GENRE_LEXICON.filters == {**LEXICON.filters, "within_distance": DISTANCE_WORDINGS}
+    assert (GENRE_LEXICON.records, GENRE_LEXICON.all_records, GENRE_LEXICON.questions) == (
+        LEXICON.records, LEXICON.all_records, LEXICON.questions)
+    assert len(DISTANCE_WORDINGS) == len(LEXICON.filters["within_distance"])
+    assert all(re.match(r"(?:within|at a distance of no more than) \{value\} (?:of|from) \{place\}$", w)
+               for w in DISTANCE_WORDINGS)
+    assert WEATHER.prompt_lexicon().filters["within_distance"] == DISTANCE_WORDINGS
+    assert standard_lexicon(WEATHER).filters["within_distance"] == DISTANCE_WORDINGS  # any domain worded from its words
+    own = replace(LEXICON, filters={**LEXICON.filters, "within_distance": ("inside {value} of {place}",)})
+    assert genre_lexicon(own) is own  # a wording of a domain's own is kept
+
+    question = Question("Q1", "P02", "public", [
+        {"op": "dedupe"}, {"op": "depth_at_least", "value": 16.0, "unit": "km"},
+        {"op": "within_distance", "lat": -18.038, "lon": -173.353, "label": "station US-28", "radius": 40,
+         "unit": "km"},
+        {"op": "count"}], "count")
+    legacy = [phrase_question(question, random.Random(seed)) for seed in range(60)]
+    genre = [phrase_question(question, random.Random(seed), lexicon=EARTHQUAKES.prompt_lexicon()) for seed in range(60)]
+    assert any(RANGE.search(text) for text in legacy)  # the 0.2.0 wording, kept on the legacy path
+    assert not any(RANGE.search(text) for text in genre)
+    # The same draws, word for word, but for the radius: nothing else about a question moves.
+    assert [t.replace("at a distance of no more than", "no more than") for t in genre] == legacy
+    assert any("within 40 km of" in t for t in genre) and any("at a distance of no more than 40 km" in t for t in genre)
+
+
 def test_the_registry_serves_the_earthquake_domain():
     assert get_domain() is get_domain(DEFAULT_DOMAIN) is EARTHQUAKES is DOMAIN
     names = (EARTHQUAKES.name, EARTHQUAKES.noun, EARTHQUAKES.plural, EARTHQUAKES.id_label,
@@ -290,13 +329,22 @@ def test_the_registry_serves_the_earthquake_domain():
     assert names == ("earthquakes", "earthquake", "earthquakes", "event ID", "network", "region")
     assert EARTHQUAKES.id_pattern == EVENT_ID_PATTERN
     assert (EARTHQUAKES.id_answer_type, EARTHQUAKES.group_answer_type) == ("event_id", "region")
-    # Its prompts off the legacy path print the 0.2.0 rules and then the genre-neutral rules on message
-    # times and repeats (legacy prompts print the 0.2.0 rules alone: test_regression_020.py).
+    # Its prompts off the legacy path print the 0.2.0 rules 1-8 word for word, headed as every domain's
+    # rules are (a run of several domains prints several rules, so none is "identical for every digest"),
+    # then rule 9 naming every kind of line without data that the genres print, and the genre-neutral
+    # rules on message times and repeats. Legacy prompts print the 0.2.0 rules alone
+    # (test_regression_020.py).
     rules = EARTHQUAKES.rules_text()
-    assert rules.startswith(READING_RULES) and rules.endswith("\n")
-    assert rules[len(READING_RULES):] == numbered_rules(
-        ("The time at which a message was sent, forwarded or relayed is never the time of an earthquake.",
-         REPEAT_RULE), start=10)
+    heading, rule_9 = "Reading rules (identical for every digest):\n", "\n9. Lines that are neither reports nor notices"
+    rules_1_to_8 = READING_RULES[len(heading):READING_RULES.index(rule_9) + 1]
+    assert READING_RULES.startswith(heading) and rules_1_to_8.startswith("1. Every earthquake has exactly one")
+    assert rules == "Reading rules:\n" + rules_1_to_8 + numbered_rules(
+        ("Lines that are neither reports nor notices (headers, section titles, station status, editor's notes, "
+         "reminders, greetings, signatures) carry no data and change nothing.",
+         "The time at which a message was sent, forwarded or relayed is never the time of an earthquake.",
+         REPEAT_RULE), start=9)
+    assert rules.split("\n", 1)[0] == record_rules(EARTHQUAKES).split("\n", 1)[0] == "Reading rules:"
+    assert "identical for every digest" not in rules
 
 
 def test_the_earthquake_domain_delegates_to_the_020_functions(instances):

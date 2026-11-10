@@ -635,6 +635,11 @@ class Domain:
         words overrides it."""
         return standard_lexicon(self)
 
+    def prompt_lexicon(self) -> Lexicon:
+        """The question wording of prompts off the legacy path: the domain's lexicon (as bound to an
+        instance's surface). Earthquakes, whose legacy prompts keep the 0.2.0 wording, override it."""
+        return self.lexicon
+
     def dress(self, record: Any) -> Any:
         """A record of the snapshot as one instance shows it: renamed by the surface the domain is bound
         to (its ID prefix, group and source, see Surface.dress), or as it is when the domain is not
@@ -763,6 +768,13 @@ def _drawn_unit_problems(spec: FieldSpec, unit: Unit) -> list[str]:
             f"{unit.symbol} among the units of {spec.key}, or give {spec.key} a relative tolerance only"]
 
 
+# The wordings of a within_distance filter off the legacy path. Each names the distance before its number,
+# so that joined to a threshold in a length unit ("with a depth of 16 km or more and ...") it cannot be
+# read as the upper end of a range of that field, as the 0.2.0 wording "no more than {value} from
+# {place}" can.
+DISTANCE_WORDINGS = ("within {value} of {place}", "at a distance of no more than {value} from {place}")
+
+
 def standard_lexicon(domain: Domain) -> Lexicon:
     """Wording for every operation a domain's templates use, made from the domain's own words: its
     noun, plural, ID label and group label, and each field's label. A domain can word its questions
@@ -804,7 +816,7 @@ def standard_lexicon(domain: Domain) -> Lexicon:
                                                 "dated from {start} up to {end}")
     filters[op_name(domain, "in_group")] = ("in {group}", f"whose {group} is {{group}}")
     if domain.has_location:
-        filters[op_name(domain, "within_distance")] = ("within {value} of {place}", "no more than {value} from {place}")
+        filters[op_name(domain, "within_distance")] = DISTANCE_WORDINGS
         questions[op_name(domain, "nearest_to")] = (
             f"Which of the {{records}} is closest to {{place}}? Give its {id_label}.",
             f"Among the {{records}}, give the {id_label} of the one nearest to {{place}}.")

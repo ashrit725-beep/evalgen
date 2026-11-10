@@ -1,7 +1,9 @@
 """The public reading rules: in English for the prompt, and in code for the answer key.
 
-The rules are the contract between benchmark and model. They are identical in every digest and
-published with the code; only the instances (which quakes, which traps, which thresholds) change.
+The rules are the contract between benchmark and model. ``READING_RULES`` are the 0.2.0 rules, identical
+in every legacy digest, as their heading says, and published with the code; only the instances (which
+quakes, which traps, which thresholds) change. Prompts off the legacy path print their domain's rules
+(``Domain.rules_text``): for earthquakes, these rules reheaded and extended for every genre.
 ``resolve`` is the code version of the rules. ``Mishandle`` describes, for one trap, how a reader
 who falls for it would resolve the digest instead; running a question under a mishandling gives
 the answer a model would produce if it missed that trap.

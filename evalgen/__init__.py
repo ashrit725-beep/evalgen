@@ -1,4 +1,5 @@
-"""evalgen: a live, fine-tuning-resistant LLM evaluation demo (earthquake digests).
+"""evalgen: a live, fine-tuning-resistant LLM evaluation demo (digests of earthquakes and, since 0.3.0,
+of weather observations, near-Earth-object approaches and invented records, in seven genres).
 
 One evaluation cycle:
 

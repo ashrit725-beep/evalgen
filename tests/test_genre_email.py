@@ -445,7 +445,7 @@ def test_email_runs_are_generated_and_read_back_from_their_prompts(email_runs, t
         for inst in load_instances(run):
             assert inst.domain == name and [r.genre for r in inst.renderings] == ["email"] * 3
             bound = get_domain(name).bind(inst.surface)
-            rules = READING_RULES if name == "earthquakes" else bound.rules_text()
+            rules = bound.rules_text()  # earthquakes too: GENRE_READING_RULES, off the legacy path
             for rendering in inst.renderings:
                 prompt = rendering.prompt
                 assert parse_glossary(prompt) == bound.glossary() and extract_digest(prompt) == rendering.digest
