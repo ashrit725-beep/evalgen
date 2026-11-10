@@ -170,8 +170,8 @@ def quoted(tmp_path, monkeypatch):
 def quoted_run(quoted, tmp_path):
     """The first instances of the small run, with their first variant in the quoted genre: a legacy run
     whose instances are built again by a genre plan, on the same seed paths, then run, scored and
-    reported. (A mix renders all of an instance's renderings in its genre until the mix draws of plan
-    phase 4 give the variants genres of their own.)"""
+    reported. (A run off the legacy path gets its genre plans from its mix, which draws each variant's
+    genre: see test_mix.py and test_matrix.py.)"""
     cfg = pipeline.GenerateConfig(seed=7, instances=3)
     run_dir = pipeline.generate(cfg, tmp_path / "quoted-run", log=quiet)
     seedlog = SeedLog(cfg.seed)
