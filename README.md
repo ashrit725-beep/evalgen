@@ -111,8 +111,8 @@ details are in each run's miss analysis: [0.1.0](runs/compare-100/miss_analysis.
 
 ## Reproduce it
 
-Install the dependencies (requests and pytest; Python 3.10 or later), run the 202 tests (about 25
-seconds), and run a full cycle offline, with no API key and no cost:
+Install the dependencies (requests and pytest; Python 3.10 or later), run the 675 tests (about 2
+minutes), and run a full cycle offline, with no API key and no cost:
 
 ```bash
 python3 -m pip install -r requirements.txt
@@ -157,18 +157,52 @@ it in `manifest.json`.
 million, mostly thinking. The run takes about 40 minutes with the two models one after the other,
 or about 25 with one `run` command per model in parallel.
 
+## 0.3.0: multiple sources and genres
+
+The study above used evalgen 0.2.0, in which every test is about earthquakes and is written in one
+family of digest styles. A review pointed out that an adversary who knows that one source, the
+USGS feed, could tune a model to it. evalgen 0.3.0 therefore draws the source and the kind of
+document too. It adds three domains (weather observations from NWS stations, close approaches of
+near-Earth objects from JPL, and an invented domain whose names, labels and units are drawn afresh
+for each instance) and six genres (news articles, email threads, chat logs, tables, report forms
+and radio transcripts). An evaluator can hold domains and genres out in private plugins, listed in a private
+config that the run commits to by hash. The report then compares accuracy on the public and the
+held-out sets (the source gap and the genre gap) and checks that answers agree across genres.
+Answer keys are still computed by code, and the text-only oracle still scores 100% on every domain
+in every genre.
+
+The new options are `--mix` (`legacy`, the default; `random`; or a list such as
+`weather,neo:email`), `--private-config` (the held-out domains and genres), `--source live` and
+`--snapshot-dir` (each domain's live source, frozen and replayed), the `verify-config` command
+(which checks a revealed config against a run) and held-out penalties for the simulated model
+(`mock:held_out=0.3`). This runs every built-in domain and genre offline:
+
+```bash
+python3 cli.py demo --mix random
+```
+
+Adding `--private-config configs/private.example.json` shows the held-out metrics, with the
+test-only toy domain and genre held out. Without the new options nothing changes: the 0.2.0
+comparison above regenerates byte for byte, which `tests/test_regression_020.py` checks.
+[`docs/DESIGN.md`](docs/DESIGN.md) describes the threat model, the domains and genres, the new
+metrics and their limitations.
+
 ## What's in the repository
 
-- `evalgen/`: the generator, model adapters, scorer and report.
-- `cli.py`: the command line (`generate`, `run`, `score`, `report`, `resolve`, `demo`).
-- `tests/`: 202 tests.
+- `evalgen/`: the generator, its domains and genres, model adapters, scorer and report.
+- `cli.py`: the command line (`generate`, `run`, `score`, `report`, `resolve`, `demo`,
+  `verify-config`).
+- `configs/private.example.json`: the format of a private run config (an example only: real
+  held-out sets must stay private).
+- `tests/`: 675 tests.
 - `runs/compare-100/` and `runs/compare-100-v2/`: each comparison's report (`report.md` and
   `report.json`), miss analysis and `manifest.json` (seed, settings, code fingerprint). The raw
   prompts and replies are not committed. The 0.1.0 run cannot be regenerated with the current code,
   because the rules text is part of every prompt.
 - `runs/demo-synthetic-seed42/`, `runs/usgs-live-seed5/`: smaller demo runs (reports only).
 - [`docs/DESIGN.md`](docs/DESIGN.md): how evalgen works, including the threat model, the question
-  grammar, traps, scoring, reproducibility and the method's limitations.
+  grammar, traps, scoring, reproducibility and the method's limitations, and the domains, genres,
+  mixes and held-out sets of 0.3.0. [`docs/PLAN-0.3.md`](docs/PLAN-0.3.md) is the plan of 0.3.0.
 
 ## License
 

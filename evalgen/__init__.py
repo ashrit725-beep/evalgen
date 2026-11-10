@@ -9,4 +9,4 @@ The method (code, templates, reading rules, scoring) is public. The instances ar
 fresh from a seed at evaluation time, so there is nothing fixed to fine-tune against.
 """
 
-__version__ = "0.2.0"  # 0.2.0: reading rules name every notice wording, times, coordinates and magnitude scales
+__version__ = "0.3.0"  # 0.3.0: weather, neo and invented domains, six new genres, mixes and held-out domains and genres
