@@ -102,12 +102,14 @@ def _module_name(path: Path) -> str:
     return "evalgen_plugin_" + hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:16]
 
 
-def load_module(path: str | Path) -> ModuleType:
+def load_module(path: str | Path, source: bytes | None = None) -> ModuleType:
     """The module of a plugin file, executed once per process, so that a file defining both a domain
-    and a genre is loaded once for both registries."""
+    and a genre is loaded once for both registries. `source` is the file's bytes as the caller read
+    (and checked) them: what runs is exactly those bytes, never a later state of the file or a
+    bytecode cache beside it. Without it, the file is read once, here."""
     path = Path(path).resolve()
     module_name = _module_name(path)
-    return sys.modules.get(module_name) or _exec_file(module_name, path)
+    return sys.modules.get(module_name) or _exec_file(module_name, path, source)
 
 
 def executed(path: str | Path) -> bool:
@@ -116,14 +118,17 @@ def executed(path: str | Path) -> bool:
     return _module_name(Path(path)) in sys.modules
 
 
-def _exec_file(module_name: str, path: Path) -> ModuleType:
+def _exec_file(module_name: str, path: Path, source: bytes | None) -> ModuleType:
+    """Execute a plugin's source as a module of its own. The bytes are compiled here, so no bytecode
+    cache is read or written next to a private plugin."""
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load a plugin from {path}")
+    code = compile(path.read_bytes() if source is None else source, str(path), "exec", dont_inherit=True)
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module  # dataclasses in the plugin look their module up here
     try:
-        spec.loader.exec_module(module)
+        exec(code, module.__dict__)
     except BaseException:
         del sys.modules[module_name]
         raise

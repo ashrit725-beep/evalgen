@@ -159,6 +159,28 @@ def test_the_glossary_quotes_any_word_and_refuses_what_it_cannot_print():
         parse_glossary(render_glossary(odd).replace("- Sources:", "- Origins:"))
 
 
+@pytest.mark.parametrize("name", ["earthquakes", "weather", "neo", "invented"])
+def test_the_glossary_states_an_id_pattern_that_every_printed_id_matches(name):
+    """A domain's ID pattern describes its IDs lower-cased, and digests print IDs as their sources file
+    them: a station's in capitals ("KJFK-48213"), an invented surface's in the letter case it drew
+    ("KX/40512"). So the glossary says that the pattern ignores letter case, which makes it true of every
+    ID a digest prints, planted ones included; and parse_glossary reads that line back exactly."""
+    domain = get_domain(name)
+    ids: list[str] = []
+    for inst in instances_of(domain, seed=31, n=4):
+        glossary = domain.bind(inst.surface).glossary()
+        text = render_glossary(glossary)
+        assert f"; IDs match the pattern {glossary.id_pattern}, ignoring letter case.\n" in text
+        assert parse_glossary(text) == glossary and glossary.id_pattern == domain.id_pattern
+        named = ([r.ref for r in inst.reports] + [r.same_as for r in inst.reports if r.same_as]
+                 + [n.target for n in inst.notices])
+        assert all(ref in rendering.digest for rendering in inst.renderings for ref in named)  # printed as filed
+        ids += named
+    assert ids and all(re.fullmatch(domain.id_pattern, ref, flags=re.IGNORECASE) for ref in ids)
+    cased = [ref for ref in ids if not re.fullmatch(domain.id_pattern, ref)]  # what the bare pattern misses
+    assert bool(cased) == (name in ("weather", "invented"))
+
+
 # ------------------------------------------------------------------------------- traps
 
 

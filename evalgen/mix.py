@@ -23,24 +23,44 @@ The private run config is a JSON file the evaluator keeps private until after th
     {"nonce": "<at least 32 random hexadecimal digits: secrets.token_hex(16)>",
      "domains": {"public": ["earthquakes"], "held_out": ["tides"]},
      "genres": {"public": ["classic"], "held_out": ["fax"]},
-     "plugins": ["plugins/tides.py", "plugins/fax.py"],
+     "plugins": [{"path": "plugins/tides.py", "sha256": "<the SHA-256 of the file's bytes>"},
+                 {"path": "plugins/fax.py", "sha256": "<...>"}],
      "note": "anything (optional)"}
 
 Plugins are Python files outside the public repository (paths relative to the config) that define a
-domain (``DOMAIN``), a genre (``GENRE``) or both; they are loaded before any name is looked up, and a
-run records each one's path and SHA-256. Every later step (run, score, report, resolve) loads them
-again from the config, which the evaluator passes again (``--private-config``) and the run's
-commitment authenticates (``load_run_plugins``): evalgen never executes a file that a run directory
-names by itself, so reporting on a run received from someone else runs none of its code. With a
-config, a run draws only from the domains and genres the config lists, with their splits; without
-one, every registered domain and genre is public. Like the seed, the config is committed by hash:
-the manifest records ``sha256(canonical_json(config))`` (``config_commitment``), which can be
-published before the evaluation, and the random nonce stops anyone from guessing a small config from
-its hash. So a nonce must look drawn, not typed (``nonce_problem``): 32 hexadecimal digits or more,
-not a run of one digit or a pattern. The one exception is a nonce that says it is an EXAMPLE, as the
-published configs/private.example.json does: it is accepted, so that the demo of held-out sets works
-offline, but generate warns loudly that its commitment can be guessed. Once the config is revealed,
-``verify_private_config`` (``cli.py verify-config``) checks it against a run's manifest.
+domain (``DOMAIN``), a genre (``GENRE``) or both. Each is given by its path and the SHA-256 of its
+bytes, or by its path alone (a string). They are loaded before any name is looked up, and a plugin
+whose bytes differ from the SHA-256 its config gives is refused, unexecuted, at generation and at every
+later step; a run records each plugin's path and SHA-256. Every later step (run, score, report,
+resolve) loads them again from the config, which the evaluator passes again (``--private-config``)
+and the run's commitment authenticates (``load_run_plugins``): evalgen never executes a file that a
+run directory names by itself, so reporting on a run received from someone else runs none of its
+code. With a config, a run draws only from the domains and genres the config lists, with their
+splits; without one, every registered domain and genre is public. The config is read strictly: a
+file that is not JSON, or that gives a key twice in one object (JSON readers keep one of the two, so
+such a file could show one config and verify as another), is refused.
+
+Like the seed, the config is committed by hash: the manifest records ``sha256(canonical_json(config))``
+(``config_commitment``), and the random nonce stops anyone from guessing a small config from its hash.
+So a nonce must look drawn, not typed (``nonce_problem``): 32 hexadecimal digits or more, not a run of
+one digit or a pattern. The one exception is a nonce that says it is an EXAMPLE, as the published
+configs/private.example.json does: it is accepted, so that the demo of held-out sets works offline,
+but generate warns loudly that its commitment can be guessed.
+
+What the evaluator publishes, and when:
+
+    before the evaluation  the two commitments that generate records in the run's manifest: the seed's
+                           (seed_commitment) and the config's (private_config_commitment). Nothing
+                           else: not the manifest, which holds the seed, nor the config or its plugins.
+    after the evaluation   the config, its plugin files, and the seed with its nonce. Anyone can then
+                           check the config against its commitment (``verify_private_config``, ``cli.py
+                           verify-config``) and regenerate the run, which checks every plugin against
+                           the SHA-256 its config gives before running it.
+
+A config names its plugins by path, so the commitment pins what a held-out domain or genre is only
+through each plugin's SHA-256: with it, the commitment covers the plugins' content, which can no longer
+change once the commitment is published; a plugin given by its path alone is committed to by its path
+only, and could be edited after the commitment without anyone noticing.
 """
 from __future__ import annotations
 
@@ -75,6 +95,8 @@ MIN_NONCE_DISTINCT_DIGITS = 8
 EXAMPLE_MARK = "EXAMPLE"  # in the nonce of a published example config, whose commitment anyone can guess
 NONCE_ADVICE = ("its nonce must be at least 32 random hexadecimal digits: draw one with "
                 "python -c \"import secrets; print(secrets.token_hex(16))\"")
+PLUGIN_KEYS = ("path", "sha256")  # a plugin given with the SHA-256 of its bytes
+SHA256_DIGITS = 64
 
 Log = Optional[Callable[[str], None]]  # Optional, not "X | None": this alias is evaluated at import (Python 3.9)
 
@@ -89,6 +111,10 @@ class UnknownName(MixError, KeyError):
 
     def __str__(self) -> str:  # the message itself, not KeyError's quoted repr of it
         return str(self.args[0]) if self.args else ""
+
+
+class DuplicateKey(MixError):
+    """A private run config gives a key twice in one JSON object."""
 
 
 # ------------------------------------------------------------------------------------ entries
@@ -176,11 +202,23 @@ def nonce_problem(nonce: Any) -> str | None:
     return None
 
 
+def _plugin_entry_ok(entry: Any) -> bool:
+    """A plugin as a config may give it: a path, or {"path": <a path>, "sha256": <64 hexadecimal digits>}."""
+    def is_path(value: Any) -> bool:
+        return isinstance(value, str) and bool(value.strip())
+
+    if isinstance(entry, dict):
+        digest = entry.get("sha256")
+        return (set(entry) == set(PLUGIN_KEYS) and is_path(entry["path"]) and isinstance(digest, str)
+                and len(digest) == SHA256_DIGITS and all(c in "0123456789abcdef" for c in digest.lower()))
+    return is_path(entry)
+
+
 def config_problems(data: Any) -> list[str]:
     """What is wrong with the shape of a private run config (names are checked once its plugins are
     loaded): its keys, a nonce that looks drawn (``nonce_problem``), public and held-out lists of
     distinct names for domains and for genres (a name in one list only, and at least one name of each
-    kind), plugins as a list of paths and an optional note."""
+    kind), plugins as a list of paths, each alone or with its SHA-256, and an optional note."""
     if not isinstance(data, dict):
         return ["it is not a JSON object"]
     problems = [f"it has no {key!r}" for key in REQUIRED_KEYS if key not in data]
@@ -208,8 +246,9 @@ def config_problems(data: Any) -> list[str]:
         if not named:
             problems.append(f"it lists no {kind}")
     plugins = data.get("plugins", [])
-    if not isinstance(plugins, list) or not all(isinstance(path, str) and path.strip() for path in plugins):
-        problems.append("'plugins' must be a list of paths")
+    if not isinstance(plugins, list) or not all(map(_plugin_entry_ok, plugins)):
+        problems.append("'plugins' must be a list of paths, each alone or as {\"path\": <path>, \"sha256\": <the "
+                        "SHA-256 of the file, 64 hexadecimal digits>}")
     if not isinstance(data.get("note", ""), str):
         problems.append("'note' must be a string")
     return problems
@@ -224,6 +263,9 @@ class PrivateConfig:
     domains: Mapping[str, str]  # name -> split, as the config lists them
     genres: Mapping[str, str]
     plugins: tuple[Path, ...]  # absolute paths
+    # The SHA-256 the config gives each plugin's bytes, in lower case, in the order of `plugins`; None
+    # for a plugin given by its path alone.
+    plugin_sha256: tuple[str | None, ...] = ()
 
     @property
     def commitment(self) -> str:
@@ -234,23 +276,49 @@ class PrivateConfig:
         """The config keeps a published example's nonce, so anyone can guess it from its commitment."""
         return is_example_nonce(self.data["nonce"])
 
+    def pinned(self) -> list[tuple[Path, str | None]]:
+        """Each plugin's path and the SHA-256 the config commits its bytes to (None: none)."""
+        return list(zip(self.plugins, self.plugin_sha256 or (None,) * len(self.plugins)))
+
+
+def _distinct_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """The members of a JSON object, refusing a key given twice: json.loads would keep the last of the
+    two, so a file could show a decoy first and still read, and verify, as another config."""
+    members: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in members:
+            raise DuplicateKey(f"it gives the key {key!r} twice in one object")
+        members[key] = value
+    return members
+
+
+def _read_config_json(path: Path) -> Any:
+    """The JSON of a config file, read strictly: DuplicateKey for a key given twice in any one object,
+    ValueError for text that is not JSON (or not UTF-8)."""
+    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_distinct_members)
+
 
 def read_private_config(path: str | Path) -> PrivateConfig:
     """Read and check a private run config (``config_problems``); a missing file raises
-    FileNotFoundError, a malformed one MixError. Plugin paths are relative to the config's folder."""
+    FileNotFoundError, a malformed one MixError (not JSON, a key given twice, or a shape that
+    config_problems refuses). Plugin paths are relative to the config's folder."""
     path = Path(path)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = _read_config_json(path)
+    except DuplicateKey as exc:
+        raise MixError(f"the private run config {path} is malformed: {exc}") from None
     except ValueError as exc:
         raise MixError(f"the private run config {path} is not JSON ({exc})") from None
     problems = config_problems(data)
     if problems:
         raise MixError(f"the private run config {path} cannot be used: " + "; ".join(problems))
+    entries = data.get("plugins", [])
     return PrivateConfig(
         path=path, data=data,
         domains={name: split for split in SPLITS for name in data["domains"][split]},
         genres={name: split for split in SPLITS for name in data["genres"][split]},
-        plugins=tuple((path.parent / plugin).resolve() for plugin in data.get("plugins", [])),
+        plugins=tuple((path.parent / (e if isinstance(e, str) else e["path"])).resolve() for e in entries),
+        plugin_sha256=tuple(None if isinstance(e, str) else e["sha256"].lower() for e in entries),
     )
 
 
@@ -268,13 +336,17 @@ def verify_config(config: Mapping[str, Any], commitment: str) -> bool:
 def verify_private_config(path: str | Path, run_dir: str | Path) -> bool:
     """Whether the private run config at `path` is the one the run in `run_dir` committed to (its
     manifest's private_config_commitment). A run generated without a config raises MixError; a file
-    that is not JSON is not the config."""
+    that is not JSON is not the config. A file that gives a key twice in one object raises MixError: it
+    reads as two configs (the first value of the key or the last), so whether it is the committed one
+    has no answer. The plugins' bytes are checked when a run loads them (see the module docstring)."""
     manifest = read_json(Path(run_dir) / "manifest.json")
     recorded = manifest.get("private_config_commitment")
     if recorded is None:
         raise MixError(f"{run_dir} was generated without a private run config, so it committed to none")
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = _read_config_json(Path(path))
+    except DuplicateKey as exc:
+        raise MixError(f"{path} is malformed: {exc}, so it cannot be checked against a commitment") from None
     except ValueError:
         return False
     return verify_config(data, recorded)
@@ -285,18 +357,29 @@ def verify_private_config(path: str | Path, run_dir: str | Path) -> bool:
 Entrant = Union[Domain, Genre]  # Union, not "X | Y": this alias is evaluated at import (Python 3.9)
 
 
-def load_plugin(path: str | Path) -> list[Entrant]:
+def load_plugin(path: str | Path, sha256: str | None = None) -> list[Entrant]:
     """Register what a plugin file defines: its domain (``DOMAIN``), its genre (``GENRE``) or both,
-    each in its registry. A file that defines neither raises MixError."""
+    each in its registry. With `sha256` (what a private run config commits the file to), a file whose
+    bytes have another SHA-256 is refused before any of it runs, and what runs is exactly the bytes
+    that were checked. Raises MixError for a file that is gone, refused, defines neither entry, or
+    defines one that its registry refuses (a name a built-in or another plugin already has, or a
+    domain that does not hold together)."""
     path = Path(path).resolve()
     if not path.is_file():
         raise MixError(f"the plugin {path} does not exist")
-    module = registry.load_module(path)
+    source = path.read_bytes()
+    if sha256 is not None and sha256_hex(source) != sha256.lower():
+        raise MixError(f"the plugin {path} is not the file its private run config commits to: its SHA-256 is "
+                       f"{sha256_hex(source)}, and the config gives {sha256.lower()}")
+    module = registry.load_module(path, source)
     loaded: list[Entrant] = []
-    if hasattr(module, "DOMAIN"):
-        loaded.append(domains.load_plugin(path))
-    if hasattr(module, "GENRE"):
-        loaded.append(genres.load_plugin(path))
+    try:
+        if hasattr(module, "DOMAIN"):
+            loaded.append(domains.load_plugin(path))
+        if hasattr(module, "GENRE"):
+            loaded.append(genres.load_plugin(path))
+    except (TypeError, ValueError) as exc:  # the registry refuses the entry
+        raise MixError(f"the plugin {path} cannot be registered: {exc}") from None
     if not loaded:
         raise MixError(f"the plugin {path} defines neither DOMAIN nor GENRE")
     return loaded
@@ -318,35 +401,37 @@ def load_run_plugins(manifest: Mapping[str, Any], private_config: str | Path | N
     evalgen never runs code that a run directory names by itself: a run received from someone else
     could name any file. A plugin is loaded from the evaluator's private run config (`private_config`):
     the config the run was generated with, as its commitment proves, whose plugin paths are relative
-    to the config. A plugin whose bytes differ from the manifest's record is loaded all the same, as the
-    evaluator asked, with a warning to `log`. Without a config, only plugins that this process has run
-    already (it generated the run) are registered again; any other plugin, and a config the run did not
-    commit to, raise MixError, as does a plugin that is gone."""
+    to the config. A plugin that the config gives with a SHA-256 is refused (MixError) if its bytes
+    differ from it, as at generation: the commitment covers it. One given by its path alone whose bytes
+    differ from the manifest's record is loaded all the same, as the evaluator asked, with a warning to
+    `log`. Without a config, only plugins that this process has run already (it generated the run) are
+    registered again; any other plugin, and a config the run did not commit to, raise MixError, as does
+    a plugin that is gone."""
     entries = list(manifest.get("plugins") or ())
     if private_config is not None:
         config = read_private_config(private_config)
         recorded = manifest.get("private_config_commitment")
         if recorded is None or not verify_config(config.data, recorded):
             raise MixError(f"{private_config} is not the private run config that this run committed to")
-        paths = list(config.plugins)
-        if len(paths) != len(entries):
+        plugins = config.pinned()
+        if len(plugins) != len(entries):
             raise MixError("the run's manifest does not list the plugins of its private run config")
     else:
-        paths = [Path(entry["path"]) for entry in entries]
-        strange = [str(path) for path in paths if not registry.executed(path)]
+        plugins = [(Path(entry["path"]), None) for entry in entries]
+        strange = [str(path) for path, _ in plugins if not registry.executed(path)]
         if strange:
             raise MixError(f"the run was generated with the plugins {', '.join(strange)}: pass its private run config "
                            "(--private-config) to load them. evalgen never runs code that a run directory names by "
                            "itself")
     changed = []
-    for path, entry in zip(paths, entries):
+    for (path, sha256), entry in zip(plugins, entries):
         if not path.is_file():
             raise MixError(f"the run was generated with the plugin {path}, which is gone: restore it to read the run")
-        if entry.get("sha256") and sha256_hex(path.read_bytes()) != entry["sha256"]:
+        if sha256 is None and entry.get("sha256") and sha256_hex(path.read_bytes()) != entry["sha256"]:
             changed.append(str(path))
             if log is not None:
                 log(f"warning: the plugin {path} has changed since the run was generated")
-        load_plugin(path)
+        load_plugin(path, sha256=sha256)
     return changed
 
 
@@ -473,8 +558,8 @@ def plan_mix(mix: str, private_config: str | Path | None = None) -> Plan:
         domain_splits = {d.name: PUBLIC for d in all_domains()}
         genre_splits = {g.name: PUBLIC for g in all_genres()}
     else:
-        for path in config.plugins:
-            load_plugin(path)
+        for path, sha256 in config.pinned():  # a plugin whose bytes are not those the config gives is refused
+            load_plugin(path, sha256=sha256)
         for name in config.domains:
             _domain(name)
         for name in config.genres:

@@ -26,8 +26,9 @@ from evalgen.adapters import Task, _perturb
 from evalgen.digest import LINE_PRESETS, NOTICE_PLACEMENTS
 from evalgen.domains import all_domains, get_domain
 from evalgen.domains.base import RULES_WIDTH, Record, RecordReport, Surface
-from evalgen.domains.invented import (CHATTER, DEPOTS, FLOORS, INVENTED, LARGER_SCALES, RESERVED, SMALLER_SCALES,
-                                      SOURCES, UNFIT_PARTS, WINDOW_HOURS, WORKING_HOURS)
+from evalgen.domains.invented import (CHATTER, COMMON_WORDS, DEPOTS, FLOORS, INVENTED, LARGER_SCALES, RESERVED,
+                                      SMALLER_SCALES, SOURCES, UNFIT_PARTS, WINDOW_HOURS, WORKING_HOURS, _Coiner,
+                                      _fit)
 from evalgen.genres import detect_genre
 from evalgen.genres.base import RenderContext, parse_glossary, render_glossary
 from evalgen.genres.classic import CLASSIC, RECORD_HEADERS, RECORD_LAYOUTS, RECORD_TIME_PRESETS, UNIT_PRESETS
@@ -153,6 +154,38 @@ def test_every_word_of_a_surface_is_its_own_and_none_is_reserved():
             assert normalize("invented_group", name) == name.casefold()
 
 
+def test_no_unit_symbol_or_coined_word_is_a_common_english_word():
+    """A unit symbol follows every value it writes, so a symbol that is a word ("a gross heft of 15.3 so",
+    "dwell time 4 set") makes prose read two ways: about one surface in six drew such a symbol before the
+    common English words of two and three letters were reserved. Coined names, labels and unit names
+    avoid them too, and a symbol, drawn from the letters of a name that is fit to print, is checked as
+    the name is: never a common word, never offensive."""
+    assert {"so", "do", "me", "we", "he", "be", "set", "put"} <= COMMON_WORDS <= RESERVED
+    assert all(re.fullmatch(r"[a-z]{2,3}", word) for word in COMMON_WORDS)
+    symbols: Counter = Counter()
+    for surface in surfaces(1500, start=5000):
+        drawn = Surface.from_dict(surface)
+        units = [u for us in drawn.units.values() for u in us]
+        symbols.update(u.symbol for u in units)
+        coined = [u.words[:-1] for u in units] + [name.split()[0].lower()
+                                                  for name in (*drawn.groups.values(), *drawn.sources.values())]
+        assert not set(coined) & COMMON_WORDS, coined
+    assert len(symbols) > 250 and not set(symbols) & COMMON_WORDS and all(map(_fit, symbols))
+
+    def scripted(*names: str) -> _Coiner:  # a coiner whose names are given, the first candidates of each taken
+        coiner = _Coiner(random.Random(0))
+        queue = iter(names)
+        coiner.coin = lambda syllables: next(queue)
+        return coiner
+
+    coiner = scripted("sket")
+    coiner.take("sk")  # "st" is a real unit, "sk" is taken, and "set" is a word: the symbol is "ske"
+    assert coiner.unit() == ("ske", "skets")
+    coiner = scripted("flag")
+    coiner.take("fg", "fl")  # a fit name, whose next candidate symbol, "f" + "ag", is not
+    assert coiner.unit() == ("fla", "flags")
+
+
 def test_drawn_units_convert_exactly_and_keep_every_guard():
     records = INVENTED.synthetic(random.Random(5), 300, COMPILED_AT, WINDOW_HOURS)
     for surface in surfaces(40, start=200):
@@ -233,7 +266,9 @@ def test_ids_take_each_instances_prefix_and_stay_unique():
 
 def test_the_seed_pins_the_world_and_every_surface():
     """What one seed draws in this domain alone, pinned when the domain was written: later code may
-    change how instances are composed, but never the world or the words a seed gives."""
+    change how instances are composed, but never the world or the words a seed gives. (The surfaces
+    were pinned again, deliberately, when common English words joined the words no surface may coin;
+    the world is as first pinned.)"""
     pinned = read_json(FIXTURES / "pinned.json")
     log = SeedLog(pinned["seed"])
     snapshot, raw = build_domain_snapshot(INVENTED, "synthetic", log, pool_size=pinned["pool_size"])

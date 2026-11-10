@@ -218,6 +218,41 @@ def test_forms_refuse_what_they_cannot_read_back(toys):
         FORM.parse(inst.renderings[0].digest, None, toys.toy)
 
 
+def test_a_field_left_blank_in_a_row_of_two_shows_a_line(toys):
+    """A boxed form puts two fields on some rows. Left empty, the first would put the row's second label
+    where its own value belongs ("Cross-reference:      Location note: Dogger Bank"), so in a row of two a
+    blank field shows a line even when the rendering leaves blanks empty; a field alone on its row may
+    stay empty. Every form still reads back exactly."""
+    boxed = FRAMES_BY_NAME["boxed"]
+    lines = boxed.lay_out("FIELD REPORT FORM", "004417", [[("Cross-reference", ""), ("Location note", "Dogger Bank")],
+                                                         [("Wave height", "1.85 m"), ("Probe", "")],
+                                                         [("Form sent", "")]])
+    rows = [line[2:-2].rstrip() for line in lines[3:-1]]
+    assert rows == ["Cross-reference: ________  Location note: Dogger Bank",
+                    "Wave height: 1.85 m        Probe: ________", "Form sent:"]
+    # a row whose first field shows nothing before the next label, or whose last label ends the row
+    first_empty, last_empty = re.compile(r"[^:]+: {2,}\S.*"), re.compile(r".*\S {2,}[^ :][^:]*:")
+    blanks = Counter()
+    for domain, ghost in ((toys.toy, "zz-00001"), (toys.flat, "zz-00001"), (EARTHQUAKES, "zz00000001")):
+        for inst in instances_of(domain, seed=58, n=3):
+            # A notice about an ID that no form carries: its amendment names no original form.
+            amended = [*inst.notices, Notice(kind="retraction", target=ghost, time=inst.compiled_at - 600)]
+            for style, rng in list(styles(domain, inst.seed))[:4]:
+                style = {**style, "forms": "boxed", "blank": "empty"}
+                text = render(inst, domain, style, rng, notices=amended)
+                reports, notices = printed(inst.reports, amended)
+                data = FORM.parse(text, domain.glossary(), domain)
+                assert same_items(data.reports, reports) and same_items(data.notices, notices), style
+                for block in form_blocks(text):
+                    if frame_of(block) != "boxed":
+                        continue
+                    for row in (line[2:-2].rstrip() for line in block.split("\n")[3:-1]):
+                        assert not first_empty.fullmatch(row) and not last_empty.fullmatch(row), row
+                        blanks.update(cell.split(":")[0] for cell in re.split(r" {2,}", row)
+                                      if cell.endswith(f": {form_module.PAIRED_BLANK}"))
+    assert {"Cross-reference", "Location note", "Original form no."} <= set(blanks)  # in both columns
+
+
 def test_renderings_are_deterministic_and_variants_change_every_drawn_look(toys):
     inst = instances_of(toys.toy, seed=9, n=1)[0]
     style, _ = next(styles(toys.toy, 2))

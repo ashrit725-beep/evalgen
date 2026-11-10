@@ -58,7 +58,7 @@ from .rules import READING_RULES
 from .scoring import is_correct, normalize, same_answer
 from .seeds import SeedLog, derive_seed, fresh_nonce, seed_commitment
 from .solver import extract_digest, solve
-from .sources import LIVE, Snapshot, build_domain_snapshot, build_snapshot, frozen_feed, save_snapshot
+from .sources import LIVE, Snapshot, build_domain_snapshot, build_snapshot, frozen_feed, read_frozen_feed, save_snapshot
 from .traps import TrapConfig, inject_traps
 from .util import read_json, sha256_hex, slugify, write_json
 
@@ -340,8 +340,10 @@ def run_name(cfg: GenerateConfig) -> str:
 def _check_sources(plan: Plan, cfg: GenerateConfig) -> dict[str, Path | None]:
     """Refuse, before anything is written, sources that a run off the legacy path cannot use: the USGS
     hour feed, a frozen snapshot file for several domains, frozen snapshots that lack a domain of the
-    mix, or a live source that a domain lacks. With frozen snapshots (cfg.snapshot_dir), return what
-    replays each domain (sources.frozen_feed: its frozen bytes, or None for synthetic records)."""
+    mix, a live source that a domain lacks, and frozen bytes that its domain's live source cannot replay
+    (a domain without one, or another source's bytes: _check_frozen). With frozen snapshots
+    (cfg.snapshot_dir), return what replays each domain (sources.frozen_feed: its frozen bytes, or None
+    for synthetic records)."""
     if cfg.feed != GenerateConfig.feed:
         raise MixError("the USGS feed is chosen in legacy runs only: off the legacy path its live source is the "
                        "day feed")
@@ -353,14 +355,30 @@ def _check_sources(plan: Plan, cfg: GenerateConfig) -> dict[str, Path | None]:
     for domain in plan.domains:
         if cfg.source not in ("synthetic", LIVE) and (domain.live is None or domain.live.source != cfg.source):
             raise MixError(f"unknown source {cfg.source!r} for {domain.name}: use synthetic or {LIVE}")
+    if cfg.snapshot_file:
+        _check_frozen(plan.domains[0], cfg.snapshot_file)
     if not cfg.snapshot_dir:
         return {}
     if not Path(cfg.snapshot_dir).is_dir():
         raise FileNotFoundError(f"the frozen snapshots {cfg.snapshot_dir} do not exist")
     try:
-        return {domain.name: frozen_feed(cfg.snapshot_dir, domain) for domain in plan.domains}
+        feeds = {domain.name: frozen_feed(cfg.snapshot_dir, domain) for domain in plan.domains}
     except ValueError as exc:
         raise MixError(str(exc)) from None
+    for domain in plan.domains:
+        if feeds[domain.name] is not None:
+            _check_frozen(domain, feeds[domain.name])
+    return feeds
+
+
+def _check_frozen(domain: Domain, path: str | Path) -> None:
+    """Refuse, before anything is written, frozen bytes that `domain` cannot replay: MixError for a domain
+    without a live source, or bytes that are not its live source's (sources.read_frozen_feed);
+    FileNotFoundError for a file that is not there."""
+    try:
+        read_frozen_feed(domain, path)
+    except ValueError as exc:
+        raise MixError(f"the frozen feed cannot be replayed: {exc}") from None
 
 
 def _snapshot_entry(snapshots: Mapping[str, Snapshot]) -> dict[str, Any]:
@@ -412,6 +430,8 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
     elif cfg.snapshot_dir:
         raise MixError("a legacy run replays a frozen USGS feed with --snapshot-file; --snapshot-dir replays the "
                        "frozen snapshots of a run off the legacy path")
+    elif cfg.snapshot_file:  # the frozen USGS feed of a legacy run, read as the replay reads it
+        _check_frozen(EARTHQUAKES, cfg.snapshot_file)
     run_dir = Path(run_dir) if run_dir else RUNS_DIR / run_name(cfg)
     if run_dir.exists() and any(run_dir.iterdir()):
         if not force:

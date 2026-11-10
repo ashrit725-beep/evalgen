@@ -26,12 +26,14 @@ wind) at the season and local solar hour of their time, plus a weather system pe
 temperature, pressure and wind together over the window (``Weather.synthetic``).
 
 The live source (``NwsObservations``) asks api.weather.gov for the last 24 hours of observations of
-every station in the table, freezes all the responses as one JSON bundle (raw_feed.json), which the
-snapshot hashes, and reads it back without the network: observations that lack a value, or whose
-value the NWS quality control rejected or questioned, are dropped (no value is ever invented), and
-one observation per station and UTC hour is kept (the hourly METAR when there is one). Replaying the
-frozen bundle (GenerateConfig.snapshot_file) rebuilds the same snapshot; when the API cannot be
-reached, or gives too few usable observations, the synthetic generator is the fallback
+every station in the table, freezes every response as it was served (its HTTP status and the exact
+text of its body) in one JSON bundle (raw_feed.json), which the snapshot hashes, and reads the bodies
+back without the network: observations that lack a value, or whose value the NWS quality control
+rejected or questioned, are dropped (no value is ever invented), and one observation per station and
+UTC hour is kept (the hourly METAR when there is one). A station that fails on its own (an error
+status, a timeout) is recorded as such and the others are kept. Replaying the frozen bundle
+(GenerateConfig.snapshot_file) rebuilds the same snapshot; when the API cannot be reached, no station
+answers, or the stations give too few usable observations, the synthetic generator is the fallback
 (sources.build_domain_snapshot).
 
 Synthetic observations are timed to the second and their values are continuous, as the reports the
@@ -414,7 +416,10 @@ class Weather(Domain):
 
 API_ROOT = "https://api.weather.gov"
 OBSERVATIONS_URL = API_ROOT + "/stations/{station}/observations"
-BUNDLE_FORMAT = "evalgen-nws-bundle/1"
+# A bundle holds each station's response as served: {"status": <HTTP status>, "body": <the body's exact
+# text>}, or {"error": ...} for a request that failed on its own (a timeout, a dropped connection).
+BUNDLE_FORMAT = "evalgen-nws-bundle/2"
+FAILURES_NAMED = 4  # how many failed stations the error of a fetch that no station answered names
 # NWS quality-control codes of values that are not used: questioned, subjectively bad, rejected.
 REJECTED_QC = frozenset({"Q", "B", "X"})
 # The NWS value of each field, its accepted units (WMO unit codes) as maps to the canonical unit, and
@@ -455,9 +460,11 @@ class NwsObservations:
     """The NWS API as the weather domain's live source (a LiveAdapter).
 
     ``fetch`` asks for the last `window_hours` of observations of every station in `stations` (one
-    request each, with the User-Agent the API requires) and returns them as one JSON bundle, which the
-    snapshot freezes and hashes. ``parse`` reads a bundle without the clock or the network, so
-    replaying it rebuilds the snapshot exactly."""
+    request each, with the User-Agent the API requires) and returns them as one JSON bundle that keeps
+    every response as the API served it, its HTTP status and the exact text of its body, so that the
+    snapshot's hash commits to what the NWS sent, not to evalgen's reading of it. ``parse`` reads the
+    bodies of a bundle without the clock or the network, so replaying it rebuilds the snapshot
+    exactly."""
 
     stations: tuple[str, ...] = tuple(station.id for station in STATIONS)
     min_records: int = 40  # fewer usable observations than this and the snapshot falls back to synthetic
@@ -471,27 +478,37 @@ class NwsObservations:
     def fetch(self) -> tuple[bytes, str]:
         """Every station's observations as one bundle: (its bytes, the URL asked for each station).
 
-        A station the API answers with an error, or with something that is not JSON, is recorded in the
-        bundle as such, and the others are kept. No network (a connection error or a timeout) raises at
-        once, as does a fetch in which no station answered."""
+        Each response is kept as served, its HTTP status and the exact text of its body (UTF-8, as JSON
+        is), whatever the status; parse decides what can be read. A request that fails on its own (a
+        timeout, a connection dropped after the first station answered, a body that is not UTF-8) is
+        recorded as an error for that station, and the other stations are still asked. Only a first
+        request that cannot connect (no network: the others would not either) raises at once, and a
+        fetch in which no station answered with observations raises ValueError."""
         fetched_at = _utc_now().replace(microsecond=0)
         params = {"start": _iso(fetched_at - timedelta(hours=self.window_hours)), "limit": self.limit}
         headers = {"User-Agent": self.user_agent, "Accept": "application/geo+json"}
         responses: dict[str, Any] = {}
-        failure: Exception | None = None
-        for station in self.stations:
+        for index, station in enumerate(self.stations):
             try:
                 response = requests.get(OBSERVATIONS_URL.format(station=station), params=params, headers=headers,
                                         timeout=self.timeout)
-                response.raise_for_status()
-                responses[station] = response.json()
-            except (requests.ConnectionError, requests.Timeout):
-                raise
-            except (requests.RequestException, ValueError) as exc:
-                failure = failure or exc
+            except requests.ConnectionError as exc:  # a timeout while connecting too
+                if index == 0:
+                    raise
                 responses[station] = {"error": f"{type(exc).__name__}: {exc}"}
-        if not any(_answered(r) for r in responses.values()):
-            raise failure or ValueError("no station to fetch")
+                continue
+            except requests.RequestException as exc:  # a timeout reading this station's answer, say
+                responses[station] = {"error": f"{type(exc).__name__}: {exc}"}
+                continue
+            try:
+                responses[station] = {"status": response.status_code, "body": response.content.decode("utf-8")}
+            except UnicodeDecodeError as exc:
+                responses[station] = {"status": response.status_code, "error": f"UnicodeDecodeError: {exc}"}
+        if not any(_payload(r) is not None for r in responses.values()):
+            failed = [f"{station}: {_failure(r)}" for station, r in responses.items()]
+            more = len(failed) - FAILURES_NAMED
+            raise ValueError("no station answered with observations (" + "; ".join(failed[:FAILURES_NAMED])
+                             + (f"; and {more} more" if more > 0 else "") + ")")
         url = f"{OBSERVATIONS_URL}?start={params['start']}&limit={self.limit}"
         bundle = {"format": BUNDLE_FORMAT, "fetched_at": _iso(fetched_at), "window_hours": self.window_hours,
                   "url": url, "user_agent": self.user_agent, "stations": responses}
@@ -499,10 +516,11 @@ class NwsObservations:
 
     def parse(self, raw: bytes) -> tuple[list[Record], int, int]:
         """The bundle's observations as Records, its fetch time (the snapshot's compiled_at) and its
-        window. Only stations in the table count; an observation outside the window, without a value
-        of every field, or with a value the NWS rejected or questioned, is dropped; of each station's
-        observations in one UTC hour, the latest hourly METAR is kept, or else the latest observation.
-        Raises ValueError (or KeyError) on bytes that are not a bundle."""
+        window. Each station's body is read as JSON when the API answered it with success; only stations
+        in the table count; an observation outside the window, without a value of every field, or with
+        a value the NWS rejected or questioned, is dropped; of each station's observations in one UTC
+        hour, the latest hourly METAR is kept, or else the latest observation. Raises ValueError (or
+        KeyError) on bytes that are not a bundle."""
         bundle = json.loads(raw.decode("utf-8"))
         if not isinstance(bundle, dict) or bundle.get("format") != BUNDLE_FORMAT:
             raise ValueError(f"not a bundle of NWS observations ({BUNDLE_FORMAT})")
@@ -518,25 +536,43 @@ class NwsObservations:
             station = STATION_BY_ID.get(station_id)
             if station is None:
                 continue
-            for feature in _features(response):
+            for feature in _features(_payload(response)):
                 reading = _reading(feature, station)
                 if reading is not None and start <= reading.time < compiled_at:
                     readings.append(reading)
         return _identified(_hourly(readings)), compiled_at, window
 
 
-def _answered(response: Any) -> bool:
-    return isinstance(response, dict) and "error" not in response
+def _payload(response: Any) -> Any:
+    """What one station's frozen response says: its body read as JSON, when the API answered with
+    success (a 2xx status); None for an error status, a failed request or a body that is not JSON."""
+    if not isinstance(response, dict) or not isinstance(response.get("body"), str):
+        return None
+    status = response.get("status")
+    if isinstance(status, bool) or not isinstance(status, int) or not 200 <= status < 300:
+        return None
+    try:
+        return json.loads(response["body"])
+    except ValueError:
+        return None
 
 
-def _features(response: Any) -> list[Mapping[str, Any]]:
+def _failure(response: Any) -> str:
+    """Why a station's response holds no observations, in a few words."""
+    if isinstance(response, dict) and "error" in response:
+        return str(response["error"])
+    status = response.get("status") if isinstance(response, dict) else None
+    return f"HTTP {status}" if isinstance(status, int) and not 200 <= status < 300 else "a body that is not JSON"
+
+
+def _features(payload: Any) -> list[Mapping[str, Any]]:
     """The observations of one station's response: a feature collection (the observations endpoint)
-    or a single feature (the latest-observation endpoint); none for an error."""
-    if not _answered(response):
+    or a single feature (the latest-observation endpoint); none for anything else."""
+    if not isinstance(payload, dict):
         return []
-    if response.get("type") == "FeatureCollection":
-        return [f for f in response.get("features") or [] if isinstance(f, dict)]
-    return [response] if response.get("type") == "Feature" else []
+    if payload.get("type") == "FeatureCollection":
+        return [f for f in payload.get("features") or [] if isinstance(f, dict)]
+    return [payload] if payload.get("type") == "Feature" else []
 
 
 def _reading(feature: Mapping[str, Any], station: Station) -> _Reading | None:

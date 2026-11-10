@@ -41,6 +41,7 @@ from evalgen.util import canonical_json, read_json, slugify, write_json
 from conftest import TOY_PLUGIN, quiet
 from test_domain_neo import FIXTURE_BYTES as CAD_BYTES
 from test_domain_weather import FETCHED, nws_feature
+from test_domain_weather import FIXTURE as NWS_FIXTURE
 from test_usgs_forecast import fake_feed
 
 TOY_GENRE_PLUGIN = Path(__file__).resolve().parent / "toy_genre.py"
@@ -356,6 +357,115 @@ def test_a_private_config_a_run_cannot_follow_is_refused_before_anything_is_writ
     assert not (tmp_path / "run").exists()
 
 
+def test_a_config_that_gives_a_key_twice_is_malformed(registries, tmp_path, capsys):
+    """JSON readers keep the last of two members with one key, so a revealed config could show a decoy first
+    (domains with nothing held out, then the real ones) and still verify against the commitment. A file that
+    gives a key twice in any one object is malformed: verify-config refuses to check it (exit 2), and no run
+    is generated from it."""
+    config = write_config(tmp_path / "private.json")
+    run = pipeline.generate(GenerateConfig(seed=2, instances=1, mix="random", private_config=str(config)),
+                            tmp_path / "run", log=quiet)
+    data = json.loads(config.read_text(encoding="utf-8"))
+    body = json.dumps(data)
+    decoys = {
+        "domains": body.replace('"domains": ', '"domains": {"public": ["earthquakes", "toy"], "held_out": []}, '
+                                               '"domains": ', 1),
+        "held_out": body.replace('"held_out": ["toy"]', '"held_out": [], "held_out": ["toy"]', 1),
+    }
+    for key, text in decoys.items():
+        assert json.loads(text) == data and verify_config(json.loads(text), config_commitment(data))  # as read before
+        path = tmp_path / f"decoy-{key}.json"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(MixError, match=f"malformed: it gives the key '{key}' twice in one object"):
+            verify_private_config(path, run)
+        assert cli.main(["verify-config", str(run), str(path)]) == 2
+        assert "error:" in capsys.readouterr().err
+        with pytest.raises(MixError, match=f"is malformed: it gives the key '{key}' twice"):
+            pipeline.generate(GenerateConfig(seed=2, instances=1, mix="random", private_config=str(path)),
+                              tmp_path / "refused", log=quiet)
+    assert not (tmp_path / "refused").exists()
+    assert cli.main(["verify-config", str(run), str(config)]) == 0  # the config itself still verifies
+
+
+def test_a_config_commits_to_the_bytes_of_the_plugins_it_pins(registries, tmp_path, monkeypatch):
+    """A config names its plugins by path, so its commitment covers what a held-out domain or genre is only
+    through the SHA-256 it gives a plugin. A pinned plugin whose bytes differ is refused before any of its
+    code runs, at generation and at every later step; a plugin given by its path alone loads as before, with
+    a warning when it has changed since generation."""
+    private = tmp_path / "private"
+    private.mkdir()
+    domain_file, genre_file = private / "toy_domain.py", private / "toy_genre.py"
+    domain_file.write_bytes(TOY_PLUGIN.read_bytes())
+    genre_file.write_bytes(TOY_GENRE_PLUGIN.read_bytes())
+    sha = hashlib.sha256(domain_file.read_bytes()).hexdigest()
+    data = json.loads(write_config(tmp_path / "private.json").read_text(encoding="utf-8"))
+    data["plugins"] = [{"path": "private/toy_domain.py", "sha256": sha.upper()}, "private/toy_genre.py"]
+    config = tmp_path / "private.json"
+    config.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    plan = plan_mix("random", config)
+    assert plan.config.plugins == (domain_file.resolve(), genre_file.resolve())
+    assert plan.config.plugin_sha256 == (sha, None) and plan.inventory.domain_split("toy") == HELD_OUT
+    run = pipeline.generate(GenerateConfig(seed=4, instances=2, mix="random", private_config=str(config)),
+                            tmp_path / "run", log=quiet)
+    manifest = read_json(run / "manifest.json")
+    assert manifest["private_config_commitment"] == config_commitment(data)  # the SHA-256 is part of what is committed
+    assert [entry["sha256"] for entry in manifest["plugins"]] == [
+        sha, hashlib.sha256(genre_file.read_bytes()).hexdigest()]
+
+    marker = tmp_path / "EXECUTED.txt"
+    planted = f"\nfrom pathlib import Path as _P\n_P({str(marker)!r}).write_text('ran')\n"
+    domain_file.write_text(domain_file.read_text(encoding="utf-8") + planted, encoding="utf-8")
+    again = GenerateConfig(seed=4, instances=2, mix="random", private_config=str(config))
+    for step in (lambda: pipeline.run_models(run, ["oracle"], private_config=str(config), log=quiet),
+                 lambda: pipeline.build_report(run, private_config=str(config), log=quiet),
+                 lambda: pipeline.generate(again, tmp_path / "refused", log=quiet)):
+        new_process(monkeypatch, [domain_file, genre_file])
+        with pytest.raises(MixError, match=f"toy_domain.py is not the file its private run config commits to: its "
+                                           f"SHA-256 is [0-9a-f]{{64}}, and the config gives {sha}"):
+            step()
+    assert not marker.exists() and not (tmp_path / "refused").exists()
+
+    domain_file.write_bytes(TOY_PLUGIN.read_bytes())  # restored: the pinned bytes load again
+    genre_file.write_text(genre_file.read_text(encoding="utf-8") + "\n# edited\n", encoding="utf-8")
+    new_process(monkeypatch, [domain_file, genre_file])
+    log: list[str] = []
+    pipeline.run_models(run, ["oracle"], private_config=str(config), log=log.append)
+    assert any("toy_genre.py has changed since the run was generated" in line for line in log)  # unpinned: a warning
+
+    good = {"path": "x.py", "sha256": "ab" * 32}
+    for entries in ([{"path": "x.py"}], [dict(good, sha256="ab" * 31)], [dict(good, sha256="zz" * 32)],
+                    [dict(good, path="")], [dict(good, size=1)], [dict(good, sha256=None)], [dict(good, path=good)],
+                    [5], [""]):
+        problems = config_problems(dict(data, plugins=entries))
+        assert any("'plugins' must be a list of paths" in p for p in problems), entries
+    assert config_problems(dict(data, plugins=[good, "y.py", dict(good, sha256="AB" * 32)])) == []
+    assert config_problems({k: v for k, v in data.items() if k != "plugins"}) == []  # a config without plugins
+
+
+def test_a_plugin_that_its_registry_refuses_is_a_config_error(registries, tmp_path, capsys):
+    """A plugin may not take a name that a built-in entry has, nor define something that is no domain: the
+    run is refused with a MixError before anything is written, and the command line says so and exits 2."""
+    plugins = {
+        "clash.py": "from evalgen.domains.earthquakes import Earthquakes\n\n\nclass Clash(Earthquakes):\n"
+                    "    pass\n\n\nDOMAIN = Clash()\n",
+        "classic.py": "from evalgen.genres.classic import Classic\n\nGENRE = Classic()\n",
+        "number.py": "DOMAIN = 5\n",
+    }
+    messages = {"clash.py": "two domains are named 'earthquakes'", "classic.py": "two genres are named 'classic'",
+                "number.py": "evalgen_plugin_[0-9a-f]+ must define DOMAIN, an instance of"}
+    for name, source in plugins.items():
+        (tmp_path / name).write_text(source, encoding="utf-8")
+        config = write_config(tmp_path / f"{name}.json", plugins=(TOY_PLUGIN, tmp_path / name))
+        with pytest.raises(MixError, match=f"the plugin .*{name} cannot be registered: {messages[name]}"):
+            pipeline.generate(GenerateConfig(seed=1, mix="random", private_config=str(config)), tmp_path / "run",
+                              log=quiet)
+        out = tmp_path / "cli-run"
+        assert cli.main(["generate", "--seed", "1", "--mix", "random", "--private-config", str(config),
+                         "--out", str(out)]) == 2
+        assert f"error: the plugin {(tmp_path / name).resolve()} cannot be registered" in capsys.readouterr().err
+        assert not (tmp_path / "run").exists() and not out.exists()
+
+
 def test_the_example_config_holds_out_the_test_only_entries_and_says_it_is_an_example(registries):
     path = Path(__file__).resolve().parents[1] / "configs" / "private.example.json"
     data = read_json(path)
@@ -537,6 +647,27 @@ def test_accuracy_by_domain_and_by_genre(held_out_run):
                 n: (tally[n, True], tally[n, True] + tally[n, False]) for n in names}, (model, key)
         assert [(n, e["split"]) for n, e in m["by_domain"].items()] == [("earthquakes", PUBLIC), ("toy", HELD_OUT)]
         assert [(n, e["split"]) for n, e in m["by_genre"].items()] == [("classic", PUBLIC), ("toy-telex", HELD_OUT)]
+
+
+def test_accuracy_by_template_keeps_each_domains_templates_apart(held_out_run, small_run):
+    """Every domain has its own P01-P12 and twins, so off the legacy path accuracy by template is keyed by
+    domain and template ("toy/N03"): a run of several domains never pools one domain's P01 with another's.
+    A legacy report keeps its 0.2.0 keys, the template IDs alone (and is pinned whole elsewhere)."""
+    domain_of = {inst.instance_id: inst.domain for inst in held_out_run.instances}
+    for model in MODELS:
+        rows = [r for r in read_json(held_out_run.run / "scores" / f"{slugify(model)}.json")["rows"]
+                if r["variant"] == "v0"]
+        tally = Counter((f"{domain_of[r['instance_id']]}/{r['template_id']}", r["correct"]) for r in rows)
+        keys = sorted({key for key, _ in tally})
+        by_template = held_out_run.models[model]["by_template"]
+        assert list(by_template) == keys and all(re.fullmatch(r"(?:earthquakes|toy)/[PN]\d{2}", key) for key in keys)
+        assert {key: (e["k"], e["n"]) for key, e in by_template.items()} == {
+            key: (tally[key, True], tally[key, True] + tally[key, False]) for key in keys}
+    shared = {key.split("/")[1] for key in keys if key.startswith("toy/")} & {
+        key.split("/")[1] for key in keys if key.startswith("earthquakes/")}
+    assert shared  # template IDs that both domains ask, kept apart
+    for model in read_json(small_run / "report.json")["models"]:
+        assert model["by_template"] and all(re.fullmatch(r"[PN]\d{2}", key) for key in model["by_template"])
 
 
 def test_a_held_out_penalty_is_flagged_by_its_own_gap_and_only_by_it(held_out_run):
@@ -892,6 +1023,50 @@ def test_a_live_run_of_several_domains_replays_from_its_frozen_snapshots(tmp_pat
     with pytest.raises(MixError, match="--snapshot-file"):
         pipeline.generate(GenerateConfig(seed=18, snapshot_dir=str(live / "snapshot")), tmp_path / "refused", log=quiet)
     assert not (tmp_path / "refused").exists()
+
+
+def test_a_frozen_feed_that_a_run_cannot_replay_is_refused_before_anything_is_written(tmp_path, capsys):
+    """A frozen feed replays one domain's live source. A domain without a live source, a file that is not
+    there, and another source's bytes (which may even parse, to no record at all) are refused before the run
+    directory exists: with a MixError (or FileNotFoundError), which the command line reports as an error with
+    exit status 2, off the legacy path and on it (its frozen USGS feed), from --snapshot-file and from the
+    frozen snapshots of --snapshot-dir."""
+    usgs, _ = fake_feed()
+    feeds = {"usgs.geojson": usgs, "cad.json": CAD_BYTES, "nws.json": NWS_FIXTURE.read_bytes(), "junk.json": b"<html>"}
+    for name, raw in feeds.items():
+        (tmp_path / name).write_bytes(raw)
+    cases = [
+        (["--mix", "invented:classic"], "usgs.geojson", "invented has no live source whose frozen bytes"),
+        (["--mix", "weather:news"], "cad.json", "is not a frozen feed of the live source of weather (nws): ValueError: "
+                                                "not a bundle of NWS observations"),
+        (["--mix", "neo:classic"], "nws.json", "is not a frozen feed of the live source of neo (jpl): ValueError"),
+        (["--mix", "earthquakes:news"], "cad.json", "holds no usable record of the live source of earthquakes (usgs)"),
+        ([], "nws.json", "holds no usable record of the live source of earthquakes (usgs)"),  # the legacy path
+        ([], "junk.json", "is not a frozen feed of the live source of earthquakes (usgs): JSONDecodeError"),
+        (["--mix", "neo:classic"], "missing.json", "the frozen feed"),
+    ]
+    out = tmp_path / "refused"
+    for argv, name, message in cases:
+        argv = ["generate", "--seed", "3", "--instances", "2", *argv, "--snapshot-file", str(tmp_path / name),
+                "--out", str(out)]
+        assert cli.main(argv) == 2, argv
+        err = capsys.readouterr().err
+        assert err.startswith("error: ") and message in err, err
+        assert not out.exists()
+    with pytest.raises(MixError, match="the frozen feed cannot be replayed: .* is not a frozen feed of the live source "
+                                       "of neo"):
+        pipeline.generate(GenerateConfig(seed=3, mix="neo:classic", snapshot_file=str(tmp_path / "usgs.geojson")),
+                          out, log=quiet)
+    with pytest.raises(FileNotFoundError, match="is not a file"):
+        pipeline.generate(GenerateConfig(seed=3, mix="neo:classic", snapshot_file=str(tmp_path)), out, log=quiet)
+    # Frozen snapshots whose frozen bytes were damaged since: refused before anything is written, too.
+    frozen = pipeline.generate(GenerateConfig(seed=3, instances=1, mix="neo:classic",
+                                              snapshot_file=str(tmp_path / "cad.json")), tmp_path / "frozen", log=quiet)
+    (frozen / "snapshot" / "raw_cad.json").write_bytes(b"<html>busy</html>")
+    with pytest.raises(MixError, match="raw_cad.json is not a frozen feed of the live source of neo"):
+        pipeline.generate(GenerateConfig(seed=3, instances=1, mix="neo:classic", snapshot_dir=str(frozen / "snapshot")),
+                          out, log=quiet)
+    assert not out.exists()
 
 
 def run_files(run: Path) -> dict[str, bytes]:

@@ -26,6 +26,8 @@ A form is drawn in one of four frames, per form, from the rendering's preset:
               │ Cross-reference: same reading as by-60852  Location note: ________      │
               │ Form sent: 2026-03-19T13:36:15Z                                         │
               └─────────────────────────────────────────────────────────────────────────┘
+              (a field left blank in a row of two shows a line, as here, even where the rendering
+              leaves blanks empty: an empty one would put the next label where its value belongs)
     ruled     "INCIDENT REPORT — FORM IR-3          Serial no. 26-04417" between rules of "=" and "-",
               one field a line, values aligned, each unit in its label ("Wave height (m):     0.57")
     numbered  "REPORT FORM OB-11 · no. 4417", numbered fields ("2. Reading ID: by-33617") and
@@ -144,6 +146,10 @@ LAYOUTS = ("by_source", "by_time", "shuffled")
 NOTICE_PLACEMENTS = ("interleaved", "end")
 CHECKBOXES = {"brackets": ("[x]", "[ ]"), "capitals": ("[X]", "[ ]"), "ballot": ("☒", "☐"), "ticks": ("☑", "☐")}
 BLANKS = {"empty": "", "line": "________", "dash": "—", "word": "(blank)"}  # how a field left blank looks
+# How a blank looks in a row of two fields (the boxed frame's) when the rendering leaves blanks empty:
+# an empty field there would put the row's second label where the first label's value belongs
+# ("Cross-reference:   Location note: Dogger Bank"), so a row of two never shows an empty field.
+PAIRED_BLANK = BLANKS["line"]
 STATUS_ORDERS = ("settling_first", "settling_last")  # which status box comes first
 ZONES = (-12, 14)  # the UTC offsets, in whole hours, of sources whose records have no position
 
@@ -315,7 +321,10 @@ class _Boxed(_Frame):
         return f"{serial:06d}"
 
     def lay_out(self, title: str, number: str, cells: Sequence[Sequence[tuple[str, str]]]) -> list[str]:
-        texts = [[_cell(label, value) for label, value in row] for row in cells]
+        """The box: a row of two fields in two columns, each field of it shown even when left blank
+        (PAIRED_BLANK), so that no label stands where the field before it is written."""
+        texts = [[_cell(label, value or (PAIRED_BLANK if len(row) == 2 else "")) for label, value in row]
+                 for row in cells]
         left = max((len(row[0]) for row in texts if len(row) == 2), default=0)
         rows = [row[0] if len(row) == 1 else f"{row[0].ljust(left)}  {row[1]}" for row in texts]
         tag = f"No. {number}"
