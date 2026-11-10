@@ -101,7 +101,7 @@ def render(inst: Instance, domain, style, seed: int) -> str:
 def test_radio_reads_back_every_report_and_notice_exactly_in_every_style(toys, name):
     domain = get_domain(name)
     seen, forms = Counter(), set()
-    for seed in (0, 1, 2):
+    for seed in (0, 1, 2, 3):  # enough instances that every form of trap comes up in every domain
         for inst in instances_of(domain, seed):
             bound = domain.bind(inst.surface)
             glossary = bound.glossary()
@@ -222,12 +222,13 @@ FORMS = {"retraction": ("; disregard it", "; strike it from the log", "RETRACTIO
 
 def test_every_broadcast_is_named_by_the_reading_rules_and_reads_back_alone(toys):
     """Whatever wording and phrase a broadcast is drawn with, the domain's reading rules name it: the
-    0.2.0 rules for earthquakes (their prompts keep them), the genre-neutral rules for any other domain."""
+    0.2.0 rules for earthquakes (their prompts print them first), the genre-neutral rules for any other
+    domain."""
     dressed = toys.dressed.bind(toys.dressed.draw_surface(random.Random(1)))
     for domain in (EARTHQUAKES, toys.toy, dressed):
         rules = " ".join(domain.rules_text().split()).lower()
         if domain is EARTHQUAKES:
-            assert domain.rules_text() is READING_RULES
+            assert domain.rules_text().startswith(READING_RULES)
             words = RULE_WORDS
             notices = [Notice("retraction", "us7000abcd", 1_780_000_000, reason="quarry blast"),
                        Notice("correction", "us7000abcd", 1_780_000_900, new_mag=4.2, old_mag=4.57, mag_type="mb")]
@@ -366,9 +367,9 @@ def test_radio_runs_print_a_glossary_and_read_back_exactly(radio_runs, tmp_path)
             path = run / "instances" / f"{inst.instance_id}.json"  # instance files round trip byte for byte
             write_json(tmp_path / path.name, Instance.from_dict(read_json(path)).to_dict())
             assert (tmp_path / path.name).read_bytes() == path.read_bytes()
-        if name != "earthquakes":  # the genre-neutral rules name readbacks and message times
-            rules = " ".join(get_domain(name).rules_text().split())
-            assert "read-back repeat" in rules and "The time at which a message was sent" in rules
+        # The rules of every domain, earthquakes included, name readbacks and message times.
+        rules = " ".join(get_domain(name).rules_text().split())
+        assert "read-back repeat" in rules and "The time at which a message was sent" in rules
 
 
 def test_the_oracle_scores_100_percent_and_reproduces_every_key(radio_runs):

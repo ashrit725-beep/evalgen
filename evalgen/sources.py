@@ -8,7 +8,9 @@ A legacy run builds its earthquake snapshot with ``build_snapshot``, as 0.2.0 di
 legacy path builds the snapshot of its domain with ``build_domain_snapshot``: the domain's synthetic
 records, drawn on seed paths of their own, or its live source, fetched once, frozen, hashed and
 replayable, with the synthetic records as the fallback. Its records are the domain's own (Records,
-or Events for earthquakes), and ``save_snapshot`` and ``load_snapshot`` handle either.
+or Events for earthquakes), and ``save_snapshot`` and ``load_snapshot`` handle either. A run of
+several domains freezes one snapshot per domain; ``frozen_feed`` finds, in such a run's snapshot
+folder, what replays each domain: its frozen bytes, or nothing when the run drew synthetic records.
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ from typing import Any, Callable, Sequence
 import requests
 
 from . import __version__
+from .domains import DEFAULT_DOMAIN
 from .domains.base import Domain, Record
 from .geo import destination, haversine_km
 from .models import EVENT_ID_RE, Event
@@ -406,6 +409,35 @@ def build_domain_snapshot(domain: Domain, source: str, seedlog: SeedLog, *, pool
         note = f"{live.source} unavailable ({type(exc).__name__}: {exc}); fell back to synthetic data"
         return _synthetic_domain_snapshot(domain, seedlog, pool_size, note=note), None
     return _live_domain_snapshot(domain, seedlog, raw, records, compiled_at, window, url, None), raw
+
+
+def frozen_feed(directory: str | Path, domain: Domain) -> Path | None:
+    """What replays `domain` from the frozen snapshots of an earlier run: the frozen bytes of its live
+    source, or None when that run drew synthetic records for it (synthetic data was asked for, or the
+    source was out of reach and the run fell back), which the same seed draws again.
+
+    `directory` is the run's snapshot folder (or the run's own folder): snapshot/<domain>/ in a run of
+    several domains, snapshot/ itself in a run of one, whose snapshot.json names its domain (a legacy
+    run's names none: its snapshot is of earthquakes). Raises ValueError when the folder holds no
+    snapshot of the domain, or no frozen bytes of the live source its snapshot came from."""
+    directory = Path(directory)
+    for folder in (directory / domain.name, directory, directory / "snapshot" / domain.name, directory / "snapshot"):
+        meta = read_json(folder / "snapshot.json") if (folder / "snapshot.json").is_file() else None
+        if meta is not None and meta.get("domain", DEFAULT_DOMAIN) == domain.name:
+            break
+    else:
+        raise ValueError(f"{directory} holds no frozen snapshot of {domain.name}")
+    source = meta["source"]
+    if source == "synthetic":
+        return None
+    live = domain.live
+    if live is None or live.source != source:
+        raise ValueError(f"the frozen snapshot of {domain.name} in {folder} came from {source!r}, which is not its "
+                         "live source")
+    raw = folder / live.raw_filename
+    if not raw.is_file():
+        raise ValueError(f"{folder} holds no frozen {live.raw_filename} of {domain.name}'s live source")
+    return raw
 
 
 def _synthetic_domain_snapshot(domain: Domain, seedlog: SeedLog, pool_size: int, note: str | None = None) -> Snapshot:

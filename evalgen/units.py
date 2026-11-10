@@ -8,9 +8,15 @@ decimal form in Fahrenheit that converts back to them), so the codec is a pair:
     encode  a stored value written in a unit, with the fewest decimals that decode back to it exactly
     decode  the stored value that a number written in a unit stands for
 
-Every genre prints numbers with ``encode`` and every parser reads them with ``decode``, so the
-text-only oracle recovers each stored value exactly, in affine units (°F) as in scaled ones. A number
-without a unit (a magnitude, a latitude) uses the same codec with no unit.
+Both work in exact decimal arithmetic, with the scale and offset exactly as a glossary prints them
+(``plain_number``), as a careful reader with pencil and paper would, never in binary floating point.
+And encode never writes a number whose conversion falls exactly halfway between two stored values
+(273.9 K is 0.75 °C): it takes more decimals instead (273.85 K for 0.7 °C), so every printed number
+lies strictly closer to its stored value than to any other, and a reader recovers it whichever way
+they round a half. Every genre prints numbers with ``encode`` and every parser reads them with
+``decode``, so the text-only oracle recovers each stored value exactly, in affine units (°F) as in
+scaled ones, and so does any reader who converts as the glossary says. A number without a unit (a
+magnitude, a latitude) uses the same codec with no unit.
 
     Unit          a unit a value is printed or asked in, and its affine map to the canonical unit
     KM, MI        kilometres and miles: LENGTH, the units of depths, radii and distances
@@ -19,11 +25,15 @@ without a unit (a magnitude, a latitude) uses the same codec with no unit.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from decimal import ROUND_HALF_EVEN, Context, Decimal
 from typing import Any, Iterable, Mapping
 
 from .geo import KM_PER_MILE
 
 MAX_PLACES = 15  # a value that needs more decimals than this in some unit cannot be printed in it
+# Decimal arithmetic wide enough that no conversion of a printed number is ever rounded: a number of up
+# to MAX_PLACES decimals times a scale of up to 17 significant digits, plus an offset.
+EXACT = Context(prec=80, rounding=ROUND_HALF_EVEN)
 
 
 @dataclass(frozen=True)
@@ -85,22 +95,41 @@ def find_unit(units: Iterable[Unit], symbol: str) -> Unit:
     raise ValueError(f"unknown unit {symbol!r}")
 
 
+def exact_canonical(text: str, unit: Unit | None = None) -> Decimal:
+    """The number `text`, written in `unit` (None: the canonical unit or no unit), converted exactly into
+    the canonical unit: text × scale + offset in decimal arithmetic, with the scale and the offset as a
+    glossary prints them (plain_number writes a float's shortest exact decimal, its repr)."""
+    number = Decimal(text)
+    if unit is None:
+        return number
+    return EXACT.add(EXACT.multiply(number, Decimal(repr(unit.scale))), Decimal(repr(unit.offset)))
+
+
+def _stored(exact: Decimal, decimals: int) -> Decimal:
+    """An exact canonical value rounded to the stored places (halves to even, which encode never prints)."""
+    return exact.quantize(Decimal(1).scaleb(-decimals), context=EXACT)
+
+
 def decode(text: str, decimals: int, unit: Unit | None = None) -> float:
     """The stored value that the number `text`, written in `unit` (None: the canonical unit or no unit),
-    stands for: the number converted to the canonical unit and rounded to the stored `decimals`."""
-    printed = float(text)
-    return round(printed if unit is None else unit.to_canonical(printed), decimals)
+    stands for: the number converted exactly to the canonical unit and rounded to the stored `decimals`."""
+    return float(_stored(exact_canonical(text, unit), decimals)) + 0.0  # + 0.0: never -0.0
 
 
 def encode(value: float, decimals: int, unit: Unit | None = None) -> str:
     """A value stored to `decimals` places, written in `unit` (None: the canonical unit or no unit) with
-    the fewest decimals that decode back to it: "21" or "69.8" for 21.0 °C, never in exponent notation
-    and never as "-0". A value with more places than are stored has no such form (ValueError)."""
+    the fewest decimals that decode back to it, and whose exact conversion is strictly nearer to it than
+    to any other stored value: "21" or "69.8" for 21.0 °C, "273.85" (not "273.9", which converts to
+    0.75 exactly) for 0.7 °C in kelvins; never in exponent notation and never as "-0". A value with
+    more places than are stored has no such form (ValueError)."""
     shown = value if unit is None else unit.from_canonical(value)
+    half = Decimal(5).scaleb(-decimals - 1)
     for places in range(MAX_PLACES + 1):
         text = f"{shown:.{places}f}"
-        if decode(text, decimals, unit) == value:
-            return text.lstrip("-") if float(text) == 0 else text
+        exact = exact_canonical(text, unit)
+        stored = _stored(exact, decimals)
+        if float(stored) == value and EXACT.abs(EXACT.subtract(exact, stored)) != half:
+            return text.lstrip("-") if Decimal(text) == 0 else text
     raise ValueError(f"{value!r} cannot be printed in {unit.symbol if unit else 'its canonical unit'} so that it "
                      f"reads back exactly: is it stored to {decimals} decimal places?")
 

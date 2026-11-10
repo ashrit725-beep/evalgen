@@ -10,8 +10,8 @@ The run is answered by the oracle and the naive reader, scored and reported. The
   - the oracle scores 100% on every rendering;
   - no question is asked twice in the run;
   - every instance plants every kind of trap, every careless reading a trap records gives, from the text
-    of every rendering, the wrong answer recorded for it, and the naive reader is wrong only where a trap
-    explains it;
+    of every rendering, the wrong answer recorded for it, and holds at the printed precision (the misread
+    digest passes the key's guards), and the naive reader is wrong only where a trap explains it;
   - sniffing is exclusive: a genre's digests are claimed by that genre and by no other.
 
 Only classic claims a legacy (0.2.0) digest. Last, a random mix that draws every domain in every genre is
@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -44,10 +45,10 @@ from evalgen.mix import Plan, plan_mix
 from evalgen.models import Instance, Notice, Report
 from evalgen.ops import execute
 from evalgen.pipeline import GenerateConfig, question_specs
-from evalgen.questions import fingerprint
+from evalgen.questions import Context, fingerprint, guards_ok
 from evalgen.report import load_instances
 from evalgen.rules import Mishandle
-from evalgen.scoring import same_answer
+from evalgen.scoring import normalize, same_answer
 from evalgen.seeds import SeedLog
 from evalgen.solver import extract_digest, read_digest, solve
 from evalgen.util import read_json
@@ -229,12 +230,25 @@ def test_no_question_is_asked_twice(cells, name):
 @pytest.mark.parametrize("name", CELLS)
 def test_every_trap_is_planted_and_misread_as_recorded_in_every_rendering(cells, name):
     """Each careless reading a trap records is reproduced from the text of every rendering: the oracle's
-    reading of the digest, with that one trap misread, gives exactly the wrong answer recorded for it."""
+    reading of the digest, with that one trap misread, gives exactly the wrong answer recorded for it.
+    And it holds at the precision the text prints: the misread digest passes the question's guards, as
+    the snapshot does for the key (no record within a threshold's margin, no tie in a ranked or nearest
+    answer), so no rounding and no tie-break decides it."""
     cell = cells(name)
     domain = get_domain(cell.domain)
     conflict = "conflicting_magnitude" if cell.domain == "earthquakes" else "conflicting_value"
     for inst in cell.instances:
         assert {t.kind for t in inst.traps} == {"duplicate", "retraction", conflict}
+        bound = domain.bind(inst.surface)
+        margin = Context(inst.compiled_at, inst.window_hours).time_margin
+        for trap in inst.traps:
+            for qid, wrong in trap.affected.items():
+                q = inst.question(qid)
+                guarded = [execute(q.chain, misread, units=bound.units) for misread in (
+                    bound.resolve(inst.reports, inst.notices, Mishandle.from_dict(m)) for m in trap.mishandles)
+                    if guards_ok(q.chain, misread, domain=bound, time_margin=margin)]
+                assert any(same_answer(q.answer_type, wrong, x, unit=q.unit) for x in guarded), (
+                    inst.instance_id, trap.trap_id, qid)
         for rendering in inst.renderings:
             data = read_digest(rendering.prompt, domain=domain)  # the genre that recognises the digest
             units = parse_glossary(rendering.prompt).units
@@ -246,10 +260,10 @@ def test_every_trap_is_planted_and_misread_as_recorded_in_every_rendering(cells,
                                         resolver=domain.resolve) for m in trap.mishandles]
                     assert any(same_answer(q.answer_type, wrong, x, unit=q.unit) for x in readings), (
                         inst.instance_id, rendering.variant, trap.trap_id, qid)
-                for qid, answers in trap.fallen.items():  # misread with other traps too: still wrong
+                for qid, answers in trap.fallen.items():  # misread with other traps too: never exactly the key
                     q = inst.question(qid)
-                    assert answers and not any(same_answer(q.answer_type, a, inst.answer_key[qid], unit=q.unit)
-                                               for a in answers)
+                    key = normalize(q.answer_type, inst.answer_key[qid])
+                    assert answers and all(normalize(q.answer_type, a) != key for a in answers)
     oracle, naive = cell.models["oracle"]["traps"], cell.models["naive"]["traps"]
     assert oracle["caught"]["rate"] == 1.0 and oracle["fell_for_trap"]["k"] == 0
     assert naive["caught"]["k"] + naive["fell_for_trap"]["k"] == naive["caught"]["n"] > 0  # every miss is a trap's
@@ -308,6 +322,9 @@ def test_a_random_mix_of_every_domain_and_genre_repeats_from_its_seed(tmp_path):
     instances = load_instances(here)
     drawn = {(inst.domain, r.genre) for inst in instances for r in inst.renderings}
     assert drawn == {(d, g) for d in DOMAINS for g in GENRES}  # every domain in every genre
+    used = Counter((inst.domain, q.template_id) for inst in instances for q in inst.questions)
+    for (domain, template), n in used.items():  # every twin pair in step within each domain, from the start
+        assert abs(n - used[(domain, ("N" if template[0] == "P" else "P") + template[1:])]) <= 1, (domain, template)
     check = manifests[0]["self_check"]
     assert check["oracle_agreements"] == check["oracle_checks"] > 0 and check["problems"] == []
     for inst in instances:

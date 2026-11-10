@@ -54,10 +54,11 @@ from .ops import execute, role
 from .prompt import build_prompt, domain_prompt
 from .questions import Context, Template, compose_new_templates, compose_questions, phrase_question, public_templates
 from .report import code_fingerprint, load_instances, write_report
+from .rules import READING_RULES
 from .scoring import is_correct, normalize, same_answer
 from .seeds import SeedLog, derive_seed, fresh_nonce, seed_commitment
 from .solver import extract_digest, solve
-from .sources import LIVE, Snapshot, build_domain_snapshot, build_snapshot, save_snapshot
+from .sources import LIVE, Snapshot, build_domain_snapshot, build_snapshot, frozen_feed, save_snapshot
 from .traps import TrapConfig, inject_traps
 from .util import read_json, sha256_hex, slugify, write_json
 
@@ -72,7 +73,7 @@ class GenerateConfig:
     instances: int = 20
     source: str = "synthetic"  # or a live source: "usgs" (legacy), "live" or the domain's own (any other mix)
     feed: str = "day"  # the USGS feed of a legacy run: "hour" or "day"
-    snapshot_file: str | None = None
+    snapshot_file: str | None = None  # frozen bytes of one live source, replayed
     variants: int = 2  # metamorphic re-renderings per instance (besides the original)
     pool_size: int = 360  # synthetic snapshot size
     events_min: int = 20  # records per digest
@@ -85,8 +86,11 @@ class GenerateConfig:
     # private run config (held-out domains and genres, and the plugins that define them).
     mix: str = "legacy"
     private_config: str | None = None  # path of the private run config (JSON)
+    # The frozen snapshots of an earlier run off the legacy path (its snapshot folder), which replay every
+    # domain of the mix as that run read it: from its frozen live bytes, or synthetic (sources.frozen_feed).
+    snapshot_dir: str | None = None
 
-    OPTIONAL_KEYS: ClassVar[tuple[str, ...]] = ("mix", "private_config")  # recorded only when not default
+    OPTIONAL_KEYS: ClassVar[tuple[str, ...]] = ("mix", "private_config", "snapshot_dir")  # recorded only when set
 
     def to_dict(self) -> dict[str, Any]:
         """The config as the manifest records it: asdict without the 0.3.0 options that keep their
@@ -160,7 +164,8 @@ def compose_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Tem
     """An instance's records, questions and answer key. Off the legacy path, a domain with surface
     words draws them first (seed path "instance", i, "surface", which legacy runs never create) and
     the bound domain renames the sampled records (Domain.dress); everything after uses the bound
-    domain and the renamed records. The key is code over the snapshot's records."""
+    domain and the renamed records, and every twin pair stays in step from the run's first question
+    (compose_questions, strict_twins). The key is code over the snapshot's records."""
     surface = None
     if not legacy and domain.has_surface:
         surface = domain.draw_surface(seedlog.rng("instance", index, "surface"))
@@ -171,7 +176,7 @@ def compose_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Tem
     q_rng = seedlog.rng("instance", index, "questions")
     questions = compose_questions(events, public_templates(domain), new_templates, q_rng, ctx,
                                   q_rng.randint(cfg.questions_min, cfg.questions_max), used_chains, usage,
-                                  domain=domain)
+                                  domain=domain, strict_twins=not legacy)
     answer_key = {q.qid: execute(q.chain, events, units=domain.units) for q in questions}
     return Composition(domain, surface, events, questions, answer_key)
 
@@ -200,7 +205,9 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
     domain, events, questions, answer_key = composed.domain, composed.events, composed.questions, composed.answer_key
     units = domain.units
     glossary = None if genre_plan is None else domain.glossary()
-    trap_config = TrapConfig(id_style="sequence" if snapshot.source == "usgs" else "random")
+    # Off the legacy path a trap counts only careless readings that hold at the printed precision (traps).
+    trap_config = TrapConfig(id_style="sequence" if snapshot.source == "usgs" else "random",
+                             guarded=genre_plan is not None)
     reports, notices, traps = inject_traps(events, questions, seedlog.rng("instance", index, "traps"),
                                            compiled_at=snapshot.compiled_at, window_hours=snapshot.window_hours,
                                            config=trap_config, domain=domain)
@@ -235,8 +242,8 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
         items = [(q.qid, texts[q.qid], q.answer_type, q.unit) for q in questions]
         if forecast:
             items.append((forecast["qid"], forecaster.text(forecast), "probability", None))
-        if glossary is None:
-            prompt = build_prompt(digest, items, rules=domain.rules_text())
+        if glossary is None:  # the legacy (0.2.0) prompt, with the 0.2.0 reading rules
+            prompt = build_prompt(digest, items, rules=READING_RULES)
         else:
             prompt = domain_prompt(domain, digest, items, glossary)
         renderings.append(Rendering(variant=f"v{v}", seed=seed, style=style, digest=digest, question_text=texts,
@@ -306,12 +313,15 @@ def _instance_records(instances: Sequence[Instance], snapshots: Mapping[str, Sna
     return records
 
 
-def _replay_check(snapshot_file: str | None, log: Log) -> dict | None:
-    """When replaying another run's frozen feed, note whether that run used the same code."""
-    if not snapshot_file:
+def _replay_check(frozen: str | None, log: Log) -> dict | None:
+    """When replaying another run's frozen feed (a file of its snapshot folder) or its frozen snapshots
+    (the folder), note whether that run used the same code."""
+    if not frozen:
         return None
-    source_run = Path(snapshot_file).resolve().parent.parent
-    if not is_run_dir(source_run) or not (source_run / "manifest.json").exists():
+    path = Path(frozen).resolve()
+    source_run = next((folder for folder in [path, *path.parents][:4]
+                       if is_run_dir(folder) and (folder / "manifest.json").exists()), None)
+    if source_run is None:
         return {"source_run": None, "same_code": None}
     same = read_json(source_run / "manifest.json").get("code_sha256") == code_fingerprint()
     if not same:
@@ -327,17 +337,30 @@ def run_name(cfg: GenerateConfig) -> str:
     return name if cfg.mix.strip() == LEGACY else f"{slugify(cfg.mix)}-{name}"
 
 
-def _check_sources(plan: Plan, cfg: GenerateConfig) -> None:
+def _check_sources(plan: Plan, cfg: GenerateConfig) -> dict[str, Path | None]:
     """Refuse, before anything is written, sources that a run off the legacy path cannot use: the USGS
-    hour feed, a frozen snapshot file for several domains, or a live source that a domain lacks."""
+    hour feed, a frozen snapshot file for several domains, frozen snapshots that lack a domain of the
+    mix, or a live source that a domain lacks. With frozen snapshots (cfg.snapshot_dir), return what
+    replays each domain (sources.frozen_feed: its frozen bytes, or None for synthetic records)."""
     if cfg.feed != GenerateConfig.feed:
         raise MixError("the USGS feed is chosen in legacy runs only: off the legacy path its live source is the "
                        "day feed")
+    if cfg.snapshot_file and cfg.snapshot_dir:
+        raise MixError("give a frozen snapshot file or the frozen snapshots of a run, not both")
     if cfg.snapshot_file and len(plan.domains) > 1:
-        raise MixError("a frozen snapshot file replays the live source of one domain, and this mix draws several")
+        raise MixError("a frozen snapshot file replays the live source of one domain, and this mix draws several: "
+                       "replay the frozen snapshots of a run of several domains with --snapshot-dir RUN/snapshot")
     for domain in plan.domains:
         if cfg.source not in ("synthetic", LIVE) and (domain.live is None or domain.live.source != cfg.source):
             raise MixError(f"unknown source {cfg.source!r} for {domain.name}: use synthetic or {LIVE}")
+    if not cfg.snapshot_dir:
+        return {}
+    if not Path(cfg.snapshot_dir).is_dir():
+        raise FileNotFoundError(f"the frozen snapshots {cfg.snapshot_dir} do not exist")
+    try:
+        return {domain.name: frozen_feed(cfg.snapshot_dir, domain) for domain in plan.domains}
+    except ValueError as exc:
+        raise MixError(str(exc)) from None
 
 
 def _snapshot_entry(snapshots: Mapping[str, Snapshot]) -> dict[str, Any]:
@@ -376,13 +399,19 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
     the manifest. The run's mix (cfg.mix) says which domains and genres its instances are drawn from,
     and the private run config (cfg.private_config) which of them are held out; the default is the
     legacy (0.2.0) run, and any other mix is generated on seed paths of its own (see evalgen.mix). The
-    mix and the config are read, and their plugins loaded, before anything is written."""
+    mix and the config are read, and their plugins loaded, before anything is written. A run off the
+    legacy path replays an earlier run's frozen snapshots (cfg.snapshot_dir), one per domain, so that a
+    live run of several domains regenerates exactly from its seed, without the network."""
     plan = plan_mix(cfg.mix, cfg.private_config)
+    frozen: dict[str, Path | None] = {}
     if not plan.legacy:
-        _check_sources(plan, cfg)
+        frozen = _check_sources(plan, cfg)
     elif cfg.source == LIVE:
         raise MixError(f"a legacy run reads synthetic data or the USGS feed: the {LIVE} source of each domain is "
                        "read off the legacy path (give a mix)")
+    elif cfg.snapshot_dir:
+        raise MixError("a legacy run replays a frozen USGS feed with --snapshot-file; --snapshot-dir replays the "
+                       "frozen snapshots of a run off the legacy path")
     run_dir = Path(run_dir) if run_dir else RUNS_DIR / run_name(cfg)
     if run_dir.exists() and any(run_dir.iterdir()):
         if not force:
@@ -399,12 +428,21 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
     log(f"[generate] master seed {cfg.seed} (publishable commitment {commitment[:16]}…)")
     if plan.config is not None:
         log(f"[generate] private run config committed as {plan.config.commitment[:16]}… (publishable)")
+        if plan.config.example:
+            log("[generate] WARNING: the private run config keeps the nonce of a published EXAMPLE, so anyone can "
+                "recover which domains and genres it holds out from its commitment. Use it for demos only: a real "
+                "config needs a nonce of its own (python -c \"import secrets; print(secrets.token_hex(16))\").")
     domains = [EARTHQUAKES] if plan.legacy else plan.domains
     snapshots: dict[str, Snapshot] = {}
     for domain in domains:
         if plan.legacy:  # the 0.2.0 snapshot and seed paths
             snapshot, raw = build_snapshot(cfg.source, seedlog, feed=cfg.feed, pool_size=cfg.pool_size,
                                            snapshot_file=cfg.snapshot_file)
+        elif cfg.snapshot_dir:  # replay each domain as the frozen run read it: its frozen bytes, or synthetic
+            feed = frozen[domain.name]
+            snapshot, raw = build_domain_snapshot(domain, "synthetic" if feed is None else LIVE, seedlog,
+                                                  pool_size=cfg.pool_size,
+                                                  snapshot_file=None if feed is None else str(feed))
         else:
             snapshot, raw = build_domain_snapshot(domain, cfg.source, seedlog, pool_size=cfg.pool_size,
                                                   snapshot_file=cfg.snapshot_file)
@@ -420,7 +458,7 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
         log(f"[generate] snapshot{about}: {snapshot.source}, {len(snapshot.events)} events, "
             f"sha256 {snapshot.events_sha256[:16]}…")
 
-    replay = _replay_check(cfg.snapshot_file, log)
+    replay = _replay_check(cfg.snapshot_file or cfg.snapshot_dir, log)
     if plan.legacy:
         new_templates = {EARTHQUAKES.name: compose_new_templates(seedlog.rng("templates", "new"), EARTHQUAKES)}
     else:
@@ -482,13 +520,15 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
 
 
 def run_models(run_dir: Path, specs: Sequence[str], *, workers: int = 4, force: bool = False,
-               max_tokens: int = DEFAULT_MAX_TOKENS, log: Log = print) -> list[str]:
+               max_tokens: int = DEFAULT_MAX_TOKENS, private_config: str | Path | None = None,
+               log: Log = print) -> list[str]:
     """Ask each model (an adapter spec) every rendering's prompt, keeping replies already stored. A
-    run's plugins are loaded first; the simulated model also learns whether each instance's domain and
-    each rendering's genre are public or held out (Task.split, Task.genre_split)."""
+    run's plugins are loaded first, from its private run config (mix.load_run_plugins); the simulated
+    model also learns whether each instance's domain and each rendering's genre are public or held out
+    (Task.split, Task.genre_split)."""
     run_dir = Path(run_dir)
     manifest = read_json(run_dir / "manifest.json")
-    load_run_plugins(manifest, log=log)
+    load_run_plugins(manifest, private_config, log=log)
     inventory = Inventory.of_run(manifest)
     instances = load_instances(run_dir)
     finished = []
@@ -537,10 +577,11 @@ def run_models(run_dir: Path, specs: Sequence[str], *, workers: int = 4, force: 
     return finished
 
 
-def _load_plugins_of(run_dir: Path, log: Log) -> None:
-    """Load the plugins the run in `run_dir` was generated with, if its manifest lists any."""
+def _load_plugins_of(run_dir: Path, private_config: str | Path | None, log: Log) -> None:
+    """Load the plugins the run in `run_dir` was generated with, if its manifest lists any, from its
+    private run config (mix.load_run_plugins)."""
     if (run_dir / "manifest.json").exists():
-        load_run_plugins(read_json(run_dir / "manifest.json"), log=log)
+        load_run_plugins(read_json(run_dir / "manifest.json"), private_config, log=log)
 
 
 def _has_reply(path: Path) -> bool:
@@ -558,12 +599,14 @@ def _has_reply(path: Path) -> bool:
 # --------------------------------------------------------------------------------- score
 
 
-def score_run(run_dir: Path, *, log: Log = print) -> list[Path]:
+def score_run(run_dir: Path, *, private_config: str | Path | None = None, log: Log = print) -> list[Path]:
+    """Grade every stored reply. A run's plugins are loaded first, from its private run config: their
+    domains' answer types score the answers."""
     run_dir = Path(run_dir)
     responses = run_dir / "responses"
     if not responses.exists():
         raise FileNotFoundError(f"no responses in {run_dir}; run `python cli.py run {run_dir}` first")
-    _load_plugins_of(run_dir, log)  # their domains' answer types score the answers
+    _load_plugins_of(run_dir, private_config, log)
     instances = load_instances(run_dir)
     written = []
     for model_dir in sorted(p for p in responses.iterdir() if p.is_dir()):
@@ -618,22 +661,24 @@ def score_run(run_dir: Path, *, log: Log = print) -> list[Path]:
 # ------------------------------------------------------------------------- report & resolve
 
 
-def build_report(run_dir: Path, *, log: Log = print) -> Path:
-    _load_plugins_of(Path(run_dir), log)  # (the report loads them too; here a changed plugin is logged)
-    path = write_report(Path(run_dir))
+def build_report(run_dir: Path, *, private_config: str | Path | None = None, log: Log = print) -> Path:
+    """Write report.md and report.json. The report loads a run's plugins from its private run config,
+    and records any plugin that changed since generation."""
+    path = write_report(Path(run_dir), private_config=private_config, log=log)
     log(f"[report] {path} (+ report.json)")
     return path
 
 
-def resolve_run(run_dir: Path, *, now: int | None = None, fetch: Callable | None = None, log: Log = print) -> dict:
+def resolve_run(run_dir: Path, *, now: int | None = None, fetch: Callable | None = None,
+                private_config: str | Path | None = None, log: Log = print) -> dict:
     """Grade the pending forecasts whose window has passed, each with the forecaster of the domain
-    that asked it, and refresh the report."""
+    that asked it, and refresh the report. A run's plugins are loaded from its private run config."""
     run_dir = Path(run_dir)
     path = run_dir / "forecasts.json"
     if not path.exists():
         log("[resolve] this run has no forecast questions (they are only generated with --source usgs)")
         return {}
-    _load_plugins_of(run_dir, log)  # a plugin domain resolves its own forecasts
+    _load_plugins_of(run_dir, private_config, log)  # a plugin domain resolves its own forecasts
     forecasts = read_json(path)
     by_domain: dict[str | None, list[dict]] = {}  # a legacy run records no domain: its forecasts are earthquake ones
     for forecast in forecasts:
@@ -646,7 +691,7 @@ def resolve_run(run_dir: Path, *, now: int | None = None, fetch: Callable | None
         summary = {key: summary[key] + part[key] for key in summary}
     write_json(path, forecasts)
     if (run_dir / "scores").exists():
-        write_report(run_dir)
+        write_report(run_dir, private_config=private_config)
     log(f"[resolve] {summary['newly_resolved']} newly resolved, {summary['resolved']} resolved in total, "
         f"{summary['pending']} still pending" + (f"; errors: {summary['errors']}" if summary["errors"] else ""))
     return summary
@@ -665,9 +710,9 @@ def demo(seed: int = 42, instances: int = 20, *, source: str = "synthetic", mix:
     default = RUNS_DIR / f"demo-{run_name(cfg)}"
     run_dir = Path(run_dir) if run_dir else default
     generate(cfg, run_dir, force=force or run_dir == default, log=log)
-    run_models(run_dir, ["mock", "oracle", "naive"], log=log)
-    score_run(run_dir, log=log)
-    return build_report(run_dir, log=log)
+    run_models(run_dir, ["mock", "oracle", "naive"], private_config=private_config, log=log)
+    score_run(run_dir, private_config=private_config, log=log)
+    return build_report(run_dir, private_config=private_config, log=log)
 
 
 def _pct(x: float | None) -> str:

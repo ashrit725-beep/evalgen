@@ -4,6 +4,8 @@
     python cli.py demo --seed 42 --instances 20          # everything offline, no API keys
     python cli.py generate --seed 7 --instances 20 [--source usgs]
     python cli.py generate --seed 7 --mix random --private-config private.json   # held-out sources and genres
+    python cli.py run runs/random-synthetic-seed7 --private-config private.json   # (and score, report: plugins)
+    python cli.py generate --seed 7 --mix random --source live --snapshot-dir runs/X/snapshot   # replay a live run
     python cli.py run runs/synthetic-seed7 --models mock,oracle,naive,anthropic,openai:gpt-4.1
     python cli.py score runs/synthetic-seed7
     python cli.py report runs/synthetic-seed7
@@ -26,6 +28,8 @@ MIX_HELP = ("which domains and genres instances come from: legacy (0.2.0: earthq
             "default), random, or a list such as 'weather,neo:email' (a bare domain: in any genre)")
 CONFIG_HELP = ("the evaluator's private run config (JSON): held-out domains and genres and the plugins that define "
                "them; its hash is committed in the manifest (see configs/private.example.json)")
+LOAD_HELP = ("the private run config the run was generated with, for a run with private plugins: its plugins are "
+             "loaded from it (evalgen never runs code that a run directory names by itself)")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -38,7 +42,10 @@ def _parser() -> argparse.ArgumentParser:
     g.add_argument("--source", choices=SOURCES, default="synthetic",
                    help="synthetic data, the USGS feed (earthquakes), or each domain's live source (live; not legacy)")
     g.add_argument("--feed", choices=("hour", "day"), default="day", help="USGS feed window (usgs source only)")
-    g.add_argument("--snapshot-file", help="use a frozen USGS GeoJSON file instead of fetching the live feed")
+    g.add_argument("--snapshot-file", help="use a frozen USGS GeoJSON file (or a domain's frozen live feed) instead of "
+                                           "fetching the live feed")
+    g.add_argument("--snapshot-dir", help="replay the frozen snapshots of an earlier run off the legacy path (its "
+                                          "snapshot folder): every domain as that run read it, live or synthetic")
     g.add_argument("--variants", type=int, default=2, help="metamorphic re-renderings per instance")
     g.add_argument("--mix", default="legacy", help=MIX_HELP)
     g.add_argument("--private-config", help=CONFIG_HELP)
@@ -54,16 +61,20 @@ def _parser() -> argparse.ArgumentParser:
     r.add_argument("--force", action="store_true", help="ask again even if a stored reply exists")
     r.add_argument("--max-tokens", type=int, default=16000,
                    help="output-token limit per reply for API models (models that think need room)")
+    r.add_argument("--private-config", help=LOAD_HELP)
 
     s = sub.add_parser("score", help="parse and grade the stored replies")
     s.add_argument("run_dir")
+    s.add_argument("--private-config", help=LOAD_HELP)
 
     rep = sub.add_parser("report", help="write report.md and report.json")
     rep.add_argument("run_dir")
+    rep.add_argument("--private-config", help=LOAD_HELP)
 
     res = sub.add_parser("resolve", help="grade pending forecast questions against the USGS catalogue")
     res.add_argument("run_dir")
     res.add_argument("--now", help="pretend the current UTC time is this ISO timestamp (for testing)")
+    res.add_argument("--private-config", help=LOAD_HELP)
 
     d = sub.add_parser("demo", help="generate + run (mock, oracle, naive) + score + report, fully offline")
     d.add_argument("--seed", type=int, default=42)
@@ -88,21 +99,21 @@ def main(argv: list[str] | None = None) -> int:
             seed = fresh_seed() if args.seed is None else args.seed
             cfg = pipeline.GenerateConfig(seed=seed, instances=args.instances, source=args.source, feed=args.feed,
                                           snapshot_file=args.snapshot_file, variants=args.variants, mix=args.mix,
-                                          private_config=args.private_config)
+                                          private_config=args.private_config, snapshot_dir=args.snapshot_dir)
             run_dir = pipeline.generate(cfg, Path(args.out) if args.out else None, force=args.force)
             print(f"next: python cli.py run {run_dir}")
         elif args.command == "run":
             specs = [s.strip() for s in args.models.split(",") if s.strip()]
             pipeline.run_models(Path(args.run_dir), specs, workers=args.workers, force=args.force,
-                                max_tokens=args.max_tokens)
+                                max_tokens=args.max_tokens, private_config=args.private_config)
         elif args.command == "score":
-            pipeline.score_run(Path(args.run_dir))
+            pipeline.score_run(Path(args.run_dir), private_config=args.private_config)
         elif args.command == "report":
-            pipeline.build_report(Path(args.run_dir))
+            pipeline.build_report(Path(args.run_dir), private_config=args.private_config)
             print("\n".join(pipeline.summary_lines(Path(args.run_dir))))
         elif args.command == "resolve":
             now = parse_utc_iso(args.now) if args.now else None
-            pipeline.resolve_run(Path(args.run_dir), now=now)
+            pipeline.resolve_run(Path(args.run_dir), now=now, private_config=args.private_config)
         elif args.command == "demo":
             path = pipeline.demo(args.seed, args.instances, source=args.source, mix=args.mix,
                                  private_config=args.private_config, run_dir=Path(args.out) if args.out else None,

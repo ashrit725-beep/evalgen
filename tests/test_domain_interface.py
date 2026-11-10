@@ -13,12 +13,14 @@ import re
 import subprocess
 import sys
 from dataclasses import asdict, fields, replace
+from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 import pytest
 
 from evalgen import domains, scoring
 from evalgen.domains import DEFAULT_DOMAIN, Registry, all_domains
+from evalgen.domains import invented, neo, weather
 from evalgen.domains.base import Domain, FieldSpec, GlossaryField, Record, RecordReport
 from evalgen.domains.earthquakes import EARTHQUAKES
 from evalgen.geo import from_km, to_km
@@ -29,7 +31,7 @@ from evalgen.questions import _answer_steps, _quantity, fmt_num
 from evalgen.rules import Mishandle, report_to_event
 from evalgen.scoring import AnswerType, equivalent, is_correct, normalize, register_answer_type
 from evalgen.solver import parse_digest
-from evalgen.units import KM, LENGTH, MI, Unit
+from evalgen.units import KM, LENGTH, MI, Unit, decode, encode, exact_canonical
 from evalgen.util import plain_number, utc_iso, write_json
 
 from generic_quakes import GenericQuakes
@@ -347,6 +349,48 @@ def test_printed_values_read_back_exactly_in_every_unit():
     assert (mag.encode(4.27), mag.encode(4.0), mag.decode(4.27)) == ("4.27", "4", 4.27)  # unitless: as stored
     with pytest.raises(ValueError, match="stored to 1 decimal places"):
         temp.encode(21.05, fahrenheit)  # more places than the field stores: no printed form reads back
+
+
+def glossary_reading(text: str, unit: Unit) -> Decimal:
+    """A printed number converted exactly as the glossary states the conversion, with pencil and paper."""
+    offset = Decimal(plain_number(abs(unit.offset))) * (-1 if unit.offset < 0 else 1)
+    return Decimal(text) * Decimal(plain_number(unit.scale)) + offset
+
+
+def test_no_printed_value_converts_to_halfway_between_two_stored_ones():
+    """A reader who converts a printed number exactly as the glossary says, in decimal arithmetic, gets a
+    value strictly nearer to the stored one than to any other, so it rounds back to it whether halves go
+    up or to even: the codec never writes 273.9 K (exactly 0.75 °C) for a stored 0.7 °C, nor 37.5 kt
+    (exactly 69.45 km/h), 0.85625 LD (exactly 329,142.5 km) or 33 units of a quarter (8.25)."""
+    temp, wind, kelvin, knot = weather.TEMPERATURE, weather.WIND, weather.KELVIN, weather.KNOT
+    lunar = neo.LUNAR_DISTANCE
+    assert (encode(0.7, 1, kelvin), decode("273.85", 1, kelvin), decode("273.9", 1, kelvin)) == ("273.85", 0.7, 0.8)
+    assert encode(69.4, 1, knot) == "37.47" and encode(329_142.0, 0, lunar) == "0.856249"
+    assert exact_canonical("273.9", kelvin) == Decimal("0.75")  # exactly halfway: never printed
+    quarter, twenty_five = Unit("hk", "hecks", 0.25), Unit("gn", "gnats", 25.0)
+    assert encode(8.2, 1, quarter) == "32.8" and encode(36.2, 1, twenty_five) == "1.448"
+    cases = [(temp, unit, [t / 10 for t in range(-450, 500)]) for unit in temp.units[1:]]
+    cases += [(wind, knot, [t / 10 for t in range(0, 1200)]),
+              (neo.MISS_DISTANCE, lunar, [float(d) for d in range(329_000, 331_000)])]
+    cases += [(invented.SECONDARY, unit, [t / 10 for t in range(25, 2500)]) for unit in (quarter, twenty_five)]
+    checked = 0
+    for spec, unit, values in cases:
+        step = Decimal(1).scaleb(-spec.decimals)
+        for value in values:
+            text = encode(value, spec.decimals, unit)
+            exact, stored = glossary_reading(text, unit), Decimal(repr(value))
+            assert abs(exact - stored) < step / 2, (value, unit.symbol, text)  # never on a half, never past it
+            for rounding in (ROUND_HALF_UP, ROUND_HALF_EVEN):
+                assert exact.quantize(step, rounding=rounding) == stored.quantize(step), (value, text, rounding)
+            assert decode(text, spec.decimals, unit) == value
+            checked += 1
+    assert checked == 2 * 950 + 1200 + 2000 + 2 * 2475
+    # Answers asked in kelvins keep two places: a tenth of a degree Celsius ends in 5 hundredths of a kelvin.
+    assert kelvin.places(temp.decimals) == 2
+    # An invented quantity's relative tolerance covers half a stored step at its floor, the most by which a
+    # printed value read without rounding can miss the stored one.
+    for spec in invented.INVENTED.fields:
+        assert spec.tolerance[1] * invented.FLOORS[spec.key] >= 0.5 * 10 ** -spec.decimals
 
 
 def test_stored_earthquake_values_have_the_places_their_fields_print(instances, snapshot_events):

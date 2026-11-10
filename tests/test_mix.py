@@ -19,22 +19,29 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import requests
 
 import cli
 from evalgen import domains, genres, pipeline, scoring
 from evalgen.adapters import AdapterError, MockAdapter, Task, make_adapter
 from evalgen.answers import parse_reply
 from evalgen.domains import get_domain
+from evalgen.domains import weather as wx
+from evalgen.domains.weather import STATIONS, WEATHER
 from evalgen.genres import get_genre
-from evalgen.mix import (HELD_OUT, PUBLIC, Inventory, MixError, UnknownName, _genre_plan, config_commitment,
-                         load_plugin, plan_mix, verify_config, verify_private_config)
+from evalgen.mix import (HELD_OUT, NONCE_ADVICE, PUBLIC, Inventory, MixError, UnknownName, _genre_plan,
+                         config_commitment, config_problems, is_example_nonce, load_plugin, plan_mix, verify_config,
+                         verify_private_config)
 from evalgen.pipeline import GenerateConfig, question_specs, run_name
 from evalgen.report import answer_family, load_instances, model_metrics
 from evalgen.scoring import is_correct, normalize
 from evalgen.seeds import SeedLog, derive_seed
-from evalgen.util import canonical_json, read_json, slugify
+from evalgen.util import canonical_json, read_json, slugify, write_json
 
 from conftest import TOY_PLUGIN, quiet
+from test_domain_neo import FIXTURE_BYTES as CAD_BYTES
+from test_domain_weather import FETCHED, nws_feature
+from test_usgs_forecast import fake_feed
 
 TOY_GENRE_PLUGIN = Path(__file__).resolve().parent / "toy_genre.py"
 PENALTY = 0.45
@@ -121,6 +128,27 @@ def held_out_run(tmp_path_factory):
         report = read_json(run / "report.json")
         yield SimpleNamespace(run=run, config=config, log=log, report=report, instances=load_instances(run),
                               models={m["model"]: m for m in report["models"]},
+                              inventory=Inventory.of_run(read_json(run / "manifest.json")))
+
+
+@pytest.fixture(scope="module")
+def tied_run(tmp_path_factory):
+    """An explicit mix that ties the held-out domain to the held-out genre: earthquakes in either genre of
+    the private run config, the toy domain in toy-telex alone (seed 6, 40 instances). Answered by the
+    simulated model with a penalty on held-out domains, or on held-out genres; scored and reported."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(scoring, "ANSWER_TYPES", dict(scoring.ANSWER_TYPES))
+        patch.setattr(domains, "REGISTRY", domains.Registry())
+        patch.setattr(genres, "REGISTRY", genres.Registry())
+        root = tmp_path_factory.mktemp("tied")
+        config = write_config(root / "private.json")
+        run = pipeline.generate(GenerateConfig(seed=6, instances=40, mix="earthquakes,toy:toy-telex",
+                                               private_config=str(config)), root / "run", log=quiet)
+        pipeline.run_models(run, MODELS[3:], log=quiet)
+        pipeline.score_run(run, log=quiet)
+        pipeline.build_report(run, log=quiet)
+        report = read_json(run / "report.json")
+        yield SimpleNamespace(run=run, instances=load_instances(run), models={m["model"]: m for m in report["models"]},
                               inventory=Inventory.of_run(read_json(run / "manifest.json")))
 
 
@@ -297,7 +325,7 @@ def test_a_private_config_a_run_cannot_follow_is_refused_before_anything_is_writ
     neither = tmp_path / "neither.py"
     neither.write_text("VALUE = 1\n", encoding="utf-8")
     cases = [
-        (dict(good, nonce="too short"), "nonce must be a random string"),
+        (dict(good, nonce="too short"), "nonce must be at least 32 random hexadecimal digits"),
         ({k: v for k, v in good.items() if k != "genres"}, "it has no 'genres'"),
         (dict(good, seed=7), "'seed' is not a key"),
         (dict(good, domains={"public": ["toy"], "held_out": ["toy"]}), "lists toy more than once"),
@@ -337,6 +365,30 @@ def test_the_example_config_holds_out_the_test_only_entries_and_says_it_is_an_ex
     assert [p.name for p in plan.config.plugins] == ["toy_domain.py", "toy_genre.py"]
 
 
+def test_a_guessable_nonce_is_refused_and_the_example_nonce_is_flagged(registries, tmp_path):
+    """The nonce stops anyone from recovering a small config from its commitment, so it must look drawn:
+    32 hexadecimal digits or more, not a run of one digit or a pattern. The published example's nonce,
+    which anyone can read, still serves demos, and generate warns loudly that its commitment can be
+    guessed."""
+    good = json.loads(write_config(tmp_path / "good.json").read_text(encoding="utf-8"))
+    guessable = ("0000000000000000", "aaaaaaaaaaaaaaaa", "my-eval-nonce-01", "0" * 32, "ab" * 16,
+                 "0123456789abcdef" * 2, "f" * 64, "0011223344556677" * 2, secrets.token_hex(15), " " * 40, 2 ** 130,
+                 None)
+    for nonce in guessable:
+        assert config_problems(dict(good, nonce=nonce)) == [NONCE_ADVICE], nonce
+    for nonce in (secrets.token_hex(16), secrets.token_hex(16).upper(), secrets.token_hex(32)):
+        assert config_problems(dict(good, nonce=nonce)) == [], nonce
+    example = Path(__file__).resolve().parents[1] / "configs" / "private.example.json"
+    assert is_example_nonce(read_json(example)["nonce"]) and config_problems(read_json(example)) == []
+    for path, warned in ((example, True), (tmp_path / "good.json", False)):
+        log: list[str] = []
+        pipeline.generate(GenerateConfig(seed=3, instances=1, mix="random", private_config=str(path)),
+                          tmp_path / path.stem, log=log.append)
+        warnings = [line for line in log if "WARNING" in line]
+        assert bool(warnings) == warned
+        assert all("EXAMPLE" in line and "recover which domains and genres" in line for line in warnings)
+
+
 # ----------------------------------------------------------------------------------- plugins
 
 
@@ -357,7 +409,18 @@ def test_plugins_register_their_domain_and_genre(registries, tmp_path):
         load_plugin(tmp_path / "gone.py")
 
 
-def test_later_steps_load_the_plugins_a_run_was_generated_with(registries, tmp_path, monkeypatch):
+def new_process(monkeypatch, plugins=()) -> None:
+    """What a later step in a new process starts from: registries that know only the built-in entries,
+    and none of the files `plugins` executed yet."""
+    monkeypatch.setattr(domains, "REGISTRY", domains.Registry())
+    monkeypatch.setattr(genres, "REGISTRY", genres.Registry())
+    paths = {Path(p).resolve() for p in plugins}
+    for name, module in list(sys.modules.items()):
+        if name.startswith("evalgen_plugin_") and Path(getattr(module, "__file__", None) or "").resolve() in paths:
+            monkeypatch.delitem(sys.modules, name)
+
+
+def test_later_steps_load_the_plugins_a_run_was_generated_with(registries, tmp_path, monkeypatch, capsys):
     private = tmp_path / "private"
     private.mkdir()
     plugins = [private / "toy_domain.py", private / "toy_genre.py"]
@@ -368,22 +431,67 @@ def test_later_steps_load_the_plugins_a_run_was_generated_with(registries, tmp_p
                             tmp_path / "run", log=quiet)
     assert read_json(run / "manifest.json")["plugins"] == [
         {"path": str(p.resolve()), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()} for p in plugins]
-    # Each later step may run in a new process, whose registries know only the built-in entries.
-    for step in (lambda: pipeline.run_models(run, ["oracle", "mock"], log=quiet),
-                 lambda: pipeline.score_run(run, log=quiet), lambda: pipeline.build_report(run, log=quiet)):
-        monkeypatch.setattr(domains, "REGISTRY", domains.Registry())
-        monkeypatch.setattr(genres, "REGISTRY", genres.Registry())
-        step()
+    steps = (lambda **kw: pipeline.run_models(run, ["oracle", "mock"], log=quiet, **kw),
+             lambda **kw: pipeline.score_run(run, log=quiet, **kw), lambda **kw: pipeline.build_report(run, log=quiet, **kw))
+    # Each later step may run in a new process: it loads the plugins from the private run config the
+    # evaluator passes again, never from the paths the run names.
+    for step in steps:
+        new_process(monkeypatch, plugins)
+        with pytest.raises(MixError, match="pass its private run config"):
+            step()
+        step(private_config=str(config))
         assert get_domain("toy").name == "toy" and get_genre("toy-telex").name == "toy-telex"
-    oracle = {m["model"]: m for m in read_json(run / "report.json")["models"]}["oracle"]
+    # The same process that generated a run has run its plugins already: they are registered again.
+    new_process(monkeypatch)
+    pipeline.build_report(run, log=quiet)
+    report = read_json(run / "report.json")
+    oracle = {m["model"]: m for m in report["models"]}["oracle"]
     assert oracle["accuracy"]["rate"] == oracle["accuracy_all_renderings"]["rate"] == 1.0
+    assert report["plugins_changed"] == []
+    # A plugin edited since generation is loaded as the evaluator asked, and the report says so.
     log: list[str] = []
     plugins[1].write_text(plugins[1].read_text(encoding="utf-8") + "\n# edited\n", encoding="utf-8")
-    pipeline.build_report(run, log=log.append)
+    new_process(monkeypatch, plugins)
+    pipeline.build_report(run, private_config=str(config), log=log.append)
     assert any("toy_genre.py has changed since the run was generated" in line for line in log)
+    assert read_json(run / "report.json")["plugins_changed"] == [str(plugins[1].resolve())]
+    assert "these plugins have changed since this run was generated" in (run / "report.md").read_text(encoding="utf-8")
+    assert cli.main(["report", str(run), "--private-config", str(config)]) == 0
+    capsys.readouterr()
+    # A config the run did not commit to is refused, and so is a plugin that is gone.
+    other = write_config(tmp_path / "other.json", plugins=plugins)
+    with pytest.raises(MixError, match="not the private run config that this run committed to"):
+        pipeline.score_run(run, private_config=str(other), log=quiet)
     plugins[0].unlink()
     with pytest.raises(MixError, match="which is gone"):
-        pipeline.score_run(run, log=quiet)
+        pipeline.score_run(run, private_config=str(config), log=quiet)
+
+
+def test_a_run_directory_never_runs_code_that_it_names(registries, tmp_path, monkeypatch, capsys):
+    """A run received from someone else may name any file as one of its plugins, by an absolute path or one
+    relative to wherever its reader stands: no later step runs it, whatever SHA-256 the manifest gives,
+    unless the evaluator passes the private run config that the run committed to."""
+    received = pipeline.generate(GenerateConfig(seed=2, instances=1, mix="earthquakes:classic"),
+                                 tmp_path / "received", log=quiet)
+    pipeline.run_models(received, ["oracle"], log=quiet)
+    pipeline.score_run(received, log=quiet)
+    marker = tmp_path / "EXECUTED.txt"
+    notes = received / "notes.py"
+    notes.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n", encoding="utf-8")
+    sha = hashlib.sha256(notes.read_bytes()).hexdigest()
+    manifest = read_json(received / "manifest.json")
+    monkeypatch.chdir(tmp_path)
+    for named in (str(notes), "received/notes.py"):
+        write_json(received / "manifest.json", {**manifest, "plugins": [{"path": named, "sha256": sha}]})
+        for step in (lambda: pipeline.run_models(received, ["oracle"], force=True, log=quiet),
+                     lambda: pipeline.score_run(received, log=quiet), lambda: pipeline.build_report(received, log=quiet)):
+            with pytest.raises(MixError, match="pass its private run config"):
+                step()
+        assert cli.main(["report", str(received)]) == 2 and "never runs code" in capsys.readouterr().err
+        config = write_config(tmp_path / "private.json", plugins=[notes])
+        with pytest.raises(MixError, match="not the private run config that this run committed to"):
+            pipeline.build_report(received, private_config=str(config), log=quiet)
+    assert not marker.exists()
 
 
 # ------------------------------------------------------------------------------ the report
@@ -451,6 +559,25 @@ def test_a_held_out_penalty_is_flagged_by_its_own_gap_and_only_by_it(held_out_ru
     assert "overfitting? (sources)" in summary and "overfitting? (genres)" in summary
 
 
+def test_a_penalty_is_flagged_by_its_own_gap_even_where_the_mix_ties_the_held_out_sets(tied_run):
+    """Every toy instance is rendered in the held-out genre alone, so held-out domains come only in held-out
+    genres. Each gap is still compared within the other split: a model weak on held-out genres alone shows
+    no source gap, and one weak on held-out domains alone no genre gap; each is flagged by its own."""
+    inventory = tied_run.inventory
+    toy = [inst for inst in tied_run.instances if inst.domain == "toy"]
+    assert toy and all(inventory.genre_split(r.genre) == HELD_OUT for inst in toy for r in inst.renderings)
+    assert any(inventory.genre_split(inst.renderings[0].genre) == HELD_OUT  # the public domain in either genre
+               for inst in tied_run.instances if inst.domain == "earthquakes")
+    on_domains, on_genres = (tied_run.models[f"mock:held_out_{what}={PENALTY}"] for what in ("domains", "genres"))
+    assert on_domains["source_gap"]["flagged"] and not on_domains["genre_gap"]["flagged"]
+    assert on_genres["genre_gap"]["flagged"] and not on_genres["source_gap"]["flagged"]
+    for gap in (on_domains["source_gap"], on_genres["genre_gap"]):
+        assert gap["adjusted"]["public_minus_held_out"] > 0.25 and 0.0 < gap["adjusted"]["coverage"] < 1.0
+    summary = "\n".join(pipeline.summary_lines(tied_run.run))
+    assert "overfitting? (sources)\n" in summary + "\n" and "overfitting? (genres)\n" in summary + "\n"
+    assert "overfitting? (sources, genres)" not in summary
+
+
 def test_a_penalised_mock_answers_like_the_plain_mock_outside_its_held_out_sets(held_out_run):
     def reply(model: str, inst, rendering) -> str:
         return read_json(held_out_run.run / "responses" / slugify(model)
@@ -490,7 +617,12 @@ def test_the_gaps_compare_public_and_held_out_sets_like_for_like(held_out_run):
         public, public, 0, len(originals) - public)
     assert gap["public_minus_held_out"] == 1.0 and gap["adjusted"]["public_minus_held_out"] == pytest.approx(1.0)
     assert gap["flagged"] and gap["adjusted"]["ci95"][0] > 0.5
-    assert gap["adjusted"]["coverage"] == pytest.approx(coverage(originals, lambda inst, q: inst.split, difficulty))
+    assert gap["adjusted"]["coverage"] == pytest.approx(coverage(  # strata of originals: also their genre's split
+        originals, lambda inst, q: inst.split, lambda inst, q: (*difficulty(inst, q), genre_split(inst.renderings[0]))))
+    # Compared within the split of the instance's domain, the genre gap of a model that is right exactly on
+    # the public domains is none at all, whatever share of each domain's renderings is in a public genre.
+    assert by_domain["genre_gap"]["adjusted"]["public_minus_held_out"] == pytest.approx(0.0)
+    assert not by_domain["genre_gap"]["flagged"]
     assert by_domain["genre_gap"]["public_minus_held_out"] == pytest.approx(
         sum(1 for inst, r, q in renderings if genre_split(r) == PUBLIC and inst.split == PUBLIC)
         / sum(1 for inst, r, q in renderings if genre_split(r) == PUBLIC)
@@ -506,14 +638,18 @@ def test_the_gaps_compare_public_and_held_out_sets_like_for_like(held_out_run):
         in_public, in_public, 0, len(renderings) - in_public)
     assert gap["public_minus_held_out"] == 1.0 and gap["adjusted"]["public_minus_held_out"] == pytest.approx(1.0)
     assert gap["flagged"]
-    assert gap["adjusted"]["coverage"] == pytest.approx(coverage(  # strata of renderings: also original or variant
-        renderings, lambda inst, r, q: genre_split(r), lambda inst, r, q: (*difficulty(inst, q), r.variant == "v0")))
+    assert gap["adjusted"]["coverage"] == pytest.approx(coverage(  # strata of renderings: also original or variant,
+        renderings, lambda inst, r, q: genre_split(r),        # and the split of the instance's domain
+        lambda inst, r, q: (*difficulty(inst, q), r.variant == "v0", inst.split)))
 
     def share(split: str) -> float:
         chosen = [inst for inst, _ in originals if inst.split == split]
         return sum(1 for inst in chosen if genre_split(inst.renderings[0]) == PUBLIC) / len(chosen)
 
     assert by_genre["source_gap"]["public_minus_held_out"] == pytest.approx(share(PUBLIC) - share(HELD_OUT))
+    # ... but compared within the split of the original's genre, the source gap of that model is none at all.
+    assert by_genre["source_gap"]["adjusted"]["public_minus_held_out"] == pytest.approx(0.0)
+    assert not by_genre["source_gap"]["flagged"]
 
     # A model right everywhere, or nowhere, shows no gap at all.
     for right in (True, False):
@@ -521,6 +657,17 @@ def test_the_gaps_compare_public_and_held_out_sets_like_for_like(held_out_run):
         for key in ("source_gap", "genre_gap"):
             assert flat[key]["public_minus_held_out"] == flat[key]["adjusted"]["public_minus_held_out"] == 0.0
             assert not flat[key]["flagged"]
+
+
+def test_every_twin_pair_stays_in_step_within_each_domain(held_out_run):
+    """Off the legacy path a template runs at most one question ahead of its twin from a run's first
+    question, within every domain of the run, so the public and new pools of each domain (and so of the
+    public and held-out sets) hold the same mix of final operations."""
+    counts = Counter((inst.domain, q.template_id) for inst in held_out_run.instances for q in inst.questions)
+    assert {domain for domain, _ in counts} == {"earthquakes", "toy"}
+    for (domain, template), n in counts.items():
+        twin = ("N" if template.startswith("P") else "P") + template[1:]
+        assert abs(n - counts[(domain, twin)]) <= 1, (domain, template, counts)
 
 
 def test_cross_genre_consistency_compares_renderings_in_different_genres(held_out_run):
@@ -657,3 +804,98 @@ def test_the_cli_generates_and_demos_a_mix_with_a_private_config(registries, tmp
     assert not (tmp_path / "refused").exists()
     assert run_name(GenerateConfig(seed=7)) == "synthetic-seed7"  # a legacy run keeps its 0.2.0 name
     assert run_name(GenerateConfig(seed=7, mix="toy:toy-telex", source="live")) == "toy_toy-telex-live-seed7"
+
+
+# ------------------------------------------------------------------ live runs of several domains
+
+
+class Served:
+    """A response of a live API, as the requests library gives it."""
+
+    def __init__(self, content: bytes) -> None:
+        self.content, self.status_code = content, 200
+
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self) -> object:
+        return json.loads(self.content)
+
+
+def live_apis(calls: list[str]):
+    """requests.get as the USGS, NWS and JPL CAD APIs would answer it, from test data, recording each URL:
+    a fake USGS day feed, synthetic NWS observations per station and the recorded CAD response."""
+    usgs, _ = fake_feed()
+    served = WEATHER.synthetic(random.Random(8), 600, int(FETCHED.timestamp()), 24)
+    stations = {s.id: {"type": "FeatureCollection", "features": [nws_feature(r) for r in served if r.source == s.id]}
+                for s in STATIONS}
+
+    def get(url: str, **kwargs) -> Served:
+        calls.append(url)
+        if url.startswith("https://earthquake.usgs.gov/"):
+            return Served(usgs)
+        if url.startswith("https://api.weather.gov/stations/"):
+            return Served(json.dumps(stations[url.split("/")[-2]]).encode())
+        if url.startswith("https://ssd-api.jpl.nasa.gov/cad.api"):
+            return Served(CAD_BYTES)
+        raise requests.ConnectionError(f"no such test API: {url}")
+
+    return get
+
+
+def test_a_live_run_of_several_domains_replays_from_its_frozen_snapshots(tmp_path, monkeypatch):
+    """A live run of several domains freezes and hashes one snapshot per domain. Its snapshot folder
+    (--snapshot-dir) replays every one, with the network blocked and another clock: each domain from its
+    own frozen bytes, and invented, which has no live source, from the synthetic records the seed draws.
+    So the run regenerates from its seed byte for byte, as plan constraint 3 asks of every run."""
+    calls: list[str] = []
+    mix = "earthquakes:classic,weather:news,neo:email,invented:chat"
+    monkeypatch.setattr(wx, "_utc_now", lambda: FETCHED)
+    with monkeypatch.context() as api:
+        api.setattr(requests, "get", live_apis(calls))
+        live = pipeline.generate(GenerateConfig(seed=18, instances=5, mix=mix, source="live"), tmp_path / "live",
+                                 log=quiet)
+    assert len(calls) == 2 + len(STATIONS)  # each source fetched once (the NWS once per station)
+    manifest = read_json(live / "manifest.json")
+    for name in ("earthquakes", "weather", "neo"):
+        frozen = live / "snapshot" / name / get_domain(name).live.raw_filename
+        assert hashlib.sha256(frozen.read_bytes()).hexdigest() == manifest["snapshots"][name]["raw_sha256"]
+    assert manifest["snapshots"]["invented"]["source"] == "synthetic"
+    assert {inst.domain for inst in load_instances(live)} == {"earthquakes", "weather", "neo", "invented"}
+
+    def unreachable(*args, **kwargs):
+        raise requests.ConnectionError("offline: a replay never asks the network")
+
+    monkeypatch.setattr(requests, "get", unreachable)
+    monkeypatch.setattr(requests.Session, "send", unreachable)
+    monkeypatch.setattr(wx, "_utc_now", lambda: FETCHED.replace(year=2030))  # nor does it read the clock
+    replay = pipeline.generate(GenerateConfig(seed=18, instances=5, mix=mix, source="live",
+                                              snapshot_dir=str(live / "snapshot")), tmp_path / "replay", log=quiet)
+    files, again = (run_files(run) for run in (live, replay))
+    assert sorted(files) == sorted(again) and len(files) >= 5 * (1 + 3) + 4 + 3  # instances, prompts, snapshots
+    assert [name for name in files if files[name] != again[name]] == []
+    a, b = (read_json(run / "manifest.json") for run in (live, replay))
+    assert b["config"] == {**a["config"], "snapshot_dir": str(live / "snapshot")}
+    assert b["replay"] == {"source_run": str(live.resolve()), "same_code": True}
+    for name, snapshot in a["snapshots"].items():  # the same records, from the same bytes; noted as a replay
+        assert {k: v for k, v in snapshot.items() if k not in ("note", "fetched_at")} == {
+            k: v for k, v in b["snapshots"][name].items() if k not in ("note", "fetched_at")}
+    volatile = {"run_id", "seed_commitment", "seed_nonce", "generated_at_utc", "config", "replay", "snapshots"}
+    assert {k: v for k, v in a.items() if k not in volatile} == {k: v for k, v in b.items() if k not in volatile}
+    # One frozen file replays one domain only; frozen snapshots must hold every domain of the mix.
+    with pytest.raises(MixError, match="--snapshot-dir"):
+        pipeline.generate(GenerateConfig(seed=18, mix=mix, snapshot_file=str(live / "snapshot" / "neo" / "raw_cad.json")),
+                          tmp_path / "refused", log=quiet)
+    with pytest.raises(MixError, match="holds no frozen snapshot of neo"):  # one domain's folder: weather's
+        pipeline.generate(GenerateConfig(seed=18, mix="weather:news,neo:email",
+                                         snapshot_dir=str(live / "snapshot" / "weather")), tmp_path / "refused", log=quiet)
+    with pytest.raises(MixError, match="--snapshot-file"):
+        pipeline.generate(GenerateConfig(seed=18, snapshot_dir=str(live / "snapshot")), tmp_path / "refused", log=quiet)
+    assert not (tmp_path / "refused").exists()
+
+
+def run_files(run: Path) -> dict[str, bytes]:
+    """Every file of a run but those that say when and from where it was made (its manifest, and the
+    metadata of its snapshots), by path."""
+    return {p.relative_to(run).as_posix(): p.read_bytes() for p in sorted(run.rglob("*"))
+            if p.is_file() and p.name not in ("manifest.json", "snapshot.json")}

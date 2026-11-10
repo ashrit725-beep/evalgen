@@ -20,7 +20,7 @@ turn before any of them twice. A mix that names a single domain and genre draws 
 
 The private run config is a JSON file the evaluator keeps private until after the evaluation:
 
-    {"nonce": "<random, at least 16 characters>",
+    {"nonce": "<at least 32 random hexadecimal digits: secrets.token_hex(16)>",
      "domains": {"public": ["earthquakes"], "held_out": ["tides"]},
      "genres": {"public": ["classic"], "held_out": ["fax"]},
      "plugins": ["plugins/tides.py", "plugins/fax.py"],
@@ -28,13 +28,19 @@ The private run config is a JSON file the evaluator keeps private until after th
 
 Plugins are Python files outside the public repository (paths relative to the config) that define a
 domain (``DOMAIN``), a genre (``GENRE``) or both; they are loaded before any name is looked up, and a
-run records them so that every later step (run, score, report, resolve) loads them again. With a
+run records each one's path and SHA-256. Every later step (run, score, report, resolve) loads them
+again from the config, which the evaluator passes again (``--private-config``) and the run's
+commitment authenticates (``load_run_plugins``): evalgen never executes a file that a run directory
+names by itself, so reporting on a run received from someone else runs none of its code. With a
 config, a run draws only from the domains and genres the config lists, with their splits; without
 one, every registered domain and genre is public. Like the seed, the config is committed by hash:
 the manifest records ``sha256(canonical_json(config))`` (``config_commitment``), which can be
 published before the evaluation, and the random nonce stops anyone from guessing a small config from
-its hash. Once the config is revealed, ``verify_private_config`` (``cli.py verify-config``) checks it
-against a run's manifest.
+its hash. So a nonce must look drawn, not typed (``nonce_problem``): 32 hexadecimal digits or more,
+not a run of one digit or a pattern. The one exception is a nonce that says it is an EXAMPLE, as the
+published configs/private.example.json does: it is accepted, so that the demo of held-out sets works
+offline, but generate warns loudly that its commitment can be guessed. Once the config is revealed,
+``verify_private_config`` (``cli.py verify-config``) checks it against a run's manifest.
 """
 from __future__ import annotations
 
@@ -61,7 +67,14 @@ SPLITS = (PUBLIC, HELD_OUT)  # the order in which inventories, reports and table
 
 CONFIG_KEYS = ("nonce", "domains", "genres", "plugins", "note")  # every key a private run config may have
 REQUIRED_KEYS = ("nonce", "domains", "genres")
-MIN_NONCE_LENGTH = 16  # a shorter nonce would let a small config be guessed from its hash
+# A nonce is 128 random bits or more, written in hexadecimal (secrets.token_hex(16)): anything less, or
+# a word or pattern someone typed, would let a small config be recovered from its hash by brute force.
+MIN_NONCE_DIGITS = 32
+# A random draw of 32 hexadecimal digits shows fewer than 8 different digits about once in 30 million.
+MIN_NONCE_DISTINCT_DIGITS = 8
+EXAMPLE_MARK = "EXAMPLE"  # in the nonce of a published example config, whose commitment anyone can guess
+NONCE_ADVICE = ("its nonce must be at least 32 random hexadecimal digits: draw one with "
+                "python -c \"import secrets; print(secrets.token_hex(16))\"")
 
 Log = Optional[Callable[[str], None]]  # Optional, not "X | None": this alias is evaluated at import (Python 3.9)
 
@@ -142,19 +155,39 @@ def choices(entries: Sequence[Entry], genre_pool: Sequence[Genre] | None = None)
 # ---------------------------------------------------------------------- the private run config
 
 
+def is_example_nonce(nonce: Any) -> bool:
+    """Whether a nonce says it is a published example's (configs/private.example.json): such a config
+    serves demos, and its commitment can be guessed."""
+    return isinstance(nonce, str) and EXAMPLE_MARK in nonce
+
+
+def nonce_problem(nonce: Any) -> str | None:
+    """What is wrong with a private run config's nonce, or None. A nonce must look drawn rather than
+    typed: at least MIN_NONCE_DIGITS hexadecimal digits, at least MIN_NONCE_DISTINCT_DIGITS different
+    ones, and not one shorter run of digits repeated ("abab..."). A nonce that says it is an EXAMPLE
+    is accepted (generate warns that its commitment can be guessed). No check can prove a nonce random:
+    these refuse the guessable nonces that a config gets by accident, a word, a constant or a pattern."""
+    if is_example_nonce(nonce):
+        return None
+    digits = nonce.strip().lower() if isinstance(nonce, str) else ""
+    if (len(digits) < MIN_NONCE_DIGITS or any(c not in "0123456789abcdef" for c in digits)
+            or len(set(digits)) < MIN_NONCE_DISTINCT_DIGITS or digits in (digits + digits)[1:-1]):
+        return NONCE_ADVICE
+    return None
+
+
 def config_problems(data: Any) -> list[str]:
     """What is wrong with the shape of a private run config (names are checked once its plugins are
-    loaded): its keys, a nonce of at least MIN_NONCE_LENGTH characters, public and held-out lists of
+    loaded): its keys, a nonce that looks drawn (``nonce_problem``), public and held-out lists of
     distinct names for domains and for genres (a name in one list only, and at least one name of each
     kind), plugins as a list of paths and an optional note."""
     if not isinstance(data, dict):
         return ["it is not a JSON object"]
     problems = [f"it has no {key!r}" for key in REQUIRED_KEYS if key not in data]
     problems += [f"{key!r} is not a key of a private run config" for key in data if key not in CONFIG_KEYS]
-    nonce = data.get("nonce")
-    if "nonce" in data and (not isinstance(nonce, str) or len(nonce.strip()) < MIN_NONCE_LENGTH):
-        problems.append(f"its nonce must be a random string of at least {MIN_NONCE_LENGTH} characters "
-                        "(e.g. secrets.token_hex(16))")
+    nonce = nonce_problem(data["nonce"]) if "nonce" in data else None
+    if nonce is not None:
+        problems.append(nonce)
     for kind in ("domains", "genres"):
         if kind not in data:
             continue
@@ -195,6 +228,11 @@ class PrivateConfig:
     @property
     def commitment(self) -> str:
         return config_commitment(self.data)
+
+    @property
+    def example(self) -> bool:
+        """The config keeps a published example's nonce, so anyone can guess it from its commitment."""
+        return is_example_nonce(self.data["nonce"])
 
 
 def read_private_config(path: str | Path) -> PrivateConfig:
@@ -265,22 +303,51 @@ def load_plugin(path: str | Path) -> list[Entrant]:
 
 
 def plugin_record(config: PrivateConfig) -> list[dict[str, str]]:
-    """The plugins of a config as a manifest records them: each file's absolute path and SHA-256."""
+    """The plugins of a config as a manifest records them, in the config's order: each file's absolute
+    path and SHA-256."""
     return [{"path": str(path), "sha256": sha256_hex(path.read_bytes())} for path in config.plugins]
 
 
-def load_run_plugins(manifest: Mapping[str, Any], log: Log = None) -> None:
-    """Load the plugins a run was generated with (its manifest lists them), so that a later step, in
-    a new process, can read, answer, score and report its domains and genres. A legacy run has none.
-    A plugin that is gone raises MixError; one whose bytes changed since generation is loaded, with a
-    warning to `log`."""
-    for entry in manifest.get("plugins") or ():
-        path = Path(entry["path"])
+def load_run_plugins(manifest: Mapping[str, Any], private_config: str | Path | None = None,
+                     log: Log = None) -> list[str]:
+    """Register the plugins a run was generated with (its manifest lists them, each with its SHA-256),
+    so that a later step, maybe in a new process, can read, answer, score and report the run's domains
+    and genres; and return the paths of those whose bytes have changed since generation, which a report
+    records. A legacy run, or any run without plugins, needs none.
+
+    evalgen never runs code that a run directory names by itself: a run received from someone else
+    could name any file. A plugin is loaded from the evaluator's private run config (`private_config`):
+    the config the run was generated with, as its commitment proves, whose plugin paths are relative
+    to the config. A plugin whose bytes differ from the manifest's record is loaded all the same, as the
+    evaluator asked, with a warning to `log`. Without a config, only plugins that this process has run
+    already (it generated the run) are registered again; any other plugin, and a config the run did not
+    commit to, raise MixError, as does a plugin that is gone."""
+    entries = list(manifest.get("plugins") or ())
+    if private_config is not None:
+        config = read_private_config(private_config)
+        recorded = manifest.get("private_config_commitment")
+        if recorded is None or not verify_config(config.data, recorded):
+            raise MixError(f"{private_config} is not the private run config that this run committed to")
+        paths = list(config.plugins)
+        if len(paths) != len(entries):
+            raise MixError("the run's manifest does not list the plugins of its private run config")
+    else:
+        paths = [Path(entry["path"]) for entry in entries]
+        strange = [str(path) for path in paths if not registry.executed(path)]
+        if strange:
+            raise MixError(f"the run was generated with the plugins {', '.join(strange)}: pass its private run config "
+                           "(--private-config) to load them. evalgen never runs code that a run directory names by "
+                           "itself")
+    changed = []
+    for path, entry in zip(paths, entries):
         if not path.is_file():
             raise MixError(f"the run was generated with the plugin {path}, which is gone: restore it to read the run")
-        if log is not None and entry.get("sha256") and sha256_hex(path.read_bytes()) != entry["sha256"]:
-            log(f"warning: the plugin {path} has changed since the run was generated")
+        if entry.get("sha256") and sha256_hex(path.read_bytes()) != entry["sha256"]:
+            changed.append(str(path))
+            if log is not None:
+                log(f"warning: the plugin {path} has changed since the run was generated")
         load_plugin(path)
+    return changed
 
 
 # ---------------------------------------------------------------------------------- inventory

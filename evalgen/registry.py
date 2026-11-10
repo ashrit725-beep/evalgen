@@ -97,12 +97,23 @@ class Registry(Generic[T]):
         return entry
 
 
+def _module_name(path: Path) -> str:
+    """The name a plugin file's module is registered under in sys.modules: one per resolved path."""
+    return "evalgen_plugin_" + hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:16]
+
+
 def load_module(path: str | Path) -> ModuleType:
     """The module of a plugin file, executed once per process, so that a file defining both a domain
     and a genre is loaded once for both registries."""
     path = Path(path).resolve()
-    module_name = "evalgen_plugin_" + hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
+    module_name = _module_name(path)
     return sys.modules.get(module_name) or _exec_file(module_name, path)
+
+
+def executed(path: str | Path) -> bool:
+    """Whether this process has already executed the plugin file at `path` (load_module): loading it
+    again registers its entries without running any of its code."""
+    return _module_name(Path(path)) in sys.modules
 
 
 def _exec_file(module_name: str, path: Path) -> ModuleType:

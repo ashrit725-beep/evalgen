@@ -11,8 +11,8 @@ from evalgen import pipeline
 from evalgen.geo import COMPASS16, compass_point, destination, from_km, haversine_km
 from evalgen.models import Event
 from evalgen.ops import distance_km, rows_after_filters, terminal_step
-from evalgen.questions import (_MONOTONE, NEAREST_MAX_KM, PUBLIC_TEMPLATES, compose_new_templates, fingerprint,
-                               guards_ok)
+from evalgen.questions import (_MONOTONE, NEAREST_MAX_KM, PUBLIC_TEMPLATES, Context, compose_new_templates,
+                               compose_questions, fingerprint, guards_ok)
 from evalgen.report import load_instances
 from evalgen.scoring import is_correct
 from evalgen.traps import TrapConfig, inject_traps
@@ -178,6 +178,24 @@ def test_pools_stay_matched_per_twin_pair_even_when_templates_run_out(tmp_path):
         assert abs(counts.get(public.template_id, 0) - counts.get(twin, 0)) <= 1, (public.template_id, counts)
     for op in {op for op, _ in terminals}:
         assert abs(terminals.get((op, "public"), 0) - terminals.get((op, "new"), 0)) <= 3, (op, terminals)
+
+
+def test_off_the_legacy_path_no_template_runs_ahead_of_a_twin_not_used_yet(instances, snapshot_events):
+    """0.2.0 lets a template run ahead of its twin until the twin's first use, so a short run (or the share
+    of a run about one domain) can end with a pair far apart. Off the legacy path (strict_twins) a twin
+    not used yet counts as used 0 times: with every public template one question ahead of its twin, none
+    is asked again before its twin is, and no pair ever ends two apart."""
+    inst = instances[0]
+    events = [snapshot_events[event_id] for event_id in inst.event_ids]
+    new = compose_new_templates(random.Random(3))
+    ctx = Context(inst.compiled_at, inst.window_hours)
+    for strict in (False, True):
+        usage = {t.template_id: 1 for t in PUBLIC_TEMPLATES}  # each public template once, no twin yet
+        questions = compose_questions(events, PUBLIC_TEMPLATES, new, random.Random(5), ctx, 5, set(), usage,
+                                      strict_twins=strict)
+        assert len(questions) >= 3 and {q.pool for q in questions} == {"public", "new"}
+        twin_gaps = [usage.get(t.template_id, 0) - usage[t.twin_of] for t in new]  # new minus public, per pair
+        assert (min(twin_gaps) >= -1) == strict, (strict, twin_gaps)
 
 
 def test_swapped_region_comparisons_are_the_same_question():

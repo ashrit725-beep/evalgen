@@ -15,7 +15,7 @@ from dataclasses import asdict, replace
 import pytest
 import requests
 
-from evalgen import pipeline, scoring
+from evalgen import pipeline, scoring, traps
 from evalgen.audit import write_audit_sample
 from evalgen.digest import make_chatter
 from evalgen.domains import Registry, all_domains, get_domain
@@ -24,12 +24,13 @@ from evalgen.domains.earthquakes import EARTHQUAKES
 from evalgen.genres import all_genres
 from evalgen.genres.classic import CLASSIC
 from evalgen.mix import Entry, MixError, choices, parse_mix, single_choice
-from evalgen.models import Instance, Notice, Rendering, Trap
+from evalgen.models import Instance, Notice, Question, Rendering, Trap
 from evalgen.ops import Step, execute, rows_after_filters, terminal_step
 from evalgen.pipeline import GenerateConfig, compose_instance, sample_events
 from evalgen.questions import (Context, _draw_threshold, _draw_window, compose_new_templates, fingerprint, fmt_num,
-                               phrase_question, public_templates, round_to_step, rounding_text)
+                               guards_ok, phrase_question, public_templates, round_to_step, rounding_text)
 from evalgen.report import TRAP_KINDS, answer_type_order, load_instances, model_metrics, trap_kinds
+from evalgen.rules import Mishandle
 from evalgen.scoring import get_answer_type, is_correct, normalize
 from evalgen.seeds import SeedLog
 from evalgen.sources import (build_domain_snapshot, events_sha256, load_snapshot, record_problems, save_snapshot)
@@ -518,6 +519,61 @@ def test_the_standard_lexicon_words_every_operation_from_the_domains_words(toys)
     braced.fields = (replace(toys.module.TEMPERATURE, label="temp {raw}"), toys.module.WAVE)
     wording = standard_lexicon(braced).filters["at_least(temp)"][0]
     assert wording.format(value="5 °C") == "whose temp {raw} is at least 5 °C"
+
+
+# ------------------------------------------------------------------------------- traps
+
+
+def buoy(ref: str, temp: float, lat: float, *, group: str = "North Sea", status: str = "reviewed",
+         source: str = "ukmo", same_as: str | None = None) -> RecordReport:
+    return RecordReport(ref=ref, source=source, status=status, time=COMPILED_AT - 3600, lat=lat, lon=3.0, group=group,
+                        values={"temp": temp, "wave": 1.5}, qualifiers={"probe": "hull"}, same_as=same_as)
+
+
+def test_a_careless_reading_counts_only_where_it_holds_at_the_printed_precision(toys):
+    """Off the legacy path (a time margin given), a trap's affected questions are only those whose misread
+    digest passes the key's guards. Taking a second report's 23.3 °C against "74 °F or warmer" (23.33 °C)
+    is decided by the stored tenth, not by what the text prints (74 °F), and a re-report at its record's
+    own position ties for the nearest one: neither careless answer is one a reader is held to. The 0.2.0
+    scoring records both; `fallen` keeps them either way, as computed from the stored values."""
+    toy = toys.toy
+    reports = [buoy("by-10001", 24.1, 56.0), buoy("by-10002", 10.0, 50.0, group="Irish Sea"),
+               buoy("by-10001", 23.3, 56.0, status="preliminary", source="gts"),
+               buoy("by-00001", 24.1, 56.0, status="preliminary", source="emsn", same_as="by-10001")]
+    warm = [{"op": "dedupe"}, {"op": "at_least", "field": "temp", "value": 74.0, "unit": "°F"},
+            {"op": "compare_groups", "a": "North Sea", "b": "Irish Sea"}]
+    near = [{"op": "dedupe"}, {"op": "nearest_to", "lat": 56.05, "lon": 3.0, "label": "buoy UKMO-12"}]
+    questions = [Question("Q1", "P05", "public", warm, "toy_area"), Question("Q2", "P07", "public", near, "toy_reading_id")]
+    records = toy.resolve(reports, [])
+    key = {q.qid: execute(q.chain, records, units=toy.units) for q in questions}
+    assert key == {"Q1": "North Sea", "Q2": "by-10001"}
+    margin = Context(COMPILED_AT, 24).time_margin
+    assert all(guards_ok(q.chain, records, domain=toy, time_margin=margin) for q in questions)
+    conflict = Trap("T1", "conflicting_value", "second_report", "by-10001", "",
+                    mishandles=[Mishandle(prefer_preliminary_for=("by-10001",)).to_dict(),
+                                Mishandle(split=(("by-10001", "gts", "preliminary"),)).to_dict()])
+    duplicate = Trap("T2", "duplicate", "cross_ref", "by-10001", "",
+                     mishandles=[Mishandle(split=(("by-00001", "emsn", "preliminary"),)).to_dict()])
+    traps.score_traps([conflict, duplicate], questions, key, reports, [], domain=toy)  # the 0.2.0 scoring
+    assert (conflict.affected, duplicate.affected) == ({"Q1": "tie"}, {"Q2": "by-00001"})
+    traps.score_traps([conflict, duplicate], questions, key, reports, [], domain=toy, time_margin=margin)
+    assert (conflict.affected, duplicate.affected) == ({}, {})
+    assert conflict.fallen["Q1"] == ["tie"] and duplicate.fallen["Q2"] == ["by-00001"]
+
+
+def test_a_wrong_value_aimed_across_a_threshold_clears_it_by_the_guard_margin(toys):
+    """A conflict's wrong value lands on the other side of a threshold asked about, at least the field's
+    guard margin beyond it, as every record of the key does; so a careless reader sees it across the
+    threshold at any precision the text prints it in. (74 °F is 23.33 °C; temperatures keep 0.3 °C.)"""
+    spec = toys.toy.field("temp")
+    threshold = toys.module.FAHRENHEIT.to_canonical(74.0)
+    for seed in range(50):
+        for value in (24.1, 30.0, 10.0, 23.2):
+            wrong = round(traps._across(threshold, value, spec, random.Random(seed), reach=1.0), 1)
+            assert (wrong >= threshold) != (value >= threshold) and abs(wrong - threshold) >= spec.margin[0]
+            assert abs(wrong - threshold) < spec.margin[0] + 1.0 + 0.1
+    assert round(traps._across(threshold, 24.1, spec, random.Random(0), reach=0.0), 1) == 23.0
+    assert round(traps._across(threshold, 10.0, spec, random.Random(0), reach=0.0), 1) == 23.7
 
 
 # -------------------------------------------------------------------- readers of a run

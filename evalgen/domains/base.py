@@ -822,13 +822,34 @@ def _literal(text: str) -> str:
 
 RULES_WIDTH = 100  # record_rules wraps each rule at this many columns
 
+# What every genre needs a reader to know, whatever else a domain's rules say: a message's own time is
+# not a record's, and a quote or read-back repeats what is printed elsewhere, while a forwarded or
+# relayed message is the report or notice it carries. Some genres deliver every notice that way (an
+# email thread forwards each one), so a forward must count. record_rules prints them as rules 6 and 7;
+# the earthquake domain adds them to the 0.2.0 rules in its non-legacy prompts.
+REPEAT_RULE = ("A quoted or read-back repeat of a report or notice printed elsewhere in the digest is not a new "
+               "report or notice. A forwarded or relayed report or notice is not a repeat: it counts, once.")
+
+
+def message_time_rule(record: str) -> str:
+    """The rule on message times, about `record` ("a weather observation", "an earthquake")."""
+    return f"The time at which a message was sent, forwarded or relayed is never the time of {record}."
+
+
+def numbered_rules(rules: Sequence[str], start: int = 1) -> str:
+    """Rules numbered from `start`, each wrapped at RULES_WIDTH columns under its own text, one per
+    line and ending in a newline, as every reading-rules text prints them."""
+    return "".join(textwrap.fill(f"{number}. {rule}", width=RULES_WIDTH, subsequent_indent=" " * len(f"{number}. "),
+                                 break_long_words=False, break_on_hyphens=False) + "\n"
+                   for number, rule in enumerate(rules, start=start))
+
 
 def record_rules(domain: Domain) -> str:
     """The reading rules of a domain that prints none of its own, in its words: which report settles a
     record, how re-reports, corrections and retractions read, units, positions and times, and that
     nothing else in a digest carries data. They are genre-neutral: they say what a notice, a note, a
-    repeat and a message time are in any kind of document, and they quote every phrase the domain's
-    notices print (its trap vocabulary), so that no notice is a gotcha."""
+    repeat, a forward and a message time are in any kind of document, and they quote every phrase the
+    domain's notices print (its trap vocabulary), so that no notice is a gotcha."""
     noun, id_label, source, group = domain.noun, domain.id_label, domain.source_label, domain.group_label
     final, draft = (f'"{status}"' for status in domain.statuses)
     vocab = domain.trap_vocab
@@ -852,17 +873,14 @@ def record_rules(domain: Domain) -> str:
         "Each value may be given in any unit the glossary lists for its field: convert it as the glossary says. "
         "Values are compared as plain numbers once rules 2 and 3 have settled them." + position,
         "Times may be in UTC or in another time zone with its UTC offset stated. A report's time is when its "
-        f"{noun} was recorded; a notice's time is when the notice was issued. The time at which a message was sent, "
-        f"forwarded or relayed is never the time of a {noun}. A time window includes its start and excludes its "
-        "end.",
-        "A quoted, forwarded or read-back repeat of an earlier report or notice is not a new report or notice.",
+        f"{noun} was recorded; a notice's time is when the notice was issued. {message_time_rule(f'a {noun}')} A "
+        "time window includes its start and excludes its end.",
+        REPEAT_RULE,
         f"A {group} in a question is the {group} printed on the report, matched exactly as written.",
         "Lines that are neither reports nor notices (headers, section titles, status messages, editor's notes, "
         "reminders, greetings, signatures) carry no data and change nothing.",
     )
-    wrapped = [textwrap.fill(f"{number}. {rule}", width=RULES_WIDTH, subsequent_indent="   ", break_long_words=False,
-                             break_on_hyphens=False) for number, rule in enumerate(rules, start=1)]
-    return "\n".join(["Reading rules:", *wrapped]) + "\n"
+    return "Reading rules:\n" + numbered_rules(rules)
 
 
 def _alternatives(phrases: Sequence[str]) -> str:

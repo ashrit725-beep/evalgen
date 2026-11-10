@@ -16,6 +16,15 @@ still planted, as plain noise. Planted lines copy the style of the real ones: pl
 agree with their coordinates, the network's magnitude precision, and IDs that fit the network's
 own ID sequence, so the format gives nothing away.
 
+Off the legacy path, placement is also guarded (``TrapConfig.guarded``): a careless reading counts
+only where the misread digest passes the same guards as the key (questions.guards_ok): no record,
+planted ones included, within a threshold's margin, no tie or near tie in a ranked or nearest answer,
+no record at a time window's edge. Only then is the wrong answer the one that a reader who makes that
+mistake gets from the text at its printed precision, rather than one decided by the stored values'
+last digit or by a tie-break. A placement whose every reading passes is preferred to any other, so a
+trap is planted unguarded only when no guarded placement turned up, and its affected questions are
+then only those its guarded readings change. The 0.2.0 placement of the legacy path is unchanged.
+
 Placement, ranking and scoring are the same for every domain. What a trap looks like depends on the
 domain's records, so the builders are looked up per domain (``builders_for``), and they take the
 domain's trap vocabulary (re-reporting sources, retraction reasons), ID scheme, statuses and reading
@@ -26,7 +35,8 @@ get the same three traps, with the same careless readings:
   retraction         a phantom report, plausible for its group, that a later notice retracts
   conflicting_value  a wrong value of a field (a correctable one when there is one), settled by a
                      correction notice or by the settling report next to an unsettled one
-Values move by a share of the spread of their field in the digest, so the traps scale to every field.
+Values move by a share of the spread of their field in the digest, so the traps scale to every field,
+and a wrong value aimed across a threshold lands at least the field's guard margin beyond it.
 """
 from __future__ import annotations
 
@@ -43,6 +53,7 @@ from .domains.earthquakes import EARTHQUAKES, Earthquakes
 from .geo import COMPASS16, compass_point, destination, haversine_km, initial_bearing
 from .models import Event, Notice, Question, Report, Trap
 from .ops import EPS, DigestData, Step, canonical_threshold, execute
+from .questions import Context, guards_ok
 from .rules import Mishandle
 from .scoring import get_answer_type, normalize, same_answer
 from .sources import COORD_DECIMALS
@@ -59,6 +70,10 @@ class TrapConfig:
     conflicts: int = 1
     candidates: int = 25  # placements tried per trap, looking for a load-bearing, clean one
     id_style: str = "random"  # "random" (synthetic IDs) or "sequence" (fit a real feed's ID sequence)
+    # Off the legacy path: a careless reading counts only where the misread digest passes the key's
+    # guards, and a placement whose every reading does is preferred (see the module docstring). False is
+    # the 0.2.0 placement, which the legacy path keeps.
+    guarded: bool = False
 
 
 @dataclass
@@ -113,34 +128,57 @@ def _apply(reports: list[Report], notices: list[Notice], c: _Candidate) -> tuple
     return reports + c.add_reports, list(notices) + c.add_notices
 
 
-def _single_readings(trap: Trap, questions: list[Question], data: DigestData, domain: Domain):
-    """(question, answer) for every question under each careless reading of this one trap, with the
-    domain's reading rules for everything the reader does not misread."""
+@dataclass(frozen=True)
+class _Reading:
+    """One question answered under one careless reading of a trap."""
+
+    question: Question
+    answer: Any
+    guarded: bool  # the misread digest passes the question's guards (always, in the 0.2.0 placement)
+
+
+def _single_readings(trap: Trap, questions: list[Question], data: DigestData, domain: Domain,
+                     time_margin: int | None = None) -> list[_Reading]:
+    """Every question under each careless reading of this one trap, with the domain's reading rules for
+    everything the reader does not misread, readings in the trap's order and questions in theirs.
+
+    With a `time_margin` (guarded placement), a reading is guarded when the misread digest passes the
+    question's guards (questions.guards_ok, time windows kept that far from every record), as the
+    snapshot passes them for the key: no record within a threshold's margin, no tie or near tie in a
+    ranked or nearest answer. Its answer is then the one a reader who makes that mistake gets from the
+    text, at the precision the digest prints. Without one (the 0.2.0 placement), every reading counts."""
     units = domain.units
+    readings = []
     for reading in trap.mishandles:
         mishandle = Mishandle.from_dict(reading)
+        records = None if time_margin is None else domain.resolve(data.reports, data.notices, mishandle)
         for q in questions:
-            yield q, execute(q.chain, data, mishandle=mishandle, units=units, resolver=domain.resolve)
+            answer = execute(q.chain, data, mishandle=mishandle, units=units, resolver=domain.resolve)
+            guarded = records is None or guards_ok(q.chain, records, domain=domain, time_margin=time_margin)
+            readings.append(_Reading(q, answer, guarded))
+    return readings
 
 
-def _single_effects(trap: Trap, questions: list[Question], key: dict, data: DigestData, domain: Domain) -> dict:
-    """qid -> wrong answer, for questions a reader gets wrong when only this trap is misread."""
+def _effects(readings: Sequence[_Reading], key: Mapping[str, Any]) -> dict:
+    """qid -> wrong answer, for questions a reader gets wrong when only this trap is misread: the first
+    guarded reading of each question that differs from the key."""
     out = {}
-    for q, answer in _single_readings(trap, questions, data, domain):
-        if q.qid not in out and not same_answer(q.answer_type, answer, key[q.qid], unit=q.unit):
-            out[q.qid] = answer
+    for r in readings:
+        q = r.question
+        if r.guarded and q.qid not in out and not same_answer(q.answer_type, r.answer, key[q.qid], unit=q.unit):
+            out[q.qid] = r.answer
     return out
 
 
-def _clear_of_tolerance_edge(trap: Trap, questions: list[Question], key: dict, data: DigestData,
-                             domain: Domain) -> bool:
+def _clear_of_tolerance_edge(readings: Sequence[_Reading], key: Mapping[str, Any]) -> bool:
     """A misread numeric answer should be exactly right or clearly wrong (beyond twice the scoring
     tolerance), so that rounding in the digest cannot move a careless reader across the edge."""
-    for q, answer in _single_readings(trap, questions, data, domain):
+    for r in readings:
+        q = r.question
         answer_type = get_answer_type(q.answer_type)
         if answer_type.kind != "number":
             continue
-        a, k = normalize(q.answer_type, answer), normalize(q.answer_type, key[q.qid])
+        a, k = normalize(q.answer_type, r.answer), normalize(q.answer_type, key[q.qid])
         if a is None or k is None or a == k:
             continue
         abs_tol, rel_tol = answer_type.tolerance_in(q.unit)
@@ -149,17 +187,35 @@ def _clear_of_tolerance_edge(trap: Trap, questions: list[Question], key: dict, d
     return True
 
 
+def _rank(readings: Sequence[_Reading], key: Mapping[str, Any], guarded: bool) -> int:
+    """How good a placement is. The 0.2.0 ranks: 2 when it is load-bearing and every misread answer is
+    clear of the scoring tolerance's edge, 1 when it is load-bearing, 0 when it changes nothing. A
+    guarded placement whose readings all pass the guards takes its 0.2.0 rank plus one (so at most
+    GUARDED_TOP), and any other guarded placement 0: a trap that changes nothing beats one whose
+    careless readings no reader of the text can be held to."""
+    rank = (2 if _clear_of_tolerance_edge(readings, key) else 1) if _effects(readings, key) else 0
+    if not guarded:
+        return rank
+    return rank + 1 if all(r.guarded for r in readings) else 0
+
+
+TOP, GUARDED_TOP = 2, 3  # the best rank of a placement, 0.2.0 and guarded: the first one found is taken
+
+
 def score_traps(traps: list[Trap], questions: list[Question], key: dict, reports: list[Report],
-                notices: list[Notice], *, domain: Domain = EARTHQUAKES) -> None:
+                notices: list[Notice], *, domain: Domain = EARTHQUAKES, time_margin: int | None = None) -> None:
     """Fill trap.affected (misread alone) and trap.fallen (misread alone or with any other traps).
 
-    `fallen` keeps every misread answer that is not exactly the key, including ones the scorer would
-    still accept, so that a careless reader whose rounded answer lands just past the edge is
-    attributed to the trap. Answers are deduplicated by exact value."""
+    With a `time_margin` (guarded placement), `affected` keeps only the questions whose misread
+    digest passes their guards (_single_readings): a trap's exposure, its catch rate and the strata
+    of every gap count only careless readings that a reader of the text is held to. `fallen` keeps
+    every misread answer that is not exactly the key, as computed from the stored values, including
+    ones the scorer would still accept, so that a careless reader whose rounded answer lands just past
+    the edge is attributed to the trap. Answers are deduplicated by exact value."""
     data = DigestData(reports, notices)
     units = domain.units
     for trap in traps:
-        trap.affected = _single_effects(trap, questions, key, data, domain)
+        trap.affected = _effects(_single_readings(trap, questions, data, domain, time_margin), key)
         trap.fallen = {}
     choices = [[None] + list(range(len(t.mishandles))) for t in traps]  # None = read correctly
     for combo in itertools.product(*choices):
@@ -470,20 +526,19 @@ def _canonical_thresholds(questions: Sequence[Question], key: str, units: Mappin
 
 
 def _across(threshold: float, value: float, spec: FieldSpec, rng: random.Random, reach: float) -> float:
-    """A stored value on the other side of `threshold` from `value`, at most `reach` beyond it: below it
-    when `value` passes an "at least" filter there, at or above it when it does not (filters compare as
-    ops does, with EPS)."""
+    """A stored value on the other side of `threshold` (canonical) from `value`: below it when `value`
+    passes an "at least" filter there, at or above it when it does not (filters compare as ops does,
+    with EPS). It lies at least the field's guard margin from the threshold, as every record of the key
+    does (questions.guards_ok), so a careless reader who takes it sees it across the threshold at any
+    printed precision, and up to `reach` further."""
     step = 10.0 ** -spec.decimals
+    margin = max(spec.margin[0], spec.margin[1] * abs(threshold))
     steps = rng.randint(0, max(0, round(reach / step) - 1))
-    if value >= threshold - EPS:
-        wrong = round(threshold, spec.decimals)
-        while wrong >= threshold - EPS:
-            wrong = round(wrong - step, spec.decimals)
-        return wrong - steps * step
+    direction = -1 if value >= threshold - EPS else 1
     wrong = round(threshold, spec.decimals)
-    while wrong < threshold - EPS:
-        wrong = round(wrong + step, spec.decimals)
-    return wrong + steps * step
+    while (wrong >= threshold - EPS) != (direction > 0) or abs(wrong - threshold) < margin:
+        wrong = round(wrong + direction * step, spec.decimals)
+    return wrong + direction * steps * step
 
 
 def _record_conflict(trap_id: str, site: _Site) -> _Candidate | None:
@@ -545,7 +600,8 @@ def builders_for(domain: Domain) -> Builders:
 def inject_traps(events: list[Event], questions: list[Question], rng: random.Random, *, compiled_at: int,
                  window_hours: int, config: TrapConfig = TrapConfig(),
                  domain: Domain = EARTHQUAKES) -> tuple[list[Report], list[Notice], list[Trap]]:
-    """Build the digest's reports and notices: one reviewed report per event, plus the traps."""
+    """Build the digest's reports and notices: one reviewed report per event, plus the traps. Each trap
+    is the best of up to `config.candidates` placements (_rank), guarded off the legacy path."""
     build = builders_for(domain)
     units = domain.units
     site = _Site(domain, events, questions, rng, compiled_at, window_start=compiled_at - window_hours * 3600,
@@ -554,23 +610,23 @@ def inject_traps(events: list[Event], questions: list[Question], rng: random.Ran
     notices: list[Notice] = []
     traps: list[Trap] = []
     key = {q.qid: execute(q.chain, events, units=units) for q in questions}
+    time_margin = Context(compiled_at, window_hours).time_margin if config.guarded else None
+    top = GUARDED_TOP if config.guarded else TOP
     builders = {"duplicate": build.duplicate, "retraction": build.retraction, "conflict": build.conflict}
     plan = (["duplicate"] * rng.randint(*config.duplicates) + ["retraction"] * config.retractions
             + ["conflict"] * config.conflicts)
     for number, kind in enumerate(plan, start=1):
         trap_id = f"T{number}"
-        best: tuple[int, _Candidate] | None = None  # rank 2: load-bearing and clean, 1: load-bearing, 0: noise
+        best: tuple[int, _Candidate] | None = None
         for _ in range(config.candidates):
             candidate = builders[kind](trap_id, site)
             if candidate is None:
                 continue
             trial = DigestData(*_apply(site.reports, notices, candidate))
-            rank = 0
-            if _single_effects(candidate.trap, questions, key, trial, domain):
-                rank = 2 if _clear_of_tolerance_edge(candidate.trap, questions, key, trial, domain) else 1
+            rank = _rank(_single_readings(candidate.trap, questions, trial, domain, time_margin), key, config.guarded)
             if best is None or rank > best[0]:
                 best = (rank, candidate)
-            if rank == 2:
+            if rank == top:
                 break
         if best is None:
             continue
@@ -579,7 +635,8 @@ def inject_traps(events: list[Event], questions: list[Question], rng: random.Ran
         traps.append(chosen.trap)
         site.used.add(chosen.trap.target)
     reports = site.reports
-    score_traps(traps, questions, key, reports, notices, domain=domain)  # authoritative, on the final digest
+    # authoritative, on the final digest
+    score_traps(traps, questions, key, reports, notices, domain=domain, time_margin=time_margin)
     problems = check_resolution(reports, notices, events, domain=domain)
     if problems:
         raise AssertionError("trap injection broke the reading-rules invariant: " + "; ".join(problems))

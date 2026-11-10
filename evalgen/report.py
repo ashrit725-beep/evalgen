@@ -240,7 +240,15 @@ def held_out_metrics(rows: list[dict], index: Mapping[tuple, dict], instances: l
     Both gaps are compared like for like, as the template gap is: within strata of equal
     code-computed difficulty, here the answer's family, the trap exposure and whether the filters
     matter, and for genres also whether the rendering is the original (a variant may be reworded and
-    in other units). An instance's split is the one it records; a genre's comes from `inventory`."""
+    in other units). Each gap is also adjusted for the other split: the source gap's strata hold the
+    split of the original rendering's genre, and the genre gap's the split of the instance's domain.
+    A mix may tie held-out domains to held-out genres ("earthquakes,toy:toy-telex" renders the toy
+    domain in the toy genre alone), and then a model weak on held-out genres alone would otherwise show
+    a source gap too, and one weak on held-out domains a genre gap; where the two splits are entirely
+    confounded, no stratum compares them and the adjusted gap is n/a rather than a flag on the wrong
+    set. (The template pool needs no stratum: every instance asks about as many public as new
+    questions, and each domain's twin pairs are kept in step.) An instance's split is the one it
+    records; a genre's comes from `inventory`."""
     inventory = inventory or Inventory({}, {})
     by_id = {inst.instance_id: inst for inst in instances}
     questions = {(inst.instance_id, q.qid): q for inst in instances for q in inst.questions}
@@ -266,14 +274,17 @@ def held_out_metrics(rows: list[dict], index: Mapping[tuple, dict], instances: l
         q = questions[(row["instance_id"], row["qid"])]
         return answer_family(q), q.features.get("trap_exposure", 0), q.features.get("filters_matter", True)
 
-    def rendering_difficulty(row: dict) -> tuple:
-        return (*difficulty(row), "original" if row["variant"] == "v0" else "variant")
+    def source_stratum(row: dict) -> tuple:  # rows of original renderings, whose genre is the original's
+        return (*difficulty(row), genre_split(row))
+
+    def genre_stratum(row: dict) -> tuple:
+        return (*difficulty(row), "original" if row["variant"] == "v0" else "variant", domain_split(row))
 
     return {
         "by_domain": _accuracy_by(original, domain, domain_split),
         "by_genre": _accuracy_by(rows, genre, genre_split),
-        "source_gap": split_gap(original, domain_split, difficulty),
-        "genre_gap": split_gap(rows, genre_split, rendering_difficulty),
+        "source_gap": split_gap(original, domain_split, source_stratum),
+        "genre_gap": split_gap(rows, genre_split, genre_stratum),
         "cross_genre_consistency": cross_genre_consistency(index, instances),
     }
 
@@ -476,10 +487,14 @@ def run_summary(manifest: dict, instances: list[Instance], forecasts: list[dict]
     return summary
 
 
-def compute(run_dir: Path) -> dict:
+def compute(run_dir: Path, *, private_config: str | Path | None = None,
+            log: Callable[[str], None] | None = None) -> dict:
+    """Everything report.json holds. The domains and genres of the run's private plugins are loaded first,
+    from its private run config (mix.load_run_plugins); a run with plugins records next to code_changed
+    which of them changed since generation (plugins_changed), and a run without keeps its 0.2.0 keys."""
     run_dir = Path(run_dir)
     manifest = read_json(run_dir / "manifest.json")
-    load_run_plugins(manifest)  # the domains and genres of the run's private plugins
+    plugins_changed = load_run_plugins(manifest, private_config, log=log)
     instances = load_instances(run_dir)
     forecasts = read_json(run_dir / "forecasts.json") if (run_dir / "forecasts.json").exists() else []
     scores = [read_json(p) for p in sorted((run_dir / "scores").glob("*.json"))] if (run_dir / "scores").exists() else []
@@ -493,6 +508,7 @@ def compute(run_dir: Path) -> dict:
     return {
         "run": run_summary(manifest, instances, forecasts),
         "code_changed": bool(manifest.get("code_sha256")) and manifest.get("code_sha256") != code_fingerprint(),
+        **({"plugins_changed": plugins_changed} if manifest.get("plugins") else {}),
         "models": models,
         # the more accurate model is A, so a positive difference reads "A is better"
         "head_to_head": [paired_comparison(a, b, renderings) for a, b in itertools.combinations(api, 2)],
@@ -649,8 +665,12 @@ def _held_out_section(models: list[dict]) -> list[str]:
           "domains; the *genre gap* compares renderings in public and in held-out genres. Like the template gap, each "
           "is adjusted: compared within strata of equal code-computed difficulty (the kind of answer asked for, how "
           "many traps change it, and whether the filters matter; for genres, also whether the rendering is the "
-          "original or a reworded variant). A large positive adjusted gap flags a model tuned to the public domains "
-          f"or genres (flag: > {int(GAP_FLAG * 100)} points with a 95% CI that excludes 0). It is a flag, not proof.",
+          "original or a reworded variant), and within the same split of the other kind: originals rendered in "
+          "genres of one split for the source gap, renderings of instances from domains of one split for the genre "
+          "gap. So a mix that renders held-out domains only in held-out genres cannot make a model weak on one look "
+          "weak on the other; where the two are never apart, the adjusted gap is n/a. A large positive adjusted gap "
+          f"flags a model tuned to the public domains or genres (flag: > {int(GAP_FLAG * 100)} points with a 95% CI "
+          "that excludes 0). It is a flag, not proof.",
           ""]
     for key, title, what, rendered in (("source_gap", "Sources", "domains", "original renderings"),
                                        ("genre_gap", "Genres", "genres", "every rendering")):
@@ -722,6 +742,11 @@ def render_markdown(data: dict, run_dir: Path) -> str:
                   f"{run.get('evalgen_version') or '?'}, code `{(run.get('code_sha256') or 'unknown')[:16]}…`). This report "
                   "scores the stored prompts and replies; regenerating the run from its seed reproduces it exactly only "
                   "with the code that generated it.")
+    if data.get("plugins_changed"):
+        md.append("- **⚠ Note:** these plugins have changed since this run was generated: "
+                  + ", ".join(f"`{path}`" for path in data["plugins_changed"]) + ". This report reads the run's "
+                  "domains and genres with them as they are now; regenerating the run from its seed reproduces it "
+                  "exactly only with the plugins that generated it.")
     md += [
         f"- **Instances:** {run['instances']}; **questions:** {run['questions']} ({pools.get('public', 0)} from public "
         f"templates, {pools.get('new', 0)} from new-this-run templates); **renderings per instance:** "
@@ -925,9 +950,11 @@ def _example(number: int, inst: Instance, scores: dict, model_names: list[str]) 
     return md
 
 
-def write_report(run_dir: Path) -> Path:
+def write_report(run_dir: Path, *, private_config: str | Path | None = None,
+                 log: Callable[[str], None] | None = None) -> Path:
+    """Write report.json and report.md (see compute for `private_config`)."""
     run_dir = Path(run_dir)
-    data = compute(run_dir)
+    data = compute(run_dir, private_config=private_config, log=log)
     write_json(run_dir / "report.json", data)
     path = run_dir / "report.md"
     path.write_text(render_markdown(data, run_dir), encoding="utf-8")

@@ -485,14 +485,26 @@ def instantiate(template: Template, records: Sequence[ResolvedRecord], rng: rand
 
 def compose_questions(records: Sequence[ResolvedRecord], public: Sequence[Template], new: Sequence[Template],
                       rng: random.Random, ctx: Context, n_questions: int, used_chains: set[str],
-                      usage: dict[str, int], *, domain: Domain = EARTHQUAKES) -> list[Question]:
+                      usage: dict[str, int], *, domain: Domain = EARTHQUAKES,
+                      strict_twins: bool = False) -> list[Question]:
     """3-5 questions per instance, balanced between the public and the new pool.
 
     `usage` counts how often each template has been used so far in the run. A template may only run
     at most one question ahead of its twin, so the two pools keep the same mix of final operations
-    even when run-wide uniqueness exhausts a template with few possible parameters."""
+    even when run-wide uniqueness exhausts a template with few possible parameters.
+
+    With `strict_twins` (every run off the legacy path), a twin that has not been used yet counts as
+    used 0 times, so the rule holds from a run's first question: a short run, or the share of a run
+    about one domain, ends with every twin pair at most one question apart. The 0.2.0 rule (the
+    default, which the legacy path keeps) lets a template run ahead freely until its twin's first use."""
     twin = {t.template_id: t.twin_of for t in new if t.twin_of}
     twin.update({public_id: new_id for new_id, public_id in list(twin.items())})
+    unused = 0 if strict_twins else 1 << 30  # how often a twin that was never used counts as used
+
+    def in_step(template_id: str) -> bool:
+        other = twin.get(template_id)
+        return other is None or usage.get(template_id, 0) <= usage.get(other, unused)
+
     pools = ["public", "new"] * (n_questions // 2) + ([rng.choice(("public", "new"))] if n_questions % 2 else [])
     rng.shuffle(pools)
     questions: list[Question] = []
@@ -502,8 +514,7 @@ def compose_questions(records: Sequence[ResolvedRecord], public: Sequence[Templa
         if len(questions) >= n_questions:
             break
         candidates = [t for t in (public if pool == "public" else new)
-                      if t.template_id not in used_templates
-                      and usage.get(t.template_id, 0) <= usage.get(twin.get(t.template_id, ""), 1 << 30)]
+                      if t.template_id not in used_templates and in_step(t.template_id)]
         rng.shuffle(candidates)
         for template in candidates[:6]:
             question = instantiate(template, records, rng, ctx, used_chains=used_chains, taken_labels=taken_labels,

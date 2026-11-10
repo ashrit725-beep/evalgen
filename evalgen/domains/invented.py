@@ -80,7 +80,10 @@ DEPOTS = (
 )
 SOURCES = tuple(sorted({source for depot in DEPOTS for source in depot.sources}))
 CORRELATION = 0.3  # between the logarithms of a record's two quantities: heavier lots dwell a little longer
-FLOORS = {"f1": 10.0, "f2": 2.0}  # no quantity is smaller (the log-normal tails reach them rarely)
+# No quantity is smaller (the log-normal tails reach them rarely). At the floor, each field's relative
+# tolerance (0.5% of 10, 2% of 2.5) still covers half a stored step (0.05), the most by which a printed
+# value, converted from any drawn unit without rounding, can differ from the stored one (evalgen.units).
+FLOORS = {"f1": 10.0, "f2": 2.5}
 WINDOW_HOURS = 72  # a snapshot covers three days of filings
 WORKING_HOURS = (6, 20)  # UTC hours when depots are busiest
 NIGHT_SHARE = 0.35  # outside them, a drawn time is kept only this share of the time
@@ -461,7 +464,8 @@ class Invented(Domain):
         rule = (f"The glossary is the only definition of the words in this digest: what a {self.noun} is, what each "
                 "field label means, and every unit with its conversion. A value written in a unit other than its "
                 "field's stored unit stands for that value converted into the stored unit and rounded to the decimal "
-                "places the glossary gives for the field.")
+                "places the glossary gives for the field; no value is written so that it converts to exactly halfway "
+                "between two of them.")
         wrapped = textwrap.fill(f"{number}. {rule}", width=RULES_WIDTH, subsequent_indent=" " * (len(str(number)) + 2),
                                 break_long_words=False, break_on_hyphens=False)
         return rules + wrapped + "\n"

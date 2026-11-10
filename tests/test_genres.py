@@ -166,21 +166,28 @@ def quoted(tmp_path, monkeypatch):
     return genre
 
 
+QUOTED_CONFIG = pipeline.GenerateConfig(seed=7, instances=3)  # the first instances of the small run
+
+
+def planned(cfg: pipeline.GenerateConfig, plan) -> list:
+    """The instances of a legacy run with config `cfg` built again by the genre plan `plan`, on the run's
+    seed paths: earthquake instances off the legacy path, as a mix would build them."""
+    seedlog = SeedLog(cfg.seed)
+    snapshot, _ = build_snapshot(cfg.source, seedlog)
+    new = compose_new_templates(seedlog.rng("templates", "new"))
+    ctx, used, usage = Context(snapshot.compiled_at, snapshot.window_hours), set(), {}
+    return [build_instance(index, snapshot, new, seedlog, cfg, ctx, used, usage, genre_plan=plan)
+            for index in range(cfg.instances)]
+
+
 @pytest.fixture
 def quoted_run(quoted, tmp_path):
     """The first instances of the small run, with their first variant in the quoted genre: a legacy run
     whose instances are built again by a genre plan, on the same seed paths, then run, scored and
     reported. (A run off the legacy path gets its genre plans from its mix, which draws each variant's
     genre: see test_mix.py and test_matrix.py.)"""
-    cfg = pipeline.GenerateConfig(seed=7, instances=3)
-    run_dir = pipeline.generate(cfg, tmp_path / "quoted-run", log=quiet)
-    seedlog = SeedLog(cfg.seed)
-    snapshot, _ = build_snapshot(cfg.source, seedlog)
-    new = compose_new_templates(seedlog.rng("templates", "new"))
-    ctx, used, usage = Context(snapshot.compiled_at, snapshot.window_hours), set(), {}
-    for index in range(cfg.instances):
-        inst = build_instance(index, snapshot, new, seedlog, cfg, ctx, used, usage,
-                              genre_plan=(CLASSIC, quoted, CLASSIC))
+    run_dir = pipeline.generate(QUOTED_CONFIG, tmp_path / "quoted-run", log=quiet)
+    for inst in planned(QUOTED_CONFIG, (CLASSIC, quoted, CLASSIC)):
         write_json(run_dir / "instances" / f"{inst.instance_id}.json", inst.to_dict())
         for rendering in inst.renderings:
             (run_dir / "prompts" / inst.instance_id / f"{rendering.variant}.txt").write_text(rendering.prompt,
@@ -211,13 +218,16 @@ def test_sniffing_picks_the_genre_that_wrote_a_digest(quoted, instances):
 # ------------------------------------------------------------------------------ genre plans
 
 
-def test_a_genre_plan_renders_variants_in_other_genres(quoted_run, instances):
-    for inst, legacy in zip(load_instances(quoted_run), instances):
+def test_a_genre_plan_renders_variants_in_other_genres(quoted_run):
+    # The same instances with every rendering in the classic genre: a variant in another genre leaves
+    # the others as they were. (Off the legacy path traps and twins are guarded, so neither plan is the
+    # legacy run itself.)
+    for inst, classic in zip(load_instances(quoted_run), planned(QUOTED_CONFIG, (CLASSIC,) * 3)):
         assert (inst.domain, inst.split) == ("earthquakes", None)
         assert [r.genre for r in inst.renderings] == ["classic", "quoted", "classic"]
         v0, v1, v2 = inst.renderings
-        for planned, before in ((v0, legacy.renderings[0]), (v2, legacy.renderings[2])):
-            assert (planned.style, planned.digest, planned.question_text) == (
+        for rendering, before in ((v0, classic.renderings[0]), (v2, classic.renderings[2])):
+            assert (rendering.style, rendering.digest, rendering.question_text) == (
                 before.style, before.digest, before.question_text)
         # A variant in another genre does not avoid the original's style; one in its genre does.
         assert v1.style == choose_style(random.Random(v1.seed))

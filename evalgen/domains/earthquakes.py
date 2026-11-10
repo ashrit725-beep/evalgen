@@ -2,10 +2,12 @@
 
 Everything here reproduces 0.2.0 exactly. The field specs carry the 0.2.0 threshold draws and guard
 margins, the op names are the 0.2.0 operation names (``ops.ALIASES``), the lexicon holds every 0.2.0
-question wording, the trap vocabulary is the one the 0.2.0 digests print, and the reading rules are
-``rules.READING_RULES``. Records stay the 0.2.0 types: ``models.Event`` (the snapshot) and
-``models.Report`` (a digest line); genres other than classic write and read Reports and magnitude
-corrections in the generic form of every domain (``to_generic``, ``from_generic``).
+question wording, and the trap vocabulary is the one the 0.2.0 digests print. Legacy prompts print the
+0.2.0 reading rules (``rules.READING_RULES``) alone; a prompt off the legacy path, in any genre, prints
+them followed by the two genre-neutral rules that every genre's quotes, read-backs, forwards and message
+times need (``GENRE_READING_RULES``, ``rules_text``). Records stay the 0.2.0 types: ``models.Event``
+(the snapshot) and ``models.Report`` (a digest line); genres other than classic write and read Reports
+and magnitude corrections in the generic form of every domain (``to_generic``, ``from_generic``).
 
 Magnitude plays the *primary* role of the role-based templates (thresholds, rankings, the largest
 value and its time) and depth the *secondary* one (thresholds, the deepest and the shallowest value).
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from dataclasses import replace
 from typing import Sequence
 
@@ -28,7 +31,8 @@ from ..rules import READING_RULES, Mishandle, resolve
 from ..sources import (MIN_POOL_EVENTS, USER_AGENT, fetch_usgs, generate_synthetic, mimic_event_id, new_event_id,
                        parse_usgs_geojson)
 from ..units import LENGTH
-from .base import Domain, FieldSpec, Forecaster, Lexicon, RecordReport, Spatial, TrapVocab
+from .base import (REPEAT_RULE, Domain, FieldSpec, Forecaster, Lexicon, RecordReport, Spatial, TrapVocab,
+                   message_time_rule, numbered_rules)
 
 # Margin guards: no event may sit this close to a threshold, so that display rounding (0.1 km or mi,
 # 0.001 degrees, minute-precision times) can never change a correct answer. Magnitudes need no
@@ -118,6 +122,15 @@ TRAP_VOCAB = TrapVocab(
     correction_notices=("revised to", "revised from", "magnitude now"),
 )
 
+# The reading rules of every earthquake prompt off the legacy path: the 0.2.0 rules, which say nothing of
+# messages, then the genre-neutral rules on message times and on quoted, read-back, forwarded and relayed
+# repeats that every record domain's rules give (domains.base.record_rules, rules 6 and 7). Chat logs,
+# email threads and radio transcripts all carry repeats and message times; a legacy prompt is the 0.2.0
+# classic digest, which carries neither, and prints READING_RULES alone.
+GENRE_READING_RULES = READING_RULES + numbered_rules(
+    (message_time_rule("an earthquake"), REPEAT_RULE),
+    start=len(re.findall(r"^\d+\. ", READING_RULES, flags=re.MULTILINE)) + 1)
+
 # USGS-mode instances ask whether an M4.5+ quake will strike near a point in the next 24 hours; the
 # USGS catalogue answers it later (see forecast.py).
 FORECASTER = Forecaster(source="usgs", make=make_forecast, text=forecast_text, resolve=resolve_forecasts)
@@ -180,7 +193,10 @@ class Earthquakes(Domain):
         return mimic_event_id(example, rng, taken)
 
     def rules_text(self) -> str:
-        return READING_RULES
+        """The reading rules of an earthquake prompt off the legacy path (GENRE_READING_RULES): the 0.2.0
+        rules and the genre-neutral rules on message times and repeats. A legacy prompt prints the 0.2.0
+        rules (rules.READING_RULES) alone."""
+        return GENRE_READING_RULES
 
     def resolve(self, reports: Sequence[Report], notices: Sequence[Notice],
                 mishandle: Mishandle | None = None) -> list[Event]:

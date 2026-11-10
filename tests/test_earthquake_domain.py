@@ -16,7 +16,8 @@ from evalgen import adapters, scoring, solver, traps
 from evalgen.adapters import Task, _perturb
 from evalgen.digest import render_notice, render_report
 from evalgen.domains import DEFAULT_DOMAIN, get_domain
-from evalgen.domains.base import Domain, FieldSpec, Glossary, Lexicon, Record, RecordReport, TrapVocab
+from evalgen.domains.base import (REPEAT_RULE, Domain, FieldSpec, Glossary, Lexicon, Record, RecordReport, TrapVocab,
+                                  numbered_rules)
 from evalgen.domains.earthquakes import DOMAIN, EARTHQUAKES
 from evalgen.geo import KM_PER_MILE, from_km
 from evalgen.models import EVENT_ID_PATTERN, Notice, Question, Trap
@@ -289,7 +290,13 @@ def test_the_registry_serves_the_earthquake_domain():
     assert names == ("earthquakes", "earthquake", "earthquakes", "event ID", "network", "region")
     assert EARTHQUAKES.id_pattern == EVENT_ID_PATTERN
     assert (EARTHQUAKES.id_answer_type, EARTHQUAKES.group_answer_type) == ("event_id", "region")
-    assert EARTHQUAKES.rules_text() is READING_RULES
+    # Its prompts off the legacy path print the 0.2.0 rules and then the genre-neutral rules on message
+    # times and repeats (legacy prompts print the 0.2.0 rules alone: test_regression_020.py).
+    rules = EARTHQUAKES.rules_text()
+    assert rules.startswith(READING_RULES) and rules.endswith("\n")
+    assert rules[len(READING_RULES):] == numbered_rules(
+        ("The time at which a message was sent, forwarded or relayed is never the time of an earthquake.",
+         REPEAT_RULE), start=10)
 
 
 def test_the_earthquake_domain_delegates_to_the_020_functions(instances):

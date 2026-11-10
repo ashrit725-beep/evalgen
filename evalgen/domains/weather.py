@@ -64,7 +64,10 @@ from .base import RULES_WIDTH, Domain, FieldSpec, Lexicon, Record, Spatial, Trap
 
 CELSIUS = Unit("°C", "degrees Celsius")
 FAHRENHEIT = Unit("°F", "degrees Fahrenheit", 5 / 9, -160 / 9, step=1.0)  # °C = (°F - 32) × 5/9
-KELVIN = Unit("K", "kelvins", 1.0, -273.15, step=1.0)  # °C = K - 273.15
+# °C = K - 273.15. Answers and restated thresholds in kelvins keep two places: a tenth of a degree
+# Celsius always ends in 5 hundredths of a kelvin (0.7 °C is 273.85 K), which one place would round
+# exactly halfway, either way.
+KELVIN = Unit("K", "kelvins", 1.0, -273.15, decimals=2, step=1.0)
 KMH = Unit("km/h", "kilometres per hour")
 MPH = Unit("mph", "miles per hour", 1.609344, step=1.0)
 KNOT = Unit("kt", "knots", 1.852, step=1.0)

@@ -284,7 +284,8 @@ def test_the_rules_name_every_notice_and_end_with_the_glossary_rule():
         numbered = re.findall(r"^(\d+)\. ", rules, flags=re.MULTILINE)
         assert numbered == [str(n) for n in range(1, 11)] and rules.endswith("\n")
         assert f"10. The glossary is the only definition of the words in this digest: what a {bound.noun} is" in flat
-        assert "rounded to the decimal places the glossary gives for the field." in flat
+        assert ("rounded to the decimal places the glossary gives for the field; no value is written so that it "
+                "converts to exactly halfway between two of them.") in flat  # so no reader rounds a half
         assert all(len(line) <= RULES_WIDTH for line in rules.splitlines())
         glossary = bound.glossary()
         assert parse_glossary(render_glossary(glossary)) == glossary == INVENTED.glossary(surface)
