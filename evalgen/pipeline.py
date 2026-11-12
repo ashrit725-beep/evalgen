@@ -568,6 +568,9 @@ def run_models(run_dir: Path, specs: Sequence[str], *, workers: int = 4, force: 
         except AdapterError as exc:
             log(f"[run] skipping {spec}: {exc}")
             continue
+        note = adapter.note()  # e.g. a simulated penalty that a chance of 0 cuts short
+        if note:
+            log(f"[run] note: {note}")
         out_dir = run_dir / "responses" / slugify(adapter.name)
         jobs = [(inst, r) for inst in instances for r in inst.renderings
                 if force or not _has_reply(out_dir / f"{inst.instance_id}__{r.variant}.json")]

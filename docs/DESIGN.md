@@ -278,7 +278,7 @@ whatever text it returned (usually none), flagged in the report, and asked again
 |---|---|
 | `oracle` | rule-based solver that reads **only the digest text**, applies the reading rules and runs each question's operation chain; must score 100% |
 | `naive` | the same parser, but every report counts as a separate quake and notices are ignored; it loses points only where traps (alone or combined) change the answer, apart from rare display-rounding effects. Off the legacy path it reads each digest with its genre's parser, as the oracle does, which has already set aside the quoted and read-back repeats and the message times that the rules say are no reports. So it never meets a genre's noise, and its consistency across renderings and genres is high by construction |
-| `mock` | a **simulated** contaminated model, not a language model. It answers public-template questions correctly 92% of the time (80% when paraphrased) and new-template questions 62% of the time; its errors are seeded by the prompt text and usually fall into the traps. It exists to exercise every metric without API keys. `mock:held_out=P` (0.3.0) also lowers each of those chances by P on an instance from a held-out domain and by P on a rendering in a held-out genre, as a model tuned to the public ones would be (`held_out_domains=P` or `held_out_genres=P` for one kind, joined with `+` for different penalties) |
+| `mock` | a **simulated** contaminated model, not a language model. It answers public-template questions correctly 92% of the time (80% when paraphrased) and new-template questions 62% of the time; its errors are seeded by the prompt text and usually fall into the traps. It exists to exercise every metric without API keys. `mock:held_out=P` (0.3.0) also lowers each of those chances by P on an instance from a held-out domain and by P on a rendering in a held-out genre, as a model tuned to the public ones would be (`held_out_domains=P` or `held_out_genres=P` for one kind, joined with `+` for different penalties). A chance stops at 0, so where the penalties that apply add up to more than 0.62, the chance on a new template, they lower accuracy by less than they say, and a gap they inject is smaller than the penalty; `run` prints a note for such a mock |
 | `anthropic[:model]` | Anthropic Messages API (`ANTHROPIC_API_KEY`; default model `claude-opus-5-5`, override with `:model` or `EVALGEN_ANTHROPIC_MODEL`) |
 | `openai[:model]` | OpenAI Chat Completions (`OPENAI_API_KEY`; default `gpt-4.1`, override with `:model` or `EVALGEN_OPENAI_MODEL`; `OPENAI_BASE_URL` points it at any compatible server) |
 
@@ -428,7 +428,11 @@ the scored replies (output tokens include any thinking) and the median latency.
 Each instance has `v0` plus 2 variants with different presets for units, time formats,
 coordinates, line styles, layout and wording. Consistency = the share of (question, variant)
 answer pairs equal to the model's `v0` answer, compared with the same tolerances as scoring.
-Questions the model never answered are left out.
+Questions the model never answered are left out. Off the legacy path (0.3.0), two answers that are
+both scored right also count as equal: scoring accepts an answer within its tolerance on either side
+of the key, so two right answers can be up to twice the tolerance apart (4.96 and 5.04 for a
+magnitude of 5.0), and the tolerance alone would count them as an inconsistency. Legacy reports
+compare as 0.2.0 did (see Limitations).
 
 ### 8. Delayed-resolution forecasts (`evalgen/forecast.py`, USGS mode)
 Each USGS instance adds `F1`: the probability of an M4.5+ quake within R km of a point in the next
@@ -765,9 +769,10 @@ Reports of runs off the legacy path add, for each model:
 - the **genre gap**: accuracy on renderings in public genres minus accuracy on renderings in
   held-out ones, over every rendering;
 - **cross-genre consistency**: agreement between every pair of renderings of a question in two
-  different genres, compared with the scoring tolerances like metamorphic consistency, and the share
-  of questions answered alike in all their genres. Like metamorphic consistency, it needs no ground
-  truth.
+  different genres, compared like metamorphic consistency off the legacy path (two answers agree when
+  they are equal within the scoring tolerance, or when both are scored right), and the share of
+  questions answered alike in all their genres. Like metamorphic consistency, it needs no ground
+  truth beyond the scores.
 
 Each gap is given raw, with a 95% normal-approximation interval, and *adjusted*, like the template
 gap: compared within strata of equal code-computed difficulty, each stratum weighted by its share
@@ -780,10 +785,25 @@ the share of rows in strata that both sides have.
   variant. Neither gap needs a stratum for the template pool, because every instance asks about as
   many public questions as new ones (see Templates), and within each domain a twin pair never drifts
   more than one question apart.
-- **Each gap is also stratified by the other split.** The source gap's strata hold the split of the
-  original rendering's genre, and the genre gap's strata the split of the instance's domain. A mix
-  that ties held-out domains to held-out genres therefore cannot make a model that is weak on one
-  look weak on the other. Where the two splits never come apart, the adjusted gap is n/a.
+- **Each gap is also stratified by the other kind, by name.** The source gap's strata hold the genre
+  of the original rendering, and the genre gap's strata the instance's domain. A list mix can tie a
+  domain to genres: `earthquakes,toy:toy-telex` renders held-out toy in held-out toy-telex alone, and
+  `weather,neo:email,invented:table`, with email held out, renders public neo in held-out email alone.
+  Compared within each domain, a model weak on neo shows no genre gap, whereas within the split of
+  the domain (every domain of that mix is public) neo's errors read as a gap of the email genre, and
+  are flagged. A domain that is never rendered in genres of both splits drops out of the genre gap, and a
+  genre never given to originals of domains of both splits out of the source gap; where none is left,
+  the adjusted gap is n/a. Comparing within names costs a random mix, which draws every genre alike
+  for every domain, some power (see Limitations).
+- **The intervals count instances, not rows.** An instance's questions are read in one digest, and
+  each of its renderings asks them again, so a model's answers within an instance go together: one
+  misreading costs several rows, and the genre gap counts a question once per rendering. Each interval
+  is widened by the design effect of its rows (Kish): the cluster-robust variance of the difference
+  between the two sides, with the instance as the independent unit, over its variance with every row
+  independent, when that ratio is above 1. The adjusted gap takes the design effect of the rows that it
+  compares (its strata are too small for a cluster-robust variance of their own). Where answers do not
+  cluster, the design effect is close to 1 and the intervals hardly change; the simulations below
+  measure both cases. The template gap keeps its 0.2.0 interval: every instance asks both pools.
 - **The flag** is the template gap's: an adjusted gap above 10 points whose 95% interval excludes
   0. A gap needs rows on both sides, so it exists only when the private config holds something out.
 
@@ -818,20 +838,43 @@ points:
 
 | mix; held-out domains; held-out genres | seed | instances | source gap: CI, coverage | genre gap: CI, coverage | the penalties |
 |---|---|---|---|---|---|
-| random; neo, invented; table, form, radio | 42 | 100 | ±10, 87% | ±6, 97% | each flagged by its own gap only |
-| the same | 43 | 300 | ±6, 93% | ±3, 99% | each flagged by its own gap only |
-| random; invented; radio | 44 | 300 | ±7, 93% | ±5, 96% | each flagged by its own gap only |
-| random; toy; toy-telex (the example config) | 45 | 300 | ±6, 89% | ±3, 99% | each flagged by its own gap only |
-| the same (the demo, 0.3 penalties only) | 42 | 20 | ±35, 41% | ±17, 60% | the genre penalty flagged; the domain penalty missed |
-| `earthquakes,toy:toy-telex`; toy; toy-telex | 46 | 100 | ±14, 60% | ±8, 49% | each flagged by its own gap only |
+| random; neo, invented; table, form, radio | 42 | 100 | ±13–15, 64% | ±6, 92% | each flagged by its own gap only, but the domain penalty of 0.2 was missed (+12 ± 13) |
+| the same | 43 | 300 | ±6, 84% | ±3, 98% | each flagged by its own gap only |
+| random; invented; radio | 44 | 300 | ±7, 82% | ±5, 88% | each flagged by its own gap only |
+| random; toy; toy-telex (the example config) | 45 | 300 | ±6–7, 89% | ±3, 99% | each flagged by its own gap only |
+| the same (the demo, 0.3 penalties only) | 42 | 20 | ±35–40, 41% | ±17–19, 60% | the genre penalty flagged; the domain penalty missed |
+| `earthquakes,toy:toy-telex`; toy; toy-telex | 46 | 100 | ±14–16, 60% | ±8, 49% | each flagged by its own gap only |
 | `earthquakes:classic,toy:toy-telex`; toy; toy-telex | 47 | 60 | n/a | n/a | neither: the raw gaps move together |
 
 (The half-widths are those of the penalised mocks, measured with the released code; a reworded
-prompt reseeds the mock's errors, so a gap's value moves a little with the code, its width hardly.)
-In every one of these runs, the oracle, the naive reader and the mock without a penalty were
-flagged by neither gap. In the partly tied mix, a penalty on held-out domains also raised the raw
-genre gap (by 12 to 18 points), and a penalty on held-out genres the raw source gap (by 11 to 14);
-the adjusted gaps kept each penalty on its own gap.
+prompt reseeds the mock's errors, so a gap's value moves a little with the code, its width hardly.
+Before each gap was compared within the other kind's names and its intervals counted instances, the
+first row read ±10, 87% and ±6, 97%, and every penalty was flagged by its own gap. The random mixes
+of several domains and genres lost coverage to the finer strata. In the mixes of the example config,
+whose names and splits coincide, only the design effect changed anything: the source intervals of
+the mocks penalised on genres widened by up to a seventh, since a genre penalty costs all of an
+original's questions at once, so their rows go together.) In every one of these runs, the oracle,
+the naive reader and the mock without a penalty were flagged by neither gap. In the partly tied mix,
+a penalty on held-out domains also raised the raw genre gap (by 12 to 18 points), and a penalty on
+held-out genres the raw source gap (by 11 to 14); the adjusted gaps kept each penalty on its own gap.
+
+Simulated readers on the same kind of design (random mixes of 40 or 100 instances, neo and invented
+held out, and table, form and radio), 600 to 2,000 runs per cell, measured the intervals and the
+flag, now and (in brackets) before those two changes. A reader with no gap at all (a chance of 0.77
+of a right answer, or of 0.8 with a random effect) should have its gap of 0 covered in 95% of runs
+and be flagged in at most 5%:
+
+| reader with no gap | 40 instances: source gap covered, flagged | genre gap | 100 instances: source gap | genre gap |
+|---|---|---|---|---|
+| answers independent | 96%, 2% (95%, 3%) | 96%, 2% (94%, 1%) | 95%, 2% (95%, 2%) | 94%, 0% (94%, 0%) |
+| a random effect per rendering (SD 2, logit scale) | 93%, 4% (83%, 9%) | 93%, 3% (81%, 7%) | 95%, 3% (85%, 8%) | 93%, 1% (80%, 2%) |
+| a random effect per instance (SD 2) | 93%, 3% (84%, 8%) | 94%, 3% (89%, 4%) | 95%, 2% (82%, 9%) | 96%, 0% (88%, 0%) |
+| right 65% of the time on neo, 85% elsewhere, in `weather,neo:email,invented:table` with only email held out | | 98%, 2% (4%, 94%) | | |
+| right 65% of the time in table, 85% in classic, in `earthquakes:classic,invented:classic,weather:table` with only weather held out | n/a in every run (29%, 71%) | | | |
+
+The template gap needs neither change: every instance asks both pools, so an instance's own
+difficulty cancels in it (with a random effect per rendering or per instance of SD 2, its interval
+covered the gap of 0 in 98% of 1,000 runs, and flagged at most 1%).
 
 ### The 0.2.0 regression guarantee
 
@@ -997,23 +1040,46 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
 **The source and genre gaps**
 
 * **Power.** The validation table above gives the scale. About 100 instances with two held-out
-  domains and three held-out genres put the adjusted source gap within about ±10 points and the
-  genre gap within ±6. With 20 instances, a 30-point penalty on held-out domains went unflagged.
-  Fewer rows on the held-out side widen the interval: one held-out genre out of seven gave ±5 at
-  300 instances, where three gave ±3. At these widths the flag catches a gap of about 20 points at
-  100 instances and of about 15 at 300, while a gap near the 10-point threshold is flagged about
-  half the time at any size.
-* **Tied splits.** Both adjusted gaps include the other split in their strata. When a mix ties
-  held-out domains to held-out genres, the adjusted gap has low coverage (49–60% in the partly tied
-  mix measured) or is n/a, and the raw gaps mix the two penalties (in the fully tied mix they are
-  the same for both).
-* **Intervals count questions, not domains or genres.** With one or two held-out domains, the gap
-  compares those particular domains with the public ones. A held-out domain or genre that is
+  domains and three held-out genres put the adjusted source gap within about ±13 points and the
+  genre gap within ±6; 300 instances within ±6 and ±3. With 20 instances, a 30-point penalty on
+  held-out domains went unflagged. Fewer rows on the held-out side widen the interval: one held-out
+  genre out of seven gave ±5 at 300 instances, where three gave ±3. In simulated 100-instance runs of
+  that design, with answers independent, a reader 20 points worse on the held-out domains was flagged
+  in 93% of runs, 15 points worse in 72% and 10 points in 38%; one 15 points worse in the held-out
+  genres in 95% and 10 points in 50%.
+* **Comparing within names costs a random mix power.** Each gap compares within the names of the
+  other kind (see Report additions), which a list mix needs and a random mix, which draws every genre
+  alike for every domain, does not; there the finer strata compare fewer rows. In the first row of
+  the validation table the source gap's coverage fell from 87% to 64% and its interval widened from
+  ±10 to ±13 points, and in simulation the share of 100-instance runs that flag a reader 15 points
+  worse on held-out domains fell from 83% to 72% (and of 40-instance runs from 42% to 25%); the genre
+  gap, compared within four domains rather than seven genres, lost almost nothing (95% either way).
+* **Tied splits.** Both adjusted gaps compare within the other kind's names. When a mix ties domains
+  to genres, the adjusted gap has low coverage (49–60% in the partly tied mix measured; 17% in a
+  40-instance run of `weather,neo:email,invented:table` with email held out, in which only weather is
+  rendered in genres of both splits) or is n/a, and the raw gaps mix the two kinds (in the fully tied
+  mix they are the same for both).
+* **The gaps' intervals count instances, not domains or genres.** With one or two held-out domains,
+  the gap compares those particular domains with the public ones. A held-out domain or genre that is
   harder in itself (an invented domain read through its glossary, a genre with more noise) shows a
   gap for an honest model too, and the strata do not remove a domain's or a genre's own difficulty.
   The simulated penalties above do not model this. A gap says something about domains or genres in
   general only with several held-out ones on each axis, so that their own differences average out.
   It is a flag, not proof.
+* **The other intervals count questions.** The accuracy intervals, the template gap's, the
+  consistency intervals (over answer pairs) and the head-to-head comparison treat questions as
+  independent, as 0.2.0 did, so they are too narrow for a model whose errors cluster within
+  instances. Of these only the template gap's feeds a flag, and its pools are asked alike in every
+  instance (see the simulation above). Legacy reports keep all of them exactly.
+* **The design effect is an approximation.** The adjusted gap's interval is widened by the design
+  effect of the rows it compares taken as one raw difference, because its strata are too small for a
+  cluster-robust variance of their own. In simulation its intervals covered 93–96% of runs with
+  strong clustering, and at most 4% of the readers with no gap were flagged; with few held-out
+  instances (a demo of 20) every interval is rough.
+* **Legacy consistency compares as 0.2.0 did.** A legacy report's metamorphic consistency compares
+  two answers by the scoring tolerance alone, so two right answers on either side of the key (4.96
+  and 5.04 for a magnitude of 5.0) count as an inconsistency there. Off the legacy path both
+  consistency metrics count two answers that are both scored right as agreeing.
 
 **Domains and genres**
 

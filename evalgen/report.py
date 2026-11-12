@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import math
 from collections import Counter
 from pathlib import Path
 from statistics import mean, median
@@ -30,12 +31,16 @@ from .genres.base import printed_glossary
 from .mix import HELD_OUT, LEGACY, PUBLIC, RANDOM, SPLITS, Inventory, load_run_plugins
 from .models import Instance, Question
 from .ops import KINDS, Step, describe, terminal_step
-from .scoring import (brier, difference_ci, equivalent, mcnemar_exact, normalize, paired_difference_ci,
-                      stratified_difference, wilson)
+from .scoring import (brier, design_effect, difference_ci, equivalent, mcnemar_exact, normalize,
+                      paired_difference_ci, stratified_difference, widened, wilson)
 from .util import read_json, utc_iso, write_json
 
 PACKAGE_DIR = Path(__file__).resolve().parent  # the evalgen sources that code_fingerprint covers
 GAP_FLAG = 0.10  # flag a public-minus-new gap above 10 points whose 95% CI excludes zero
+# How the consistency metrics of a report off the legacy path compare two answers (answers_agree).
+AGREE_TEXT = ("two answers agree when they are equal within the scoring tolerance, or when both are scored right "
+              "(scoring accepts an answer on either side of the key, so two right answers can differ by up to twice "
+              "the tolerance).")
 TRAP_KINDS = ("duplicate", "retraction", "conflicting_magnitude")  # the 0.2.0 kinds, in their 0.2.0 order
 ANSWER_TYPE_ORDER = ("count", "event_id", "magnitude", "depth", "distance", "region", "utc_time")
 MODEL_ORDER = {"oracle": 0, "naive": 1, "mock": 2}
@@ -146,9 +151,11 @@ def model_metrics(score: dict, instances: list[Instance], forecasts: list[dict],
     out["by_template"] = {key: _rate(sum(r["correct"] for r in chosen), len(chosen))
                           for key, chosen in sorted(by_template.items())}
 
-    # Metamorphic consistency: needs no ground truth, only the model's own answers.
+    # Metamorphic consistency: needs no ground truth, only the model's own answers (and, off the legacy
+    # path, whether two of them were both scored right: answers_agree).
     pairs = consistent = 0
     fully: list[bool] = []
+    legacy = legacy_run(instances)
     for inst in instances:
         for q in inst.questions:
             base = index.get((inst.instance_id, "v0", q.qid))
@@ -160,7 +167,7 @@ def model_metrics(score: dict, instances: list[Instance], forecasts: list[dict],
                 if other is None or (base["normalized"] is None and other["normalized"] is None):
                     continue
                 compared += 1
-                same = equivalent(q.answer_type, base["normalized"], other["normalized"], unit=q.unit)
+                same = answers_agree(q, base, other, legacy=legacy)
                 consistent += same
                 all_agree = all_agree and same
             pairs += compared
@@ -248,17 +255,21 @@ def held_out_metrics(rows: list[dict], index: Mapping[tuple, dict], instances: l
     Both gaps are compared like for like, as the template gap is: within strata of equal
     code-computed difficulty, here the answer's family, the trap exposure and whether the filters
     matter, and for genres also whether the rendering is the original (a variant may be reworded and
-    in other units). Each gap is also adjusted for the other split: the source gap's strata hold the
-    split of the original rendering's genre, and the genre gap's the split of the instance's domain.
-    A mix may tie held-out domains to held-out genres ("earthquakes,toy:toy-telex" renders the toy
-    domain in the toy genre alone), and then a model weak on held-out genres alone would otherwise show
-    a source gap too, and one weak on held-out domains a genre gap; where the two splits are entirely
-    confounded, no stratum compares them and the adjusted gap is n/a rather than a flag on the wrong
-    set. (The template pool needs no stratum: every instance asks as many public as new questions, give
-    or take one, since an odd number of questions draws the pool of the last one at random (rarely two,
-    when no template of one pool fits its records), and within each domain a twin pair never drifts
-    more than one question apart.) An instance's split is the one it records; a genre's comes from
-    `inventory`."""
+    in other units). Each gap is also adjusted for the other kind, by name: the source gap's strata
+    hold the genre of the original rendering, and the genre gap's the instance's domain. A list mix
+    may tie a domain to genres ("earthquakes,toy:toy-telex" renders toy in toy-telex alone, and
+    "weather,neo:email" neo in email alone), and then a model weak on that genre alone would show a
+    source gap, and one weak on that domain alone a genre gap. The other kind's split would not stop
+    that where the tied domain and genre are in different splits: with email held out and every
+    domain public, neo's difficulty reads as a gap of the email genre. Within names, a domain never
+    rendered in genres of both splits drops out of the genre gap, and a genre never given to originals
+    of domains of both splits out of the source gap; where none is left, no stratum compares the two
+    sides and the adjusted gap is n/a rather than a flag on the wrong kind. (The template pool needs no
+    stratum: every instance asks as many public as new questions, give or take one, since an odd
+    number of questions draws the pool of the last one at random (rarely two, when no template of one
+    pool fits its records), and within each domain a twin pair never drifts more than one question
+    apart.) The intervals of both gaps treat the instance as the independent unit (split_gap). An
+    instance's split is the one it records; a genre's comes from `inventory`."""
     inventory = inventory or Inventory({}, {})
     by_id = {inst.instance_id: inst for inst in instances}
     questions = {(inst.instance_id, q.qid): q for inst in instances for q in inst.questions}
@@ -285,10 +296,10 @@ def held_out_metrics(rows: list[dict], index: Mapping[tuple, dict], instances: l
         return answer_family(q), q.features.get("trap_exposure", 0), q.features.get("filters_matter", True)
 
     def source_stratum(row: dict) -> tuple:  # rows of original renderings, whose genre is the original's
-        return (*difficulty(row), genre_split(row))
+        return (*difficulty(row), genre(row))
 
     def genre_stratum(row: dict) -> tuple:
-        return (*difficulty(row), "original" if row["variant"] == "v0" else "variant", domain_split(row))
+        return (*difficulty(row), "original" if row["variant"] == "v0" else "variant", domain(row))
 
     return {
         "by_domain": _accuracy_by(original, domain, domain_split),
@@ -322,35 +333,62 @@ def _accuracy_by(rows: list[dict], name_of: Callable[[dict], str | None],
 def split_gap(rows: list[dict], split_of: Callable[[dict], str | None],
               stratum_of: Callable[[dict], tuple]) -> dict | None:
     """Accuracy on the public side minus accuracy on the held-out side (`split_of` says which side a
-    row is on): raw, with a 95% Wald interval, and adjusted (scoring.stratified_difference) within the
-    strata that `stratum_of` gives, with its coverage, and flagged as the template gap is. None unless
-    both sides have rows."""
+    row is on): raw, and adjusted (scoring.stratified_difference) within the strata that `stratum_of`
+    gives, with its coverage, and flagged as the template gap is. None unless both sides have rows.
+
+    Each 95% interval treats the instance, not the row, as the independent unit. An instance's questions
+    are read in one digest, and each of its renderings asks all of them, so one misreading can cost
+    several of its rows. The Wald interval of the raw gap is therefore widened by the design effect of
+    its rows (scoring.design_effect: by how much more the difference varies with the instance as the
+    independent unit than with every row independent), and the stratified interval of the adjusted gap
+    by the design effect of the rows that it compares. The adjusted gap's strata are too small for a
+    cluster-robust variance of their own (a stratum of one row has no residual), so the design effect
+    is taken over its rows as one raw difference."""
     sides = {PUBLIC: [0, 0], HELD_OUT: [0, 0]}
     cells: dict[tuple, list[int]] = {}
+    units: list[tuple] = []  # (instance, stratum, on the public side, correct): for the design effects
     for row in rows:
         side = split_of(row)
         if side not in sides:
             continue
+        stratum = stratum_of(row)
         sides[side][0] += row["correct"]
         sides[side][1] += 1
-        cell = cells.setdefault(stratum_of(row), [0, 0, 0, 0])
+        cell = cells.setdefault(stratum, [0, 0, 0, 0])
         offset = 0 if side == PUBLIC else 2
         cell[offset] += row["correct"]
         cell[offset + 1] += 1
+        units.append((row["instance_id"], stratum, side == PUBLIC, row["correct"]))
     (k1, n1), (k2, n2) = sides[PUBLIC], sides[HELD_OUT]
     if not n1 or not n2:
         return None
     gap, lo, hi = difference_ci(k1, n1, k2, n2)
+    lo, hi = widened(gap, lo, hi, math.sqrt(design_effect((iid, public, y) for iid, _, public, y in units)))
     adjusted = stratified_difference(list(cells.values()))
+    if adjusted is not None:
+        compared = [(iid, public, y) for iid, stratum, public, y in units if all(cells[stratum][1::2])]
+        adjusted = (adjusted[0], *widened(*adjusted[:3], math.sqrt(design_effect(compared))), adjusted[3])
     return {"public": _rate(k1, n1), "held_out": _rate(k2, n2), "public_minus_held_out": gap, "ci95": [lo, hi],
             "adjusted": None if adjusted is None else
             {"public_minus_held_out": adjusted[0], "ci95": [adjusted[1], adjusted[2]], "coverage": adjusted[3]},
             "flagged": _flagged(adjusted)}
 
 
+def answers_agree(q: Question, a: Mapping[str, Any], b: Mapping[str, Any], *, legacy: bool = False) -> bool:
+    """Whether two score rows answer question `q` alike, for the consistency metrics: their answers are
+    equal within the scoring tolerance or, off the legacy path, both are scored right. Scoring accepts
+    an answer within the tolerance of the key on either side of it, so two right answers can be up to
+    twice the tolerance apart (4.96 and 5.04 for a magnitude of 5.0), and comparing them with each
+    other would count two right answers as an inconsistency. A legacy report compares as 0.2.0 did,
+    by the tolerance alone."""
+    if not legacy and a["correct"] and b["correct"]:
+        return True
+    return equivalent(q.answer_type, a["normalized"], b["normalized"], unit=q.unit)
+
+
 def cross_genre_consistency(index: Mapping[tuple, dict], instances: list[Instance]) -> dict | None:
     """Agreement between renderings of the same question in different genres: every pair of an
-    instance's renderings whose genres differ, compared like metamorphic consistency (no ground truth;
+    instance's renderings whose genres differ, compared like metamorphic consistency (answers_agree;
     a missing reply, or a pair that neither answered, is skipped). None when no instance has
     renderings in two genres."""
     pairs = consistent = 0
@@ -369,7 +407,7 @@ def cross_genre_consistency(index: Mapping[tuple, dict], instances: list[Instanc
                 if a is None or b is None or (a["normalized"] is None and b["normalized"] is None):
                     continue
                 compared += 1
-                same = equivalent(q.answer_type, a["normalized"], b["normalized"], unit=q.unit)
+                same = answers_agree(q, a, b)
                 consistent += same
                 all_agree = all_agree and same
             pairs += compared
@@ -670,7 +708,7 @@ def _cross_genre_section(models: list[dict]) -> list[str]:
           "A variant is rendered in another genre than its original whenever the run allows one: the same reports and "
           "notices, written as another kind of document. Correct answers cannot depend on the genre, so every pair of "
           "renderings of a question in two different genres should agree. Like the metamorphic check, this needs no "
-          "ground truth.", ""]
+          f"ground truth beyond the scores: {AGREE_TEXT}", ""]
     rows = []
     for m in models:
         c = m.get("cross_genre_consistency")
@@ -731,12 +769,16 @@ def _held_out_section(models: list[dict], run: dict) -> list[str]:
           "domains; the *genre gap* compares renderings in public and in held-out genres. Like the template gap, each "
           "is adjusted: compared within strata of equal code-computed difficulty (the kind of answer asked for, how "
           "many traps change it, and whether the filters matter; for genres, also whether the rendering is the "
-          "original or a reworded variant), and within the same split of the other kind: originals rendered in "
-          "genres of one split for the source gap, renderings of instances from domains of one split for the genre "
-          "gap. So a mix that renders held-out domains only in held-out genres cannot make a model weak on one look "
-          "weak on the other; where the two are never apart, the adjusted gap is n/a. A large positive adjusted gap "
-          f"flags a model tuned to the public domains or genres (flag: > {int(GAP_FLAG * 100)} points with a 95% CI "
-          "that excludes 0). It is a flag, not proof.",
+          "original or a reworded variant), and within the same domain or genre of the other kind: originals "
+          "rendered in the same genre for the source gap, renderings of instances of the same domain for the genre "
+          "gap. So a mix that renders a domain in some genres only (a held-out domain only in held-out genres, or a "
+          "public one only in a held-out genre) cannot make a model weak on that domain look weak on those genres, "
+          "or the other way round. Rows that no stratum compares are left out of the adjusted gap (the share that is "
+          "compared is shown), and where no stratum compares the two sides, the adjusted gap is n/a. Each 95% CI "
+          "treats the instance, not the question, as the independent unit: an instance's questions are read in one "
+          "digest and asked again in each rendering, so a model's answers to them go together. A large positive "
+          f"adjusted gap flags a model tuned to the public domains or genres (flag: > {int(GAP_FLAG * 100)} points "
+          "with a 95% CI that excludes 0). It is a flag, not proof.",
           ""]
     for key, title, what, rendered in (("source_gap", "Sources", "domains", "original renderings"),
                                        ("genre_gap", "Genres", "genres", "every rendering")):
@@ -916,7 +958,7 @@ def render_markdown(data: dict, run_dir: Path) -> str:
     md += ["## Metamorphic consistency", "",
            "Each instance is re-rendered with the same snapshot but different units, line order, formats and question "
            "wording. Correct answers cannot change, so any change in a model's answer is an inconsistency. This needs no "
-           "ground truth.", ""]
+           "ground truth" + ("." if legacy else f" beyond the scores: {AGREE_TEXT}"), ""]
     md += _table(["model", "consistent answer pairs", "95% CI", "questions consistent across all variants"],
                  [[m["model"], _frac(m["consistency"]), _ci(m["consistency"]),
                    _frac(m["consistency"]["questions_fully_consistent"])] for m in models])

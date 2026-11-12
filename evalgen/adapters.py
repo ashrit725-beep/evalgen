@@ -5,7 +5,9 @@ Spec strings accepted by ``make_adapter``:
 
 The simulated model's options give it a penalty on held-out sets: ``mock:held_out=0.3`` (held-out
 domains and genres), ``mock:held_out_domains=0.3`` or ``mock:held_out_genres=0.3``, joined with "+"
-for both kinds with different penalties. Each lowers its chance of a right answer by that much.
+for both kinds with different penalties. Each lowers its chance of a right answer by that much, but
+a chance stops at 0: where the penalties that apply add up to more than a chance (0.62 on a new
+template), they lower it by less, and `run` says so (MockAdapter.note).
 
 API models (anthropic, openai) receive ONLY the prompt text. The reference solvers (oracle, naive)
 also receive each question's operation chain, and the simulated model (mock) may look at the
@@ -67,6 +69,10 @@ class Adapter:
     def complete(self, prompt: str, task: Task) -> Completion:
         raise NotImplementedError
 
+    def note(self) -> str | None:
+        """Something a run should know about this adapter before it answers anything, or None."""
+        return None
+
 
 class OracleAdapter(Adapter):
     """Rule-based upper bound: applies every reading rule to the digest text."""
@@ -108,7 +114,9 @@ class MockAdapter(Adapter):
     It can also be given a penalty on held-out sets, as a model tuned to the public domains or genres
     would have: `held_out_domains` is taken off each probability above for an instance whose domain is
     held out (Task.split), and `held_out_genres` for a rendering whose genre is held out
-    (Task.genre_split). Without a penalty (the default) it draws exactly as before, on every run.
+    (Task.genre_split). A probability stops at 0, so penalties that add up to more than one of them
+    (0.62, on a new template) take less off it than they say (see note). Without a penalty (the
+    default) it draws exactly as before, on every run.
     """
 
     name = "mock"
@@ -128,6 +136,17 @@ class MockAdapter(Adapter):
         """How much less likely a right answer is on this task: the penalty of each held-out set it is in."""
         return ((self.held_out_domains if task.split == HELD_OUT else 0.0)
                 + (self.held_out_genres if task.genre_split == HELD_OUT else 0.0))
+
+    def note(self) -> str | None:
+        """When the penalties can add up to more than a probability of a right answer, which then stops
+        at 0: on those questions the mock loses less than its penalty, so a run that calibrates the gaps
+        with it injects smaller gaps than the penalties. None when no probability can fall below 0."""
+        lowest = min(min(self.P_CORRECT.values()), self.P_UNSEEN)
+        if self.held_out_domains + self.held_out_genres <= lowest + 1e-9:
+            return None
+        return (f"{self.name}: a chance of a right answer stops at 0, so where its penalties add up to more than "
+                f"{lowest:g} (its chance on a new template) they take off less than their size, and the gaps they "
+                "inject are smaller than the penalties")
 
     def complete(self, prompt: str, task: Task) -> Completion:
         rng = random.Random(derive_seed(self.seed, "mock", sha256_hex(prompt)))
