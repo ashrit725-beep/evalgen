@@ -31,7 +31,7 @@ import shutil
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Mapping, Sequence
@@ -590,7 +590,7 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
         "seed": cfg.seed,
         "seed_commitment": commitment,  # publishable before the evaluation
         "seed_nonce": nonce,  # secret until the reveal, like the seed itself (this file is private)
-        "config": cfg.to_dict(),
+        "config": replace(cfg, mix=plan.mix).to_dict(),  # the mix in canonical form: " legacy " records none
         **_mix_entry(plan),
         **_snapshot_entry(snapshots),
         "replay": replay,

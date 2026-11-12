@@ -15,6 +15,7 @@ import re
 import secrets
 import sys
 from collections import Counter, defaultdict
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -109,6 +110,17 @@ def drawn(run: Path) -> list[tuple]:
     return [(inst.domain, inst.split, tuple(r.genre for r in inst.renderings)) for inst in load_instances(run)]
 
 
+def assert_same_run(a: Path, b: Path) -> None:
+    """Two runs (in folders of one name) are the same run: every file byte for byte, and their manifests
+    but for what differs between any two runs (the seed's nonce and commitment, the time)."""
+    files = sorted(p.relative_to(a).as_posix() for p in a.rglob("*") if p.is_file() and p.name != "manifest.json")
+    assert files == sorted(p.relative_to(b).as_posix() for p in b.rglob("*") if p.is_file() and p.name != "manifest.json")
+    assert [f for f in files if (a / f).read_bytes() != (b / f).read_bytes()] == []
+    volatile = {"seed_commitment", "seed_nonce", "generated_at_utc"}
+    manifests = [{k: v for k, v in read_json(run / "manifest.json").items() if k not in volatile} for run in (a, b)]
+    assert manifests[0] == manifests[1]
+
+
 @pytest.fixture(scope="module")
 def held_out_run(tmp_path_factory):
     """A random mix over a public and a held-out domain (earthquakes, toy) and genre (classic,
@@ -174,12 +186,17 @@ def test_a_mix_lists_every_domain_and_genre_an_instance_may_be_drawn_as(registri
                                          {"classic": PUBLIC, "toy-telex": HELD_OUT})
     assert pairs(plan_mix("random", config)) == [("earthquakes", "classic"), ("earthquakes", "toy-telex"),
                                                  ("toy", "classic"), ("toy", "toy-telex")]
-    assert pairs(plan_mix("toy,earthquakes:classic", config))[0] == ("toy", "classic")  # in the order it names them
-    # Without a config, every registered domain and genre is public, and random draws from all of them.
+    # However a list orders its entries, what it allows comes in one canonical order (built-ins in module
+    # order, then the config's plugins in its order), and the plan writes the mix in that order.
+    reordered = plan_mix("toy,earthquakes:classic", config)
+    assert pairs(reordered) == pairs(listed) and reordered.mix == listed.mix == "earthquakes:classic,toy"
+    # Without a config, every domain and genre is public, and random draws from the built-in ones: not from the
+    # plugins that this process has loaded, here for the config.
+    assert {"toy", "toy-telex"} <= {entry.name for entry in [*domains.all_domains(), *genres.all_genres()]}
     bare = plan_mix("random")
-    assert pairs(bare) == [(d.name, g.name) for d in domains.all_domains() for g in genres.all_genres()]
+    assert pairs(bare) == [(d.name, g.name) for d in domains.REGISTRY.builtins() for g in genres.REGISTRY.builtins()]
     assert set(bare.inventory.domains.values()) | set(bare.inventory.genres.values()) == {PUBLIC}
-    assert pairs(plan_mix("earthquakes")) == [("earthquakes", g.name) for g in genres.all_genres()]
+    assert pairs(plan_mix("earthquakes")) == [("earthquakes", g.name) for g in genres.REGISTRY.builtins()]
     # A mix may only name what the config lists, and only names some registry knows.
     toy_only = write_config(tmp_path / "toy-only.json", public_domains=("toy",), held_out_domains=())
     with pytest.raises(MixError, match="earthquakes, which the private run config does not list"):
@@ -245,12 +262,20 @@ def test_an_explicit_list_is_honoured(registries, tmp_path):
     assert not any(path.endswith("/mix") for path in read_json(single / "manifest.json")["seeds"])
 
 
+def cable_plugin(folder: Path) -> Path:
+    """A plugin whose genre is toy_genre.py's third one, toy-cable (a config lists only what evalgen or its
+    own plugins define)."""
+    path = folder / "toy_cable.py"
+    path.write_text(TOY_GENRE_PLUGIN.read_text(encoding="utf-8") + "\nGENRE = CABLE\n", encoding="utf-8")
+    return path
+
+
 def test_variants_are_rendered_in_genres_other_than_the_originals(registries, tmp_path):
-    telex, = load_plugin(TOY_GENRE_PLUGIN)
-    cable = genres.REGISTRY.register(sys.modules[type(telex).__module__].CABLE)  # a third genre
-    config = write_config(tmp_path / "private.json", held_out_genres=("toy-telex", "toy-cable"))
+    config = write_config(tmp_path / "private.json", held_out_genres=("toy-telex", "toy-cable"),
+                          plugins=(TOY_PLUGIN, TOY_GENRE_PLUGIN, cable_plugin(tmp_path)))  # a third genre
     run = pipeline.generate(GenerateConfig(seed=8, instances=9, mix="toy", private_config=str(config)),
                             tmp_path / "run", log=quiet)
+    telex, cable = get_genre("toy-telex"), get_genre("toy-cable")
     instances = load_instances(run)
     for inst in instances:  # each other genre before any of them twice
         assert sorted(r.genre for r in inst.renderings) == ["classic", "toy-cable", "toy-telex"]
@@ -272,6 +297,101 @@ def test_variants_are_rendered_in_genres_other_than_the_originals(registries, tm
         for turn in (plan[1:3], plan[3:5], plan[5:7]):
             assert sorted(turn, key=lambda g: g.name) == others
     assert _genre_plan([telex], 3, random.Random(0)) == (telex,) * 3
+
+
+def renamed_toy(folder: Path, name: str) -> Path:
+    """A copy of the toy domain plugin whose domain is called `name`."""
+    source = TOY_PLUGIN.read_text(encoding="utf-8")
+    text = source.replace('DOMAIN = Toy("toy", located=True)', f'DOMAIN = Toy("{name}", located=True)')
+    assert text != source
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{name}.py").write_text(text, encoding="utf-8")
+    return folder / f"{name}.py"
+
+
+def test_a_run_without_a_config_never_draws_what_a_config_loaded(registries, tmp_path, monkeypatch, capsys):
+    """The registries serve the whole process, and a private run config's plugins stay registered after its run.
+    A later run without the config draws exactly what it draws in a process that never loaded them: random and a
+    bare domain take the built-in entries only, a list that names a config's entry is refused, and nothing held
+    out is drawn as public in a run that records no plugin (audit D1, API-1)."""
+    def generate(name: str, mix: str = "random") -> Path:
+        return pipeline.generate(GenerateConfig(seed=812, instances=6, mix=mix), tmp_path / name / "run", log=quiet)
+
+    before = {text: pairs(plan_mix(text)) for text in ("random", "weather")}
+    fresh = generate("fresh")
+    plan_mix("random", write_config(tmp_path / "private.json"))  # a held-out run's plan: the toy plugins load
+    assert get_domain("toy") and get_genre("toy-telex")
+    assert {text: pairs(plan_mix(text)) for text in before} == before
+    for text in ("toy:classic", "toy", "earthquakes:toy-telex", "weather,toy:news"):
+        with pytest.raises(MixError, match="which a private run config loaded into this process"):
+            plan_mix(text)
+    assert_same_run(fresh, generate("after"))
+    # An entry that the caller registered itself, as tests register the toy domain, may be named without a
+    # config; a process that reads the run must register it too, and says so if it has not.
+    new_process(monkeypatch)
+    load_plugin(TOY_PLUGIN)
+    own = generate("own", mix="toy:classic")
+    assert pairs(plan_mix("toy")) == [("toy", g.name) for g in genres.REGISTRY.builtins()]
+    new_process(monkeypatch)
+    with pytest.raises(MixError, match="the run draws on toy, which this process does not know: neither evalgen nor"):
+        pipeline.run_models(own, ["oracle"], log=quiet)
+    assert cli.main(["report", str(own)]) == 2 and "error: the run draws on toy" in capsys.readouterr().err
+
+
+def test_a_configs_draws_never_depend_on_what_the_process_loaded_before(registries, tmp_path, monkeypatch):
+    """With a private run config, what a run draws and in which order follows the config alone: the built-in
+    entries in module order, then its plugins' in its plugin order, never the order in which this process
+    registered them; and a config may list only what evalgen or its own plugins define (audit D1, API-2)."""
+    toya, toyb = renamed_toy(tmp_path / "private", "toya"), renamed_toy(tmp_path / "private", "toyb")
+    cable = cable_plugin(tmp_path / "private")
+    both = write_config(tmp_path / "both.json", public_domains=("weather",), held_out_domains=("toya", "toyb"),
+                        public_genres=("classic",), held_out_genres=("toy-telex", "toy-cable"),
+                        plugins=(toya, toyb, TOY_GENRE_PLUGIN, cable))
+    later = write_config(tmp_path / "later.json", public_domains=("weather",), held_out_domains=("toyb",),
+                         public_genres=("classic",), held_out_genres=("toy-cable",), plugins=(toyb, cable))
+    cfg = GenerateConfig(seed=7, instances=6, mix="random", private_config=str(both))
+    first = pipeline.generate(cfg, tmp_path / "first" / "run", log=quiet)  # no plugin loaded before
+    expected = pairs(plan_mix("random", both))
+    assert list(dict.fromkeys(d for d, _ in expected)) == ["weather", "toya", "toyb"]
+    assert list(dict.fromkeys(g for _, g in expected)) == ["classic", "toy-telex", "toy-cable"]
+    assert {d for d, _, _ in drawn(first)} == {"weather", "toya", "toyb"}
+
+    new_process(monkeypatch, [toya, toyb, TOY_GENRE_PLUGIN, cable])
+    plan_mix("random", later)  # toyb and toy-cable are registered before toya and toy-telex
+    assert [d.name for d in domains.all_domains()][-1] == "toyb" and genres.all_genres()[-1].name == "toy-cable"
+    assert pairs(plan_mix("random", both)) == expected
+    assert_same_run(first, pipeline.generate(cfg, tmp_path / "again" / "run", log=quiet))
+    # toya is registered now, by the other config's plugin, but a config whose plugins do not define it could not
+    # regenerate a run that draws it in another process.
+    stray = write_config(tmp_path / "stray.json", public_domains=("weather",), held_out_domains=("toya", "toyb"),
+                         held_out_genres=(), plugins=(toyb,))
+    with pytest.raises(MixError, match="lists the domain toya, which neither evalgen nor any of the config's plugins"):
+        plan_mix("random", stray)
+
+
+def test_how_a_list_is_written_never_changes_the_run(registries, tmp_path):
+    """What a list allows is put in a canonical order before anything is drawn, so the order of its entries changes
+    no run, and a list that allows one domain in one genre twice is refused. The manifest records the mix in that
+    canonical form, so " legacy " is the legacy run, byte for byte (audit D3, MIX-1)."""
+    def generate(mix: str, name: str, instances: int = 4) -> Path:
+        return pipeline.generate(GenerateConfig(seed=812, instances=instances, mix=mix), tmp_path / name / "run",
+                                 log=quiet)
+
+    ordered = generate("weather,neo", "a")
+    assert_same_run(ordered, generate(" neo , weather ", "b"))
+    assert read_json(ordered / "manifest.json")["config"]["mix"] == "neo,weather"
+    assert pairs(plan_mix("neo:email,neo:chat")) == pairs(plan_mix("neo:chat,neo:email")) == [("neo", "chat"),
+                                                                                             ("neo", "email")]
+    assert plan_mix("neo:email,neo:chat").mix == "neo:chat,neo:email" and plan_mix(" random ").mix == "random"
+    config = write_config(tmp_path / "private.json")
+    for text, path in (("weather,weather:email", None), ("weather:email,weather", None), ("toy,toy:toy-telex", config)):
+        with pytest.raises(MixError, match=r"allows (weather:email|toy:toy-telex) twice, .*a bare domain is in every"):
+            plan_mix(text, path)
+    legacy = pipeline.generate(GenerateConfig(seed=3, instances=1), tmp_path / "legacy" / "run", log=quiet)
+    spaced = pipeline.generate(GenerateConfig(seed=3, instances=1, mix=" legacy "), tmp_path / "spaced" / "run",
+                               log=quiet)
+    assert_same_run(legacy, spaced)
+    assert "mix" not in read_json(spaced / "manifest.json")["config"]
 
 
 # --------------------------------------------------------------------- the private run config
@@ -520,6 +640,13 @@ def test_plugins_register_their_domain_and_genre(registries, tmp_path):
     assert get_domain("toy") is toy and get_genre("toy-telex") is telex
     assert domains.all_domains()[-1] is toy and genres.all_genres()[-1] is telex  # after the built-in entries
     assert load_plugin(TOY_PLUGIN) == [toy] and len(domains.all_domains()) == len(set(domains.all_domains()))
+    # The registries tell their built-in entries from the rest, and a config's plugin entries from a caller's.
+    assert domains.REGISTRY.builtins() == domains.all_domains()[:-1] and telex not in genres.REGISTRY.builtins()
+    assert not domains.REGISTRY.is_private("toy")  # loaded directly, not by a private run config
+    plan_mix("random", write_config(tmp_path / "private.json"))
+    assert domains.REGISTRY.is_private("toy") and genres.REGISTRY.is_private("toy-telex")
+    with pytest.raises(ValueError, match="is not a plugin domain"):
+        domains.REGISTRY.mark_private(get_domain("earthquakes"))
     both = tmp_path / "both.py"
     both.write_text(BOTH, encoding="utf-8")
     twin, plain = load_plugin(both)
@@ -585,6 +712,49 @@ def test_later_steps_load_the_plugins_a_run_was_generated_with(registries, tmp_p
     plugins[0].unlink()
     with pytest.raises(MixError, match="which is gone"):
         pipeline.score_run(run, private_config=str(config), log=quiet)
+
+
+def test_a_run_records_the_plugin_code_that_ran_and_a_process_runs_one_version_of_it(registries, tmp_path,
+                                                                                      monkeypatch):
+    """A process runs each plugin file once. A run records the SHA-256 of the bytes that ran, even if the file is
+    edited while the run is generated; a later run or step of the same process that would load the edited file is
+    refused, pinned or not, rather than run the old code under the new bytes' name; a later step without the
+    config reads the run with the code that made it; and a new process runs the file as it is now, and says that
+    it has changed (audit API-3)."""
+    private = tmp_path / "private"
+    private.mkdir()
+    domain_file, genre_file = private / "toy_domain.py", private / "toy_genre.py"
+    domain_file.write_bytes(TOY_PLUGIN.read_bytes())
+    genre_file.write_bytes(TOY_GENRE_PLUGIN.read_bytes())
+    ran = hashlib.sha256(domain_file.read_bytes()).hexdigest()
+    config = write_config(tmp_path / "private.json", plugins=[domain_file, genre_file])
+
+    def edit_once(line: str) -> None:  # generate logs its first line after plan_mix has run the plugins
+        if b"# edited" not in domain_file.read_bytes():
+            domain_file.write_bytes(domain_file.read_bytes() + b"\n# edited while the run was generated\n")
+
+    cfg = GenerateConfig(seed=7, instances=2, mix="toy:classic", private_config=str(config))
+    run = pipeline.generate(cfg, tmp_path / "run", log=edit_once)
+    edited = hashlib.sha256(domain_file.read_bytes()).hexdigest()
+    assert read_json(run / "manifest.json")["plugins"][0]["sha256"] == ran != edited
+    data = json.loads(config.read_text(encoding="utf-8"))
+    pinned = tmp_path / "pinned.json"  # a config that commits to the edited bytes
+    pinned.write_text(json.dumps(dict(data, plugins=[{"path": str(domain_file), "sha256": edited}, str(genre_file)])),
+                      encoding="utf-8")
+    for step in (lambda: pipeline.generate(cfg, tmp_path / "again", log=quiet),
+                 lambda: pipeline.generate(replace(cfg, private_config=str(pinned)), tmp_path / "again", log=quiet),
+                 lambda: pipeline.build_report(run, private_config=str(config), log=quiet)):
+        with pytest.raises(MixError, match="toy_domain.py has changed since this process ran it"):
+            step()
+    assert not (tmp_path / "again").exists()
+    pipeline.run_models(run, ["oracle"], log=quiet)  # without the config: the plugins as they ran
+    pipeline.score_run(run, log=quiet)
+    pipeline.build_report(run, log=quiet)
+    report = read_json(run / "report.json")
+    assert report["plugins_changed"] == [] and {m["model"]: m for m in report["models"]}["oracle"]["accuracy"]["rate"] == 1
+    new_process(monkeypatch, [domain_file, genre_file])
+    pipeline.build_report(run, private_config=str(config), log=quiet)
+    assert read_json(run / "report.json")["plugins_changed"] == [str(domain_file.resolve())]
 
 
 def test_a_run_directory_never_runs_code_that_it_names(registries, tmp_path, monkeypatch, capsys):

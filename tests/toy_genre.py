@@ -21,7 +21,8 @@ The module defines two genres of one class, which differ only in the relay servi
 (so neither recognises the other's messages):
 
     GENRE   "toy-telex", the plugin's genre
-    CABLE   "toy-cable", which tests register beside it when they need a third genre
+    CABLE   "toy-cable", for tests that need a third genre: they load a copy of this file whose GENRE
+            is CABLE as a plugin of its own (a private run config lists only what its plugins define)
 """
 from __future__ import annotations
 
