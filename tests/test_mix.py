@@ -7,6 +7,7 @@ through the plugin loader, as held-out sets are, into registries of their own. T
 pinned by test_regression_020.py, and the legacy report is pinned here."""
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import itertools
 import json
@@ -928,10 +929,10 @@ def test_the_gaps_compare_public_and_held_out_sets_like_for_like(held_out_run):
         public, public, 0, len(originals) - public)
     assert gap["public_minus_held_out"] == 1.0 and gap["adjusted"]["public_minus_held_out"] == pytest.approx(1.0)
     assert gap["flagged"] and gap["adjusted"]["ci95"][0] > 0.5
-    assert gap["adjusted"]["coverage"] == pytest.approx(coverage(  # strata of originals: also their genre's split
-        originals, lambda inst, q: inst.split, lambda inst, q: (*difficulty(inst, q), genre_split(inst.renderings[0]))))
-    # Compared within the split of the instance's domain, the genre gap of a model that is right exactly on
-    # the public domains is none at all, whatever share of each domain's renderings is in a public genre.
+    assert gap["adjusted"]["coverage"] == pytest.approx(coverage(  # strata of originals: also their genre
+        originals, lambda inst, q: inst.split, lambda inst, q: (*difficulty(inst, q), inst.renderings[0].genre)))
+    # Compared within the instance's domain, the genre gap of a model that is right exactly on the public
+    # domains is none at all, whatever share of each domain's renderings is in a public genre.
     assert by_domain["genre_gap"]["adjusted"]["public_minus_held_out"] == pytest.approx(0.0)
     assert not by_domain["genre_gap"]["flagged"]
     assert by_domain["genre_gap"]["public_minus_held_out"] == pytest.approx(
@@ -950,15 +951,15 @@ def test_the_gaps_compare_public_and_held_out_sets_like_for_like(held_out_run):
     assert gap["public_minus_held_out"] == 1.0 and gap["adjusted"]["public_minus_held_out"] == pytest.approx(1.0)
     assert gap["flagged"]
     assert gap["adjusted"]["coverage"] == pytest.approx(coverage(  # strata of renderings: also original or variant,
-        renderings, lambda inst, r, q: genre_split(r),        # and the split of the instance's domain
-        lambda inst, r, q: (*difficulty(inst, q), r.variant == "v0", inst.split)))
+        renderings, lambda inst, r, q: genre_split(r),        # and the instance's domain
+        lambda inst, r, q: (*difficulty(inst, q), r.variant == "v0", inst.domain)))
 
     def share(split: str) -> float:
         chosen = [inst for inst, _ in originals if inst.split == split]
         return sum(1 for inst in chosen if genre_split(inst.renderings[0]) == PUBLIC) / len(chosen)
 
     assert by_genre["source_gap"]["public_minus_held_out"] == pytest.approx(share(PUBLIC) - share(HELD_OUT))
-    # ... but compared within the split of the original's genre, the source gap of that model is none at all.
+    # ... but compared within the original's genre, the source gap of that model is none at all.
     assert by_genre["source_gap"]["adjusted"]["public_minus_held_out"] == pytest.approx(0.0)
     assert not by_genre["source_gap"]["flagged"]
 
@@ -968,6 +969,82 @@ def test_the_gaps_compare_public_and_held_out_sets_like_for_like(held_out_run):
         for key in ("source_gap", "genre_gap"):
             assert flat[key]["public_minus_held_out"] == flat[key]["adjusted"]["public_minus_held_out"] == 0.0
             assert not flat[key]["flagged"]
+
+
+def test_each_gap_compares_within_each_domain_or_genre_of_the_other_kind_not_only_within_its_split(tied_run):
+    """A list mix can tie a domain to a genre, and where every domain (or every genre) is in one split, the
+    other kind's split adjusts for nothing. In tied_run toy is rendered in toy-telex alone and earthquakes
+    in either genre. Read with every domain public and toy-telex held out, a reader that is wrong on every
+    toy question, in every rendering, has no genre effect at all, yet every one of its errors is in the
+    held-out genre: compared within each domain, only earthquakes has renderings in both genres, and it
+    shows no genre gap. Read with both genres public and toy held out, a reader that is wrong in every
+    toy-telex rendering has no domain effect, yet every held-out original is in toy-telex: compared within
+    each genre, only toy-telex has originals of both domains, and it shows no source gap. Compared within
+    the other kind's split, each was flagged."""
+    instances = tied_run.instances
+
+    def difficulty(inst, q) -> tuple:
+        return answer_family(q), q.features["trap_exposure"], q.features["filters_matter"]
+
+    toy_public = [dataclasses.replace(inst, split=PUBLIC) for inst in instances]
+    inventory = Inventory({"earthquakes": PUBLIC, "toy": PUBLIC}, {"classic": PUBLIC, "toy-telex": HELD_OUT})
+    weak_on_toy = model_metrics(crafted(toy_public, lambda inst, r: inst.domain != "toy"), toy_public, [], inventory)
+    gap = weak_on_toy["genre_gap"]
+    assert weak_on_toy["source_gap"] is None and gap["public_minus_held_out"] > 0.25  # raw: toy's errors
+    assert gap["adjusted"]["public_minus_held_out"] == pytest.approx(0.0) and not gap["flagged"]
+    renderings = [(inst, r, q) for inst in toy_public for r in inst.renderings for q in inst.questions]
+    compared = coverage(renderings, lambda inst, r, q: inventory.genre_split(r.genre),
+                        lambda inst, r, q: (*difficulty(inst, q), r.variant == "v0", inst.domain))
+    earthquakes = sum(1 for inst, _, _ in renderings if inst.domain == "earthquakes") / len(renderings)
+    assert gap["adjusted"]["coverage"] == pytest.approx(compared) and 0.0 < compared <= earthquakes < 1.0
+
+    inventory = Inventory({"earthquakes": PUBLIC, "toy": HELD_OUT}, {"classic": PUBLIC, "toy-telex": PUBLIC})
+    weak_in_telex = model_metrics(crafted(instances, lambda inst, r: r.genre != "toy-telex"), instances, [], inventory)
+    gap = weak_in_telex["source_gap"]
+    assert weak_in_telex["genre_gap"] is None and gap["public_minus_held_out"] > 0.25  # raw: toy-telex's errors
+    assert gap["adjusted"]["public_minus_held_out"] == pytest.approx(0.0) and not gap["flagged"]
+    originals = [(inst, q) for inst in instances for q in inst.questions]
+    compared = coverage(originals, lambda inst, q: inst.split,
+                        lambda inst, q: (*difficulty(inst, q), inst.renderings[0].genre))
+    assert gap["adjusted"]["coverage"] == pytest.approx(compared) and 0.0 < compared < 1.0  # toy-telex only
+
+    # Where the mix never renders a domain in genres of both splits, no stratum compares them: n/a.
+    apart = Inventory({"earthquakes": PUBLIC, "toy": PUBLIC}, {"classic": PUBLIC, "toy-telex": HELD_OUT})
+    only_toy = [inst for inst in toy_public if inst.domain == "toy"] + [
+        dataclasses.replace(inst, renderings=[r for r in inst.renderings if r.genre == "classic"])
+        for inst in toy_public if inst.domain == "earthquakes" and inst.renderings[0].genre == "classic"]
+    tied = model_metrics(crafted(only_toy, lambda inst, r: inst.domain != "toy"), only_toy, [], apart)
+    assert tied["genre_gap"]["public_minus_held_out"] == 1.0 and tied["genre_gap"]["adjusted"] is None
+    assert not tied["genre_gap"]["flagged"]
+
+
+def test_the_gap_intervals_count_instances_not_rows(held_out_run):
+    """A reader that is right on every question of some instances and wrong on every question of the others,
+    in every rendering, by a coin flip per instance, has nothing to do with any domain or genre. Its rows
+    agree in fours and fives within each instance, so they are worth one draw per instance: the source
+    gap's interval is about as wide as the Wald interval over instances, each counted as one answer, and
+    about twice as wide as the Wald interval over its rows, which counts every row as an independent
+    draw. In the genre gap an instance's rows fall on both sides and cancel in part, so the widening is
+    smaller."""
+    instances, inventory = held_out_run.instances, held_out_run.inventory
+    right = {inst.instance_id: hashlib.sha256(inst.instance_id.encode("utf-8")).digest()[0] % 2 == 0
+             for inst in instances}
+    metrics = model_metrics(crafted(instances, lambda inst, r: right[inst.instance_id]), instances, [], inventory)
+
+    def width(interval) -> float:
+        return interval[1] - interval[0]
+
+    widths = {}
+    for key in ("source_gap", "genre_gap"):
+        gap = metrics[key]
+        _, lo, hi = scoring.difference_ci(gap["public"]["k"], gap["public"]["n"], gap["held_out"]["k"],
+                                          gap["held_out"]["n"])
+        widths[key] = width(gap["ci95"]) / (hi - lo)
+    assert widths["source_gap"] > 1.8 and widths["genre_gap"] > 1.05
+    public = [right[inst.instance_id] for inst in instances if inst.split == PUBLIC]
+    held_out = [right[inst.instance_id] for inst in instances if inst.split == HELD_OUT]
+    _, lo, hi = scoring.difference_ci(sum(public), len(public), sum(held_out), len(held_out))
+    assert 0.8 < width(metrics["source_gap"]["ci95"]) / (hi - lo) < 1.25
 
 
 def test_every_twin_pair_stays_in_step_within_each_domain(held_out_run):
@@ -997,6 +1074,46 @@ def test_cross_genre_consistency_compares_renderings_in_different_genres(held_ou
     c = metrics["cross_genre_consistency"]
     assert (c["k"], c["n"]) == (agreed, compared) and compared > 0
     assert (c["questions_fully_consistent"]["k"], c["questions_fully_consistent"]["n"]) == (sum(fully), len(fully))
+
+
+def nudged(instances) -> dict:
+    """The scores of a model that is right everywhere, but gives each number nine tenths of its scoring
+    tolerance below the key in one rendering and above it in the next: two right answers that are more
+    than the tolerance apart."""
+    rows = []
+    for inst in instances:
+        for i, r in enumerate(inst.renderings):
+            for q in inst.questions:
+                key = given = inst.answer_key[q.qid]
+                known = scoring.get_answer_type(q.answer_type)
+                if known.kind == "number":
+                    abs_tol, rel_tol = known.tolerance_in(q.unit)
+                    given = key + (-1) ** (i + 1) * 0.9 * max(abs_tol, rel_tol * abs(key))
+                rows.append({"instance_id": inst.instance_id, "variant": r.variant, "qid": q.qid,
+                             "template_id": q.template_id, "pool": q.pool, "answer_type": q.answer_type,
+                             "unit": q.unit, "key": key, "given": given, "normalized": normalize(q.answer_type, given),
+                             "correct": is_correct(q.answer_type, key, given, unit=q.unit)})
+    return {"model": "nudged", "kind": "api", "rows": rows, "replies": [], "forecasts": []}
+
+
+def test_two_right_answers_are_consistent_though_they_differ_by_more_than_the_tolerance(held_out_run, instances):
+    """Scoring accepts an answer within its tolerance of the key on either side of it (4.96 and 5.04 for a
+    magnitude of 5.0), so two right answers can be up to twice the tolerance apart. Off the legacy path both
+    consistency metrics count two answers that are both scored right as agreeing; a legacy report compares
+    the two answers as 0.2.0 did, by the tolerance alone."""
+    score = nudged(held_out_run.instances)
+    assert all(row["correct"] for row in score["rows"])
+    index = {(row["instance_id"], row["variant"], row["qid"]): row for row in score["rows"]}
+    numbers = [(row, index[(row["instance_id"], "v1", row["qid"])]) for row in score["rows"]
+               if row["variant"] == "v0" and scoring.get_answer_type(row["answer_type"]).kind == "number"]
+    assert numbers and not any(scoring.equivalent(a["answer_type"], a["normalized"], b["normalized"], unit=a["unit"])
+                               for a, b in numbers)  # each pair is further apart than the tolerance
+    metrics = model_metrics(score, held_out_run.instances, [], held_out_run.inventory)
+    for key in ("consistency", "cross_genre_consistency"):
+        assert metrics[key]["rate"] == metrics[key]["questions_fully_consistent"]["rate"] == 1.0, key
+    legacy = model_metrics(nudged(instances), instances, [])
+    assert legacy["accuracy_all_renderings"]["rate"] == 1.0 and legacy["consistency"]["rate"] < 1.0
+    assert "cross_genre_consistency" not in legacy
 
 
 def test_the_report_records_the_inventory_the_commitment_and_the_gaps(held_out_run):
@@ -1149,6 +1266,27 @@ def test_the_mock_draws_as_before_unless_given_a_held_out_penalty(instances):
             answers = parse_reply(full.complete(r.prompt, task(split=HELD_OUT)).text, [q.qid for q in inst.questions])
             assert not any(is_correct(q.answer_type, inst.answer_key[q.qid], answers.answers.get(q.qid), unit=q.unit)
                            for q in inst.questions)
+
+
+def test_a_mock_penalty_that_a_chance_of_0_cuts_short_is_reported(tmp_path, capsys):
+    """A chance of a right answer stops at 0, so penalties that add up to more than the mock's smallest
+    chance (0.62, on a new template) take less off than they say, and a gap calibrated with them is
+    smaller than the penalty: `run` says so. The --models help names every penalty option."""
+    for spec in ("mock", "mock:held_out=0.3", "mock:held_out=0.31", "mock:held_out_domains=0.62"):
+        assert make_adapter(spec).note() is None, spec
+    for spec in ("mock:held_out_genres=0.7", "mock:held_out=0.35", "mock:held_out_domains=0.4+held_out_genres=0.3",
+                 "mock:held_out=1"):
+        assert "stops at 0" in make_adapter(spec).note() and "0.62" in make_adapter(spec).note(), spec
+    assert make_adapter("oracle").note() is None
+    run = pipeline.generate(GenerateConfig(seed=3, instances=2), tmp_path / "run", log=quiet)
+    lines: list[str] = []
+    pipeline.run_models(run, ["mock:held_out=0.3", "mock:held_out_genres=0.7"], log=lines.append)
+    assert [line for line in lines if line.startswith("[run] note: ")] == [
+        f"[run] note: {make_adapter('mock:held_out_genres=0.7').note()}"]
+    with pytest.raises(SystemExit):
+        cli.main(["run", "--help"])
+    printed = " ".join(capsys.readouterr().out.split())
+    assert all(option in printed for option in ("held_out=P", "held_out_domains=P", "held_out_genres=P"))
 
 
 # -------------------------------------------------------------------------------------- the CLI

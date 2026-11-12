@@ -83,7 +83,10 @@ def _parser() -> argparse.ArgumentParser:
     r = sub.add_parser("run", help="send every prompt to one or more models and store the replies")
     r.add_argument("run_dir")
     r.add_argument("--models", default="mock,oracle,naive",
-                   help="comma-separated: oracle, naive, mock[:held_out=P], anthropic[:model], openai[:model]")
+                   help="comma-separated: oracle, naive, mock[:held_out=P], anthropic[:model], openai[:model]; the "
+                        "simulated mock's penalty on held-out sets is held_out=P (domains and genres), "
+                        "held_out_domains=P or held_out_genres=P, joined with + for two penalties "
+                        "(mock:held_out_domains=0.2+held_out_genres=0.3)")
     r.add_argument("--workers", type=_count(1), default=4, help="parallel requests for API models")
     r.add_argument("--force", action="store_true", help="ask again even if a stored reply exists")
     r.add_argument("--max-tokens", type=_count(1), default=16000,

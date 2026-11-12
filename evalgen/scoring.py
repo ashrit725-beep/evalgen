@@ -26,7 +26,7 @@ import dataclasses
 import math
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Hashable, Iterable, Mapping
 
 from .models import EVENT_ID_PATTERN
 
@@ -280,6 +280,40 @@ def stratified_difference(strata: list[tuple[int, int, int, int]], z: float = 1.
         variance += w * w * (a1 * (1 - a1) / n1 + a2 * (1 - a2) / n2)
     se = math.sqrt(variance)
     return gap, gap - z * se, gap + z * se, covered / total
+
+
+def design_effect(rows: Iterable[tuple[Hashable, bool, bool]]) -> float:
+    """How much more a difference of two proportions varies because its rows come in clusters whose rows
+    go together, as the questions and renderings of one instance do: Kish's design effect, the ratio of
+    the difference's cluster-robust (sandwich) variance, with the clusters as the independent units and
+    the small-sample factor G / (G - 1) over its G clusters, to its variance with every row independent.
+    Each row is (cluster, on the first side, correct). Answers that do not cluster give a ratio near 1,
+    which falls below 1 by chance about half the time; the design effect is never below 1, so that this
+    never narrows an interval. It is 1 when either side has no rows, when either variance is 0, and with
+    fewer than two clusters, which say nothing about the variance between clusters."""
+    rows = list(rows)
+    counts = {True: [0, 0], False: [0, 0]}
+    for _, first, correct in rows:
+        counts[bool(first)][0] += bool(correct)
+        counts[bool(first)][1] += 1
+    (k1, n1), (k2, n2) = counts[True], counts[False]
+    if not n1 or not n2:
+        return 1.0
+    p1, p2 = k1 / n1, k2 / n2
+    independent = p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2
+    totals: dict[Hashable, float] = {}
+    for cluster, first, correct in rows:
+        residual = (bool(correct) - p1) / n1 if first else -(bool(correct) - p2) / n2
+        totals[cluster] = totals.get(cluster, 0.0) + residual
+    g = len(totals)
+    if g < 2 or independent <= 0:
+        return 1.0
+    return max(1.0, g / (g - 1) * sum(t * t for t in totals.values()) / independent)
+
+
+def widened(estimate: float, low: float, high: float, factor: float) -> tuple[float, float]:
+    """The interval (low, high) around `estimate`, each half `factor` times as wide."""
+    return estimate - factor * (estimate - low), estimate + factor * (high - estimate)
 
 
 def mcnemar_exact(a_only: int, b_only: int) -> float:
