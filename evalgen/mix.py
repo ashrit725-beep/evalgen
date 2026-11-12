@@ -45,9 +45,10 @@ such a file could show one config and verify as another), is refused.
 Like the seed, the config is committed by hash: the manifest records ``sha256(canonical_json(config))``
 (``config_commitment``), and the random nonce stops anyone from guessing a small config from its hash.
 So a nonce must look drawn, not typed (``nonce_problem``): 32 hexadecimal digits or more, not a run of
-one digit or a pattern. The one exception is a nonce that says it is an EXAMPLE, as the published
-configs/private.example.json does: it is accepted, so that the demo of held-out sets works offline,
-but generate warns loudly that its commitment can be guessed.
+one digit or a pattern. The one exception is the nonce of the published configs/private.example.json
+(EXAMPLE_NONCE), which anyone can read: it is accepted, so that the demo of held-out sets works offline,
+but generate warns loudly that its commitment can be guessed. Any other nonce goes through the check,
+one that only says EXAMPLE included.
 
 What the evaluator publishes, and when:
 
@@ -79,7 +80,7 @@ from .domains.base import Domain
 from .genres import all_genres, get_genre
 from .genres.base import Genre
 from .seeds import SeedLog
-from .util import canonical_json, read_json, sha256_hex
+from .util import canonical_json, read_manifest, sha256_hex
 
 LEGACY = "legacy"
 RANDOM = "random"
@@ -94,7 +95,9 @@ REQUIRED_KEYS = ("nonce", "domains", "genres")
 MIN_NONCE_DIGITS = 32
 # A random draw of 32 hexadecimal digits shows fewer than 8 different digits about once in 30 million.
 MIN_NONCE_DISTINCT_DIGITS = 8
-EXAMPLE_MARK = "EXAMPLE"  # in the nonce of a published example config, whose commitment anyone can guess
+# The nonce of the published example config (configs/private.example.json), whose commitment anyone can
+# guess: the only nonce that is exempt from the check, so that the example demos the held-out metrics.
+EXAMPLE_NONCE = "EXAMPLE-ONLY-draw-your-own-with-secrets.token_hex"
 NONCE_ADVICE = ("its nonce must be at least 32 random hexadecimal digits: draw one with "
                 "python -c \"import secrets; print(secrets.token_hex(16))\"")
 PLUGIN_KEYS = ("path", "sha256")  # a plugin given with the SHA-256 of its bytes
@@ -184,17 +187,19 @@ def choices(entries: Sequence[Entry], genre_pool: Sequence[Genre] | None = None)
 
 
 def is_example_nonce(nonce: Any) -> bool:
-    """Whether a nonce says it is a published example's (configs/private.example.json): such a config
-    serves demos, and its commitment can be guessed."""
-    return isinstance(nonce, str) and EXAMPLE_MARK in nonce
+    """Whether a nonce is the published example's (configs/private.example.json, EXAMPLE_NONCE): such a
+    config serves demos, and its commitment can be guessed. Exactly that nonce: one that merely contains
+    "EXAMPLE" is checked like any other, so that no word in a nonce can let it skip the check."""
+    return nonce == EXAMPLE_NONCE
 
 
 def nonce_problem(nonce: Any) -> str | None:
     """What is wrong with a private run config's nonce, or None. A nonce must look drawn rather than
     typed: at least MIN_NONCE_DIGITS hexadecimal digits, at least MIN_NONCE_DISTINCT_DIGITS different
-    ones, and not one shorter run of digits repeated ("abab..."). A nonce that says it is an EXAMPLE
-    is accepted (generate warns that its commitment can be guessed). No check can prove a nonce random:
-    these refuse the guessable nonces that a config gets by accident, a word, a constant or a pattern."""
+    ones, and not one shorter run of digits repeated ("abab..."). The published example's nonce is
+    accepted (is_example_nonce; generate warns that its commitment can be guessed). No check can prove a
+    nonce random: these refuse the guessable nonces that a config gets by accident, a word, a constant or
+    a pattern."""
     if is_example_nonce(nonce):
         return None
     digits = nonce.strip().lower() if isinstance(nonce, str) else ""
@@ -305,6 +310,8 @@ def read_private_config(path: str | Path) -> PrivateConfig:
     FileNotFoundError, a malformed one MixError (not JSON, a key given twice, or a shape that
     config_problems refuses). Plugin paths are relative to the config's folder."""
     path = Path(path)
+    if not path.is_file():  # a folder, or nothing ("" names the current folder)
+        raise FileNotFoundError(f"the private run config {path} is not a file")
     try:
         data = _read_config_json(path)
     except DuplicateKey as exc:
@@ -340,8 +347,9 @@ def verify_private_config(path: str | Path, run_dir: str | Path) -> bool:
     manifest's private_config_commitment). A run generated without a config raises MixError; a file
     that is not JSON is not the config. A file that gives a key twice in one object raises MixError: it
     reads as two configs (the first value of the key or the last), so whether it is the committed one
-    has no answer. The plugins' bytes are checked when a run loads them (see the module docstring)."""
-    manifest = read_json(Path(run_dir) / "manifest.json")
+    has no answer. The plugins' bytes are checked when a run loads them (see the module docstring). A
+    `run_dir` that is not a run raises FileNotFoundError (util.read_manifest)."""
+    manifest = read_manifest(run_dir)
     recorded = manifest.get("private_config_commitment")
     if recorded is None:
         raise MixError(f"{run_dir} was generated without a private run config, so it committed to none")

@@ -31,7 +31,7 @@ from .domains.base import Domain, Record
 from .geo import destination, haversine_km
 from .models import EVENT_ID_RE, Event
 from .seeds import SeedLog
-from .util import canonical_json, read_json, sha256_hex, write_json
+from .util import canonical_json, read_json, sha256_hex, write_in, write_json
 
 USGS_FEEDS = {
     "hour": "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson",
@@ -243,8 +243,20 @@ def region_from_place(place: str | None) -> str:
 
 def parse_usgs_geojson(raw: bytes) -> tuple[list[Event], int, list[str]]:
     """Parse a USGS GeoJSON summary feed: Events (earthquakes only, one per quake), the feed's
-    generation time, and the IDs of duplicate solutions that were collapsed."""
+    generation time, and the IDs of duplicate solutions that were collapsed. Bytes that are not such a
+    feed, whether not JSON or JSON of another shape, raise ValueError, so that a live source that answers
+    with them falls back to synthetic data as one that cannot be reached does."""
     data = json.loads(raw.decode("utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("features", []), list):
+        raise ValueError("not a USGS GeoJSON feed: it is not an object with a list of features")
+    try:
+        return _usgs_events(data)
+    except (AttributeError, TypeError, IndexError) as exc:  # a feature, its properties or metadata of another shape
+        raise ValueError(f"not a USGS GeoJSON feed ({type(exc).__name__}: {exc})") from None
+
+
+def _usgs_events(data: dict) -> tuple[list[Event], int, list[str]]:
+    """The events of a USGS GeoJSON feed read as JSON (parse_usgs_geojson)."""
     events = []
     preference: dict[str, tuple] = {}
     for feature in data.get("features", []):
@@ -401,13 +413,24 @@ def build_domain_snapshot(domain: Domain, source: str, seedlog: SeedLog, *, pool
         records, compiled_at, window = live.parse(raw)
         if len(records) < live.min_records:
             raise ValueError(f"only {len(records)} usable records in the feed")
-    except (requests.RequestException, ValueError, KeyError) as exc:
-        note = f"{live.source} unavailable ({type(exc).__name__}: {exc}); fell back to synthetic data"
+    except (requests.RequestException, *PARSE_ERRORS) as exc:  # out of reach, or bytes its parser cannot read
+        note = f"{live.source} unavailable ({failure_text(exc)}); fell back to synthetic data"
         return _synthetic_domain_snapshot(domain, seedlog, pool_size, note=note), None
     return _live_domain_snapshot(domain, seedlog, raw, records, compiled_at, window, url, None), raw
 
 
 PARSE_ERRORS = (ValueError, KeyError, TypeError, AttributeError, IndexError)  # bytes a live parser cannot read
+# What a failure's message may hold that differs between two runs that fail alike, and so stays out of the
+# note a snapshot records: the query of a URL (a request for the last day of NWS observations names the time
+# it was sent) and the address of an object.
+VOLATILE = re.compile(r"(?<=[\w/.-])\?[\w%.~=&+:-]*|\s+at 0x[0-9a-fA-F]+")
+
+
+def failure_text(exc: BaseException) -> str:
+    """Why a live source failed, as a snapshot's note records it: the exception's type and message without
+    what changes from one moment to the next (VOLATILE), so that two offline runs of one seed, which both
+    fall back to the same synthetic records, write the same files."""
+    return f"{type(exc).__name__}: {VOLATILE.sub('', str(exc))}"
 
 
 def read_frozen_feed(domain: Domain, snapshot_file: str | Path) -> tuple[bytes, list[Any], int, int]:
@@ -538,15 +561,16 @@ def record_problems(domain: Domain, records: Sequence[Any]) -> list[str]:
 
 
 def save_snapshot(snapshot: Snapshot, raw: bytes | None, directory: Path, *,
-                  raw_filename: str = "raw_feed.geojson") -> None:
+                  raw_filename: str = "raw_feed.geojson", root: Path | None = None) -> None:
     """events.json (the records), snapshot.json (the metadata) and, for a live source, its frozen raw
-    bytes under `raw_filename` (the live adapter's)."""
+    bytes under `raw_filename` (the live adapter's), written into `directory` in the run directory `root`
+    (by default `directory` itself) through its one writer (util.write_in)."""
     directory = Path(directory)
-    write_json(directory / "events.json", [asdict(e) for e in snapshot.events])
+    root = directory if root is None else Path(root)
+    write_json(directory / "events.json", [asdict(e) for e in snapshot.events], root=root)
     if raw is not None:
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / raw_filename).write_bytes(raw)
-    write_json(directory / "snapshot.json", snapshot.meta())
+        write_in(root, directory / raw_filename, raw)
+    write_json(directory / "snapshot.json", snapshot.meta(), root=root)
 
 
 def load_snapshot(directory: Path) -> Snapshot:

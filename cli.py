@@ -2,8 +2,8 @@
 """evalgen command line.
 
     python cli.py demo --seed 42 --instances 20          # everything offline, no API keys
-    python cli.py generate --seed 7 --instances 20 [--source usgs]
-    python cli.py generate --seed 7 --mix random --private-config private.json   # held-out sources and genres
+    python cli.py generate --seed 7 --instances 20 [--source usgs]   # a small seed: demos and examples only
+    python cli.py generate --mix random --private-config private.json   # an evaluation: a fresh seed, held-out sets
     python cli.py run runs/random-synthetic-seed7 --private-config private.json   # (and score, report: plugins)
     python cli.py generate --seed 7 --mix random --source live --snapshot-dir runs/X/snapshot   # replay a live run
     python cli.py run runs/synthetic-seed7 --models mock,oracle,naive,anthropic,openai:gpt-4.1
@@ -19,11 +19,17 @@ import sys
 from pathlib import Path
 
 from evalgen import pipeline
-from evalgen.mix import MixError, verify_private_config
-from evalgen.seeds import fresh_seed
+from evalgen.mix import verify_private_config
+from evalgen.seeds import fresh_seed, guessable_seed
 from evalgen.util import parse_utc_iso
 
 SOURCES = ("synthetic", "usgs", "live")
+SEED_HELP = ("master seed (default: a fresh random 64-bit seed, which is logged). Leave it out for an evaluation: a "
+             "small seed such as 42 is for demos and reproductions, since anyone can guess it, or recover it from a "
+             "single prompt in seconds")
+SMALL_SEED_WARNING = ("warning: a seed this small can be guessed, and recovered from any one prompt of the run in "
+                      "seconds, which gives away every instance: use it for demos and reproductions, and leave --seed "
+                      "out for an evaluation (a fresh 64-bit seed is drawn and logged)")
 MIX_HELP = ("which domains and genres instances come from: legacy (0.2.0: earthquakes in the classic genre; the "
             "default), random, or a list such as 'weather,neo:email' (a bare domain: in any genre)")
 CONFIG_HELP = ("the evaluator's private run config (JSON): held-out domains and genres and the plugins that define "
@@ -32,13 +38,34 @@ LOAD_HELP = ("the private run config the run was generated with, for a run with 
              "loaded from it (evalgen never runs code that a run directory names by itself)")
 
 
+def _count(least: int):
+    """An argparse type: a whole number of at least `least`."""
+    def count(text: str) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            value = None
+        if value is None or value < least:
+            raise argparse.ArgumentTypeError(f"{text!r} is not a whole number of {least} or more")
+        return value
+    return count
+
+
+def _utc_time(text: str) -> int:
+    """An argparse type: an ISO timestamp in UTC (or with its offset), as Unix seconds."""
+    try:
+        return parse_utc_iso(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not an ISO timestamp such as 2026-01-14T06:00:00Z") from None
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cli.py", description="Live, fine-tuning-resistant LLM evaluation on earthquake digests.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     g = sub.add_parser("generate", help="build a fresh, seeded instance set (snapshot, digests, questions, key)")
-    g.add_argument("--seed", type=int, help="master seed (default: a fresh random seed, which is logged)")
-    g.add_argument("--instances", type=int, default=20)
+    g.add_argument("--seed", type=int, help=SEED_HELP)
+    g.add_argument("--instances", type=_count(1), default=20)
     g.add_argument("--source", choices=SOURCES, default="synthetic",
                    help="synthetic data, the USGS feed (earthquakes), or each domain's live source (live; not legacy)")
     g.add_argument("--feed", choices=("hour", "day"), default="day", help="USGS feed window (usgs source only)")
@@ -46,7 +73,7 @@ def _parser() -> argparse.ArgumentParser:
                                            "fetching the live feed")
     g.add_argument("--snapshot-dir", help="replay the frozen snapshots of an earlier run off the legacy path (its "
                                           "snapshot folder): every domain as that run read it, live or synthetic")
-    g.add_argument("--variants", type=int, default=2, help="metamorphic re-renderings per instance")
+    g.add_argument("--variants", type=_count(0), default=2, help="metamorphic re-renderings per instance")
     g.add_argument("--mix", default="legacy", help=MIX_HELP)
     g.add_argument("--private-config", help=CONFIG_HELP)
     g.add_argument("--out", help="run directory (default: runs/<source>-seed<seed>, with the mix first for any mix "
@@ -57,9 +84,9 @@ def _parser() -> argparse.ArgumentParser:
     r.add_argument("run_dir")
     r.add_argument("--models", default="mock,oracle,naive",
                    help="comma-separated: oracle, naive, mock[:held_out=P], anthropic[:model], openai[:model]")
-    r.add_argument("--workers", type=int, default=4, help="parallel requests for API models")
+    r.add_argument("--workers", type=_count(1), default=4, help="parallel requests for API models")
     r.add_argument("--force", action="store_true", help="ask again even if a stored reply exists")
-    r.add_argument("--max-tokens", type=int, default=16000,
+    r.add_argument("--max-tokens", type=_count(1), default=16000,
                    help="output-token limit per reply for API models (models that think need room)")
     r.add_argument("--private-config", help=LOAD_HELP)
 
@@ -73,12 +100,12 @@ def _parser() -> argparse.ArgumentParser:
 
     res = sub.add_parser("resolve", help="grade pending forecast questions against the USGS catalogue")
     res.add_argument("run_dir")
-    res.add_argument("--now", help="pretend the current UTC time is this ISO timestamp (for testing)")
+    res.add_argument("--now", type=_utc_time, help="pretend the current UTC time is this ISO timestamp (for testing)")
     res.add_argument("--private-config", help=LOAD_HELP)
 
     d = sub.add_parser("demo", help="generate + run (mock, oracle, naive) + score + report, fully offline")
     d.add_argument("--seed", type=int, default=42)
-    d.add_argument("--instances", type=int, default=20)
+    d.add_argument("--instances", type=_count(1), default=20)
     d.add_argument("--source", choices=SOURCES, default="synthetic")
     d.add_argument("--mix", default="legacy", help=MIX_HELP)
     d.add_argument("--private-config", help=CONFIG_HELP)
@@ -93,6 +120,10 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run one command. Misuse ends with `error: ...` on stderr and exit status 2, never a traceback: a path
+    that is not a run, a file where a folder belongs, a run that evalgen will not read (a received one with
+    a link in it, say), a file that is not JSON, a mix, config or model that a run cannot follow. For
+    verify-config, status 1 means only MISMATCH."""
     args = _parser().parse_args(argv)
     try:
         if args.command == "generate":
@@ -101,6 +132,8 @@ def main(argv: list[str] | None = None) -> int:
                                           snapshot_file=args.snapshot_file, variants=args.variants, mix=args.mix,
                                           private_config=args.private_config, snapshot_dir=args.snapshot_dir)
             run_dir = pipeline.generate(cfg, Path(args.out) if args.out else None, force=args.force)
+            if args.seed is not None and guessable_seed(args.seed):  # on the console only: no file changes with it
+                print(SMALL_SEED_WARNING, file=sys.stderr)
             print(f"next: python cli.py run {run_dir}")
         elif args.command == "run":
             specs = [s.strip() for s in args.models.split(",") if s.strip()]
@@ -112,8 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             pipeline.build_report(Path(args.run_dir), private_config=args.private_config)
             print("\n".join(pipeline.summary_lines(Path(args.run_dir))))
         elif args.command == "resolve":
-            now = parse_utc_iso(args.now) if args.now else None
-            pipeline.resolve_run(Path(args.run_dir), now=now, private_config=args.private_config)
+            pipeline.resolve_run(Path(args.run_dir), now=args.now, private_config=args.private_config)
         elif args.command == "demo":
             path = pipeline.demo(args.seed, args.instances, source=args.source, mix=args.mix,
                                  private_config=args.private_config, run_dir=Path(args.out) if args.out else None,
@@ -127,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             print(f"MISMATCH: {args.config} is not the private run config that {args.run_dir} committed to")
             return 1
-    except (FileExistsError, FileNotFoundError, MixError) as exc:
+    except (OSError, ValueError) as exc:  # FileNotFoundError, IsADirectoryError, ...; MixError, RunDirError, ...
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return 0

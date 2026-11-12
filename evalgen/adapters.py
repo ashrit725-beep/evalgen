@@ -59,6 +59,15 @@ class AdapterError(RuntimeError):
     pass
 
 
+class UnknownModel(AdapterError, ValueError):
+    """A model spec that names no model, or gives its model options it does not take: `run` refuses it
+    before any model runs, and the command line exits with status 2."""
+
+
+class MissingKey(AdapterError):
+    """An API model whose key is not set in the environment: `run` skips it, with a note."""
+
+
 class Adapter:
     name = "adapter"
     kind = "reference"  # reference | simulated | api
@@ -119,7 +128,7 @@ class MockAdapter(Adapter):
     def __init__(self, seed: int = 0, *, held_out_domains: float = 0.0, held_out_genres: float = 0.0) -> None:
         for value in (held_out_domains, held_out_genres):
             if not 0.0 <= value <= 1.0:
-                raise AdapterError(f"a held-out penalty is a probability between 0 and 1, not {value!r}")
+                raise UnknownModel(f"a held-out penalty is a probability between 0 and 1, not {value!r}")
         self.seed = seed
         self.held_out_domains, self.held_out_genres = held_out_domains, held_out_genres
         self.name = _mock_name(held_out_domains, held_out_genres)
@@ -173,7 +182,7 @@ def _mock(seed: int, options: str) -> MockAdapter:
         except ValueError:
             amount = None
         if option not in MOCK_OPTIONS or not equals or amount is None:
-            raise AdapterError(f"unknown mock option {part!r} (use held_out=P, held_out_domains=P or "
+            raise UnknownModel(f"unknown mock option {part!r} (use held_out=P, held_out_domains=P or "
                                "held_out_genres=P, joined with +)")
         for key in ("held_out_domains", "held_out_genres") if option == "held_out" else (option,):
             penalties[key] = amount
@@ -340,7 +349,7 @@ class AnthropicAdapter(Adapter):
                  timeout: float = 600.0, session: Any = None) -> None:
         self.api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not self.api_key:
-            raise AdapterError("ANTHROPIC_API_KEY is not set")
+            raise MissingKey("ANTHROPIC_API_KEY is not set")
         self.model = model or os.environ.get("EVALGEN_ANTHROPIC_MODEL", self.DEFAULT_MODEL)
         self.name = f"anthropic:{self.model}"
         self.max_tokens, self.temperature, self.timeout = max_tokens, temperature, timeout
@@ -367,7 +376,7 @@ class OpenAIAdapter(Adapter):
                  timeout: float = 600.0, session: Any = None) -> None:
         self.api_key = os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
-            raise AdapterError("OPENAI_API_KEY is not set")
+            raise MissingKey("OPENAI_API_KEY is not set")
         self.model = model or os.environ.get("EVALGEN_OPENAI_MODEL", self.DEFAULT_MODEL)
         self.name = f"openai:{self.model}"
         base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
@@ -401,5 +410,5 @@ def make_adapter(spec: str, seed: int = 0, max_tokens: int = DEFAULT_MAX_TOKENS)
         return AnthropicAdapter(model or None, max_tokens=max_tokens)
     if name == "openai":
         return OpenAIAdapter(model or None, max_tokens=max_tokens)
-    raise AdapterError(f"unknown model spec {spec!r} (use oracle, naive, mock[:options], anthropic[:model], "
+    raise UnknownModel(f"unknown model spec {spec!r} (use oracle, naive, mock[:options], anthropic[:model], "
                        "openai[:model])")

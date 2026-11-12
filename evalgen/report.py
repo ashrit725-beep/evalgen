@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import re
 from collections import Counter
 from pathlib import Path
 from statistics import mean, median
@@ -32,7 +33,7 @@ from .models import Instance, Question
 from .ops import KINDS, Step, describe, terminal_step
 from .scoring import (brier, difference_ci, equivalent, mcnemar_exact, normalize, paired_difference_ci,
                       stratified_difference, wilson)
-from .util import read_json, utc_iso, write_json
+from .util import RunDirError, read_json, read_manifest, utc_iso, write_in, write_json
 
 PACKAGE_DIR = Path(__file__).resolve().parent  # the evalgen sources that code_fingerprint covers
 GAP_FLAG = 0.10  # flag a public-minus-new gap above 10 points whose 95% CI excludes zero
@@ -41,8 +42,61 @@ ANSWER_TYPE_ORDER = ("count", "event_id", "magnitude", "depth", "distance", "reg
 MODEL_ORDER = {"oracle": 0, "naive": 1, "mock": 2}
 
 
-def load_instances(run_dir: Path) -> list[Instance]:
-    return [Instance.from_dict(read_json(p)) for p in sorted((Path(run_dir) / "instances").glob("inst-*.json"))]
+INSTANCE_ID = re.compile(r"inst-\d+")  # f"inst-{index:03d}": the names evalgen gives instances
+VARIANT = re.compile(r"v\d+")  # "v0" is the original, then "v1", "v2", ...
+
+
+def load_instances(run_dir: Path, manifest: Mapping[str, Any] | None = None) -> list[Instance]:
+    """The run's instances, from instances/inst-*.json. Later steps build file names from their IDs
+    (responses/<model>/<instance>__<variant>.json), so a file whose instance ID is not its own name, or
+    whose renderings are not v0, v1, ... once each, is refused (RunDirError): a run received from someone
+    else could name one "../../x" to make `run` write, and `score` read, a file outside the run directory.
+    With the run's `manifest`, the instances must be exactly those it lists: FileNotFoundError for a run
+    whose instance files are missing (a committed run keeps only its manifest and report)."""
+    instances = []
+    for path in sorted((Path(run_dir) / "instances").glob("inst-*.json")):
+        try:
+            inst = Instance.from_dict(read_json(path))
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise RunDirError(f"{path} is not an instance that evalgen wrote ({type(exc).__name__}: {exc})") from None
+        variants = [r.variant for r in inst.renderings]
+        if inst.instance_id != path.stem or not INSTANCE_ID.fullmatch(path.stem):
+            raise RunDirError(f"{path} holds the instance {inst.instance_id!r}: an instance file holds the instance "
+                              "its name gives")
+        if not variants or not all(isinstance(v, str) and VARIANT.fullmatch(v) for v in variants) or (
+                len(set(variants)) != len(variants)):
+            raise RunDirError(f"{path} names its renderings {variants!r}: they are v0, v1, ..., each once")
+        instances.append(inst)
+    if manifest is not None:
+        listed, found = manifest.get("instances", []), {inst.instance_id for inst in instances}
+        if not isinstance(listed, list):
+            raise RunDirError(f"the manifest of {run_dir} lists no instances")
+        listed = [str(iid) for iid in listed]
+        missing = [iid for iid in listed if iid not in found]
+        if missing:
+            raise FileNotFoundError(
+                f"{run_dir} holds {len(listed) - len(missing)} of the {len(listed)} instances its manifest lists "
+                f"(missing: {', '.join(missing[:3])}{', ...' if len(missing) > 3 else ''}). A committed run keeps only "
+                "its manifest and report: regenerate it from its manifest's seed and config (cli.py generate "
+                "--seed ... --out RUN), then run and score it again")
+        extra = sorted(found - set(listed))
+        if extra:
+            raise RunDirError(f"{run_dir} holds instances that its manifest does not list: {', '.join(extra[:3])}")
+    return instances
+
+
+def read_run_json(path: Path) -> Any:
+    """A JSON file that evalgen wrote into a run directory; RunDirError, naming it, when it is not JSON."""
+    try:
+        return read_json(path)
+    except ValueError as exc:
+        raise RunDirError(f"{path} is not JSON ({exc})") from None
+
+
+def read_scores(run_dir: Path) -> list[dict]:
+    """The scores of every model of a run (scores/<model>.json, by file name); [] for a run without any."""
+    folder = Path(run_dir) / "scores"
+    return [read_run_json(path) for path in sorted(folder.glob("*.json"))] if folder.is_dir() else []
 
 
 def legacy_run(instances: Iterable[Instance]) -> bool:
@@ -97,7 +151,10 @@ def model_metrics(score: dict, instances: list[Instance], forecasts: list[dict],
     domains and genres (held_out_metrics), which read each genre's split from `inventory` (the run's,
     recorded in its manifest; without one, every genre is public)."""
     rows = score["rows"]
-    index = {(r["instance_id"], r["variant"], r["qid"]): r for r in rows}
+    # The rows of stored replies, by (instance, variant, question): what the metrics that compare a model's
+    # own answers read (consistency, the traps), which leave out a prompt that has no stored reply ("missing",
+    # a gap in the run rather than an answer); accuracy and the gaps count it as unanswered, from `rows`.
+    index = {(r["instance_id"], r["variant"], r["qid"]): r for r in rows if not r.get("missing")}
     original = [r for r in rows if r["variant"] == "v0"]
     out: dict[str, Any] = {"model": score["model"], "kind": score.get("kind")}
 
@@ -201,6 +258,8 @@ def model_metrics(score: dict, instances: list[Instance], forecasts: list[dict],
                      "failed": statuses["failed"], "api_errors": sum(1 for r in score["replies"] if r.get("api_error")),
                      "truncated": sum(1 for r in score["replies"] if r.get("truncated")),
                      "first_api_error": next((r["api_error"] for r in score["replies"] if r.get("api_error")), None)}
+    if statuses["missing"]:  # prompts with no stored reply, scored as unanswered (a complete run has none)
+        out["format"]["missing"] = statuses["missing"]
 
     # Tokens as each API reported them, for the replies that were scored (output includes thinking).
     used = [r for r in score["replies"] if r.get("output_tokens") is not None]
@@ -517,11 +576,16 @@ def compute(run_dir: Path, *, private_config: str | Path | None = None,
     from its private run config (mix.load_run_plugins); a run with plugins records next to code_changed
     which of them changed since generation (plugins_changed), and a run without keeps its 0.2.0 keys."""
     run_dir = Path(run_dir)
-    manifest = read_json(run_dir / "manifest.json")
+    manifest = read_manifest(run_dir)
     plugins_changed = load_run_plugins(manifest, private_config, log=log)
-    instances = load_instances(run_dir)
-    forecasts = read_json(run_dir / "forecasts.json") if (run_dir / "forecasts.json").exists() else []
-    scores = [read_json(p) for p in sorted((run_dir / "scores").glob("*.json"))] if (run_dir / "scores").exists() else []
+    # A report is built from the run's instances and scores, never from less: a committed run keeps only its
+    # manifest and report, and reporting on it would replace the report with an empty one.
+    instances = load_instances(run_dir, manifest)
+    scores = read_scores(run_dir)
+    if not scores:
+        raise FileNotFoundError(f"no scores in {run_dir}; run `python cli.py run {run_dir}` and `python cli.py score "
+                                f"{run_dir}` first")
+    forecasts = read_run_json(run_dir / "forecasts.json") if (run_dir / "forecasts.json").exists() else []
     inventory = Inventory.of_run(manifest)
     models = [model_metrics(s, instances, forecasts, inventory) for s in scores]
     models.sort(key=lambda m: (MODEL_ORDER.get(m["model"], 9), m["model"]))
@@ -810,7 +874,7 @@ def _by_domain_and_genre_section(models: list[dict]) -> list[str]:
 def render_markdown(data: dict, run_dir: Path) -> str:
     run, models, audit = data["run"], data["models"], data["generator_audit"]
     instances = {inst.instance_id: inst for inst in load_instances(run_dir)}
-    scores = {s["model"]: s for s in (read_json(p) for p in sorted((Path(run_dir) / "scores").glob("*.json")))}
+    scores = {s["model"]: s for s in read_scores(run_dir)}
     legacy = legacy_run(instances.values())  # a legacy report is the 0.2.0 one, word for word
     t = run["traps"]
     planted = ", ".join(f"{_words(kind)} {n}" for kind, n in t["by_kind"].items())
@@ -877,15 +941,20 @@ def render_markdown(data: dict, run_dir: Path) -> str:
            "contamination, used to exercise the metrics without API keys; it is not a language model.", ""]
     for m in models:
         f = m["format"]
+        stored = f["replies"] - f.get("missing", 0)  # the replies stored: every prompt but the missing ones
         if f["api_errors"]:
             first = (f.get("first_api_error") or "").replace("`", "'")[:200]
-            md += [f"> ⚠ **{m['model']}**: {f['api_errors']} of {f['replies']} API calls failed, so its scores count "
+            md += [f"> ⚠ **{m['model']}**: {f['api_errors']} of {stored} API calls failed, so its scores count "
                    f"those prompts as unanswered; they say nothing about the model itself. First error: `{first}`. "
                    "Running `cli.py run` again retries only the failed prompts.", ""]
         if f.get("truncated"):
-            md += [f"> ⚠ **{m['model']}**: {f['truncated']} of {f['replies']} replies were cut off at the output-token "
+            md += [f"> ⚠ **{m['model']}**: {f['truncated']} of {stored} replies were cut off at the output-token "
                    "limit, usually because the model was still thinking, so those prompts count as unanswered. Raise "
                    "`--max-tokens` and run `cli.py run` again: it re-asks only those prompts.", ""]
+        if f.get("missing"):
+            md += [f"> ⚠ **{m['model']}**: {f['missing']} of the run's {f['replies']} prompts have no stored reply (a "
+                   "run that was cut short, or replies removed since), so those prompts count as unanswered. Running "
+                   "`cli.py run` again with this model asks only those prompts.", ""]
 
     if data.get("head_to_head"):
         md += ["## Head to head (paired)", "",
@@ -1069,10 +1138,13 @@ def _example(number: int, inst: Instance, scores: dict, model_names: list[str]) 
 
 def write_report(run_dir: Path, *, private_config: str | Path | None = None,
                  log: Callable[[str], None] | None = None) -> Path:
-    """Write report.json and report.md (see compute for `private_config`)."""
+    """Write report.json and report.md (see compute for `private_config`), through the run directory's one
+    writer (util.write_in), which never writes through a symbolic link: a run received from someone else
+    could plant report.md as a link to any file. Nothing is written for a run that compute refuses."""
     run_dir = Path(run_dir)
     data = compute(run_dir, private_config=private_config, log=log)
-    write_json(run_dir / "report.json", data)
     path = run_dir / "report.md"
-    path.write_text(render_markdown(data, run_dir), encoding="utf-8")
+    markdown = render_markdown(data, run_dir)
+    write_json(run_dir / "report.json", data, root=run_dir)
+    write_in(run_dir, path, markdown)
     return path
