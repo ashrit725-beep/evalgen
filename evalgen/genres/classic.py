@@ -19,7 +19,7 @@ back to exactly its reports and notices (genres.base.check_round_trip).
     bulletin  [ukmo] by-12345 | 2026-04-12T06:12:19Z | North Sea | 56.512°N, 3.104°E | water temperature
               12.3 °C (spar) | wave height 6.07 ft | reviewed | same reading as by-54321 | near: Dogger Bank
     prose     06:12:19 UTC on 12 April 2026 — ukmo lists reading by-12345 (reviewed) in North Sea, at
-              (56.512, 3.104): water temperature 54.1 °F (spar), wave height 1.85 m. Note: relay of
+              (56.512, 3.104): water temperature 54.1 °F (spar), wave height 1.85 m. Note: duplicate of
               by-54321. Location note: Dogger Bank.
     wire      ukmo WIRE [2026-04-12 06:12:19 UTC] North Sea @ 56.512°N, 3.104°E: water temperature 12.3 °C
               (spar); wave height 1.85 m. Ref by-12345, reviewed.

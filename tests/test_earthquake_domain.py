@@ -331,17 +331,21 @@ def test_the_registry_serves_the_earthquake_domain():
     assert (EARTHQUAKES.id_answer_type, EARTHQUAKES.group_answer_type) == ("event_id", "region")
     # Its prompts off the legacy path print the 0.2.0 rules 1-8 word for word, headed as every domain's
     # rules are (a run of several domains prints several rules, so none is "identical for every digest"),
-    # then rule 9 naming every kind of line without data that the genres print, and the genre-neutral
-    # rules on message times and repeats. Legacy prompts print the 0.2.0 rules alone
+    # then rule 9 saying what a notice is, as every domain's rules do, and naming every kind of line
+    # without data that the genres print, and the genre-neutral rules on message times (a WIRE line's
+    # bracketed time included) and repeats. Legacy prompts print the 0.2.0 rules alone
     # (test_regression_020.py).
     rules = EARTHQUAKES.rules_text()
     heading, rule_9 = "Reading rules (identical for every digest):\n", "\n9. Lines that are neither reports nor notices"
     rules_1_to_8 = READING_RULES[len(heading):READING_RULES.index(rule_9) + 1]
     assert READING_RULES.startswith(heading) and rules_1_to_8.startswith("1. Every earthquake has exactly one")
     assert rules == "Reading rules:\n" + rules_1_to_8 + numbered_rules(
-        ("Lines that are neither reports nor notices (headers, section titles, station status, editor's notes, "
-         "reminders, greetings, signatures) carry no data and change nothing.",
-         "The time at which a message was sent, forwarded or relayed is never the time of an earthquake.",
+        ("A notice is a message about a report, not a report itself, and it applies wherever in the digest it is "
+         "printed, before or after that report. Lines that are neither reports nor notices (headers, section "
+         "titles, station status, editor's notes, reminders, greetings, signatures) carry no data and change "
+         "nothing.",
+         "The time at which a message was sent, forwarded or relayed is never the time of an earthquake. A WIRE line "
+         "is a report, not a message: the time in its brackets is the report's time.",
          REPEAT_RULE), start=9)
     assert rules.split("\n", 1)[0] == record_rules(EARTHQUAKES).split("\n", 1)[0] == "Reading rules:"
     assert "identical for every digest" not in rules
@@ -485,7 +489,7 @@ class Observations(Domain):
         FieldSpec(key="temp", label="temperature", canonical_unit="°C", units=(CELSIUS, FAHRENHEIT), decimals=1,
                   answer_type="temperature", tolerance=(0.5, 0.0), margin=(0.3, 0.0), rank_gap=0.5,
                   quantiles=(0.2, 0.8), threshold_step=0.5, filters=("at_least", "below"),
-                  terminals=("argmax", "rank", "max", "time_of_max"), signed=True),
+                  terminals=("argmax", "max", "time_of_max"), signed=True),  # no rank without a location
         FieldSpec(key="wind", label="wind speed", canonical_unit="km/h", units=(KMH, MPH), decimals=1,
                   answer_type="wind_speed", tolerance=(1.0, 0.05), margin=(1.0, 0.05), rank_gap=2.0,
                   quantiles=(0.25, 0.75), threshold_step=1.0, jitter=2.0, positive_threshold=True,
@@ -503,7 +507,6 @@ class Observations(Domain):
                  "in_group": ("from the {group} region",)},
         questions={"count": ("How many {records} are there?",),
                    "argmax(temp)": ("Which of the {records} was the warmest?",),
-                   "rank(temp)": ("Which of the {records} was the {nth} warmest?",),
                    "time_of_max(temp)": ("When was the warmest of the {records} made?",),
                    "max(temp)": ("What was the highest temperature, in {unit}, among the {records}?",),
                    "max(wind)": ("What was the strongest wind, in {unit}, among the {records}?",),
@@ -606,8 +609,8 @@ def test_role_templates_bind_to_a_domain_without_locations():
     assert exclusive_pairs(OBSERVATIONS) == {frozenset({"at_least(temp)", "below(temp)"}),
                                              frozenset({"at_least(wind)", "below(wind)"})}
     assert monotone_pairs(OBSERVATIONS) == {
-        ("at_least(temp)", "max(temp)"), ("at_least(temp)", "argmax(temp)"), ("at_least(temp)", "rank(temp)"),
-        ("at_least(temp)", "time_of_max(temp)"), ("at_least(wind)", "max(wind)"), ("below(wind)", "min(wind)")}
+        ("at_least(temp)", "max(temp)"), ("at_least(temp)", "argmax(temp)"), ("at_least(temp)", "time_of_max(temp)"),
+        ("at_least(wind)", "max(wind)"), ("below(wind)", "min(wind)")}
     for seed in range(30):
         twins = compose_new_templates(random.Random(seed), domain=OBSERVATIONS)
         assert [t.twin_of for t in twins] == [t.template_id for t in public]  # the pools stay matched

@@ -13,7 +13,7 @@ editor's notes among the lines that carry no data, as the domains' chatter print
 
     At 7:12:19 AM local time (UTC+01:00) on Apr 12, 2026, the gts operator recorded reading by-54321
     in North Sea, at (56.522, 3.118), listing a water temperature of 54.3 °F (spar) and a wave height
-    of 6.07 ft; the report is marked preliminary. Filing note: relay of by-12345.
+    of 6.07 ft; the report is marked preliminary. Filing note: duplicate of by-12345.
 
     Update (2026-04-12 14:05:33 UTC): report by-67890 has been retracted (probe fault); it was not a
     real reading and should be disregarded.

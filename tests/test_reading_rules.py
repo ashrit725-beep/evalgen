@@ -1,15 +1,18 @@
 """The reading rules must name every wording the digest can print, so no notice is a gotcha."""
 from __future__ import annotations
 
+import copy
 import itertools
+import random
 import re
 from collections import Counter
 
 from evalgen import pipeline
 from evalgen.digest import CHATTER, render_notice
-from evalgen.domains import get_domain
-from evalgen.domains.base import REPEAT_RULE
-from evalgen.genres import all_genres, chat, email, radio
+from evalgen.domains import base, get_domain
+from evalgen.domains.base import REPEAT_RULE, Surface, indefinite
+from evalgen.domains.invented import DUPLICATE_NOTES, INVENTED
+from evalgen.genres import all_genres, chat, email, get_genre, radio
 from evalgen.models import Notice
 from evalgen.pipeline import GenerateConfig, build_instance
 from evalgen.questions import Context, compose_new_templates
@@ -143,3 +146,165 @@ def test_every_notice_is_printed_once_where_the_rules_count_it():
                             rendering.style["forwards"]][0])]
                         assert len(forwarded) >= len(notices)
     assert struck["email"] and struck["chat"] and struck["radio"]  # each of them printed repeats to strike out
+
+
+# --------------------------------------------------------------- what a notice is, and what a note says
+
+
+def rules_texts(name: str, surfaces: int = 3) -> set[str]:
+    """The rules texts the prompts of domain `name` print off the legacy path: its own, and those of a few
+    drawn surfaces for a domain that draws them."""
+    domain = get_domain(name)
+    bound = ([domain.bind(domain.draw_surface(random.Random(seed))) for seed in range(surfaces)]
+             if domain.has_surface else [])
+    return {d.rules_text() for d in (domain, *bound)}
+
+
+def test_every_domains_rules_say_what_a_notice_is_wherever_it_is_printed():
+    """The plan's first genre-neutral statement: what counts as a notice. In an email thread, a radio net,
+    a form or a table, a notice looks like any other message, so the rules of every domain off the legacy
+    path define one, in the same words, before they say which lines carry no data (the 0.2.0 rules name
+    notices by their keywords alone). Most genres print some notices before the report they name (a chat
+    log's pinned board heads the log), so the rules never tie a notice to an "earlier" report, which a
+    reader could take to mean a report printed above it."""
+    for name in ("earthquakes", "weather", "neo", "invented"):
+        for rules_text in rules_texts(name):
+            rules = " ".join(rules_text.split())
+            assert rules.count(base.NOTICE_RULE) == 1, name
+            assert rules.index(base.NOTICE_RULE) < rules.index("Lines that are neither reports nor notices"), name
+            assert "before or after that report" in rules and "earlier report" not in rules, name
+    assert base.NOTICE_RULE not in RULES  # the legacy rules stay the 0.2.0 text
+
+
+# The labels of the lines that rule 9 says carry no data; the words a notice line names itself with; and
+# what opens a message, a quote, a bullet or a footnote before its text, in the genres that print them.
+DATA_FREE_LABELS = re.compile(r"^(?:editor's note|reminder|status|station status|header|section|greeting|signature)\b",
+                              re.IGNORECASE)
+NOTICE_WORDS = re.compile(r"retract|correct|revis|update|withdrawn|amend", re.IGNORECASE)
+NOTICE_OPENINGS = re.compile(r"^(?:notice|retraction|retracted|correction|corrected|update|revised|amendment)\b",
+                             re.IGNORECASE)
+LINE_PREFIX = re.compile(r"^(?:\[\d{2}:\d{2}\] [\w.-]+: |\U0001f4cc Pinned by [\w.-]+: |\d{2}:\d{2}:\d{2} [A-Z0-9-]+: |"
+                         r"> ?|[-*] |\[\d+\],?|\|\s*\[?\d+\]?\s*\|\s*|Subject: )*")
+
+
+def test_no_notice_is_headed_as_a_line_without_data_and_no_such_line_as_a_notice():
+    """Rule 9 counts editor's notes, reminders, status lines, headers, greetings and signatures among the
+    lines that carry no data. The news genre once printed a retraction and a correction wording as
+    "Editor's note (<time>): this is a retraction notice ...", which the rules told a careful reader to
+    ignore, beside chatter that opens "Editor's note:". In no domain and no genre does a line that carries
+    a notice open with such a label, nor a line of chatter with a notice's keyword."""
+    for name in ("earthquakes", "weather", "neo", "invented"):
+        domain = get_domain(name)
+        for genre in all_genres():
+            for inst in genre_instances(name, genre):
+                bound = domain.bind(inst.surface)
+                assert [line for line in bound.chatter if NOTICE_OPENINGS.match(line)] == [], name
+                for rendering in inst.renderings:
+                    for line in rendering.digest.split("\n"):
+                        if any(n.target in line for n in inst.notices) and NOTICE_WORDS.search(line):
+                            body = LINE_PREFIX.sub("", line).strip()
+                            assert not DATA_FREE_LABELS.match(body), (name, genre.name, line)
+
+
+# Words that the reading rules or the genres give a meaning of their own, which a duplicate note must not
+# borrow. The rules on messages (rules 6 and 7 of a record domain, 10 and 11 of the earthquake rules) say
+# that a forwarded or relayed report "is not a repeat: it counts, once", so a re-report noted "relay of
+# <ID>" reads as a report that counts on its own, where rule 1 makes it that record; a message's sent time
+# is never a record's; and a radio net's procedure words carry no data.
+MESSAGE_WORDS = ("send", "sent", "forward", "relay", "quote", "read back", "readback", "read-back", "copy",
+                 "roger", "wilco", "over", "echo")
+
+
+def message_words(note: str) -> list[str]:
+    return [word for word in MESSAGE_WORDS if re.search(rf"\b{re.escape(word)}", note.casefold())]
+
+
+def test_no_duplicate_note_reads_as_a_message_the_rules_count(toys):
+    """A duplicate note makes a re-report the record it names (rule 1). Weather's "relay of <ID>" also
+    named what rule 7 says "is not a repeat: it counts, once", and so read as the careless split the
+    duplicate trap records. No note of any domain, surface or plugin borrows a word the rules or the
+    genres give another meaning."""
+    assert message_words("relay of") == ["relay"] and message_words("Forwarded from") == ["forward"]
+    notes = [(name, note) for name in ("earthquakes", "weather", "neo", "invented")
+             for note in get_domain(name).trap_vocab.duplicate_notes]
+    notes += [("toy", note) for note in toys.toy.trap_vocab.duplicate_notes]
+    notes += [("invented pool", note) for note in DUPLICATE_NOTES]
+    notes += [("invented surface", note) for seed in range(200)
+              for note in Surface.from_dict(INVENTED.draw_surface(random.Random(seed))).trap_vocab.duplicate_notes]
+    assert ("weather", "same observation as") in notes and len({name for name, _ in notes}) == 7
+    assert [(name, note) for name, note in notes if message_words(note)] == []
+
+
+# ------------------------------------------------------------------------- times, articles, definitions
+
+
+def test_the_rules_say_whose_time_a_wire_lines_brackets_give():
+    """The classic genre's wire lines give their record's time in brackets after the source ("KPHL WIRE
+    [05:55:26 (UTC-05:00) 18 Feb 2026] Midwest @ ..."), where a chat log prints a message's own time stamp
+    ("[06:35] relaybot: ..."). Beside the rule that the time a message was sent, forwarded or relayed is
+    never a record's, a careful reader could take the bracket for the time the wire relayed the report,
+    which leaves the report no time of its own, and answer time questions without it. So the rules of
+    every domain off the legacy path say that a WIRE line is a report and its bracketed time the report's,
+    and every wire line of a classic digest gives that time, which the oracle reads, and no other."""
+    classic = get_genre("classic")
+    for name in ("earthquakes", "weather", "neo", "invented"):
+        for rules_text in rules_texts(name):
+            rules = " ".join(rules_text.split())
+            assert rules.count(base.WIRE_RULE) == 1, name
+            assert rules.index("never the time of") < rules.index(base.WIRE_RULE), name
+        domain, wires = get_domain(name), 0
+        for inst in genre_instances(name, classic):
+            bound = domain.bind(inst.surface)
+            for rendering in inst.renderings:
+                for line in rendering.digest.split("\n"):
+                    if " WIRE [" not in line:
+                        continue
+                    (report,) = classic.parse(line, bound.glossary(), bound).reports
+                    (printed,) = [r for r in inst.reports
+                                  if (r.ref, r.source, r.status) == (report.ref, report.source, report.status)]
+                    assert abs(report.time - printed.time) < 60, line  # 0.2.0 digests may print the minute only
+                    assert len(re.findall(r"\[[^\]]*\]", line)) == 1, line  # no other bracketed time
+                    wires += 1
+        assert wires, name
+    assert base.WIRE_RULE not in RULES  # the 0.2.0 rules, which have no rule on message times, stay as they were
+
+
+VOWEL_AFTER_A = re.compile(r"\b[Aa] \"?(?!unit\b)[aeiouAEIOU]")  # "a unit" is right
+CONSONANT_AFTER_AN = re.compile(r"\b[Aa]n \"?(?!hour)[b-df-hj-np-tv-zB-DF-HJ-NP-TV-Z]")
+
+
+def test_every_article_in_the_rules_fits_the_word_it_stands_before(toys):
+    """The record rules word every domain in its own words, and invented surfaces draw theirs (a group may
+    be an "outpost"), as plugins may ("observation", statuses such as "estimated"): no article is assumed,
+    so no rule reads "A outpost in a question is the outpost printed on the report"."""
+    articles = {"outpost": "an", "observation": "an", "event": "an", "Inlet": "an", "estimated": "an",
+                "unverified": "an", "hour": "an", "unit": "a", "user": "a", "one": "a", "European": "a",
+                "depot": "a", "quay": "a", "sea area": "a", "region": "a", "close approach": "a", "": "a"}
+    assert {word: indefinite(word) for word in articles} == articles
+    texts = {text for name in ("earthquakes", "weather", "neo", "invented") for text in rules_texts(name, 400)}
+    dressed = toys.dressed
+    texts |= {dressed.bind(dressed.draw_surface(random.Random(seed))).rules_text() for seed in range(40)}
+    vowels = copy.copy(toys.toy)
+    vowels.noun, vowels.group_label, vowels.statuses = "event", "inlet", ("authoritative", "estimated")
+    texts.add(vowels.rules_text())
+    flat = {" ".join(text.split()) for text in texts}
+    assert any("An outpost in a question" in text for text in flat)  # the surfaces drew one
+    assert any("An observation may appear" in text for text in flat)
+    assert any('an "estimated" report' in text and 'on an "authoritative" report' in text for text in flat)
+    assert [match.group(0) for text in flat for match in VOWEL_AFTER_A.finditer(text)] == []
+    assert [match.group(0) for text in flat for match in CONSONANT_AFTER_AN.finditer(text)] == []
+
+
+def test_every_domains_rules_say_once_what_a_reports_time_is():
+    """A report's time is defined in the one rule on times (rule 6 of the record rules, as each domain
+    words it: Domain.report_time), never twice: the close approaches' rules said both that it is when the
+    approach "was recorded", which reads as when a catalogue logged it, and, in a rule of their own, that
+    it is the moment the object passed closest to the body."""
+    for name in ("earthquakes", "weather", "neo", "invented"):
+        for rules_text in rules_texts(name):
+            rules = " ".join(rules_text.split())
+            assert rules.count("A report's time is") == 1 and "The time of a report is" not in rules, name
+    neo = " ".join(get_domain("neo").rules_text().split())
+    assert ("A report's time is the time of its close approach, the moment the object passed closest to the body; "
+            "a notice's time is when the notice was issued.") in neo
+    assert "close approach was recorded" not in neo

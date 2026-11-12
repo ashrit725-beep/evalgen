@@ -35,8 +35,8 @@ from ..rules import READING_RULES, Mishandle, resolve
 from ..sources import (MIN_POOL_EVENTS, USER_AGENT, fetch_usgs, generate_synthetic, mimic_event_id, new_event_id,
                        parse_usgs_geojson)
 from ..units import LENGTH
-from .base import (DISTANCE_WORDINGS, REPEAT_RULE, Domain, FieldSpec, Forecaster, Lexicon, RecordReport, Spatial,
-                   TrapVocab, message_time_rule, numbered_rules)
+from .base import (DISTANCE_WORDINGS, NOTICE_RULE, REPEAT_RULE, Domain, FieldSpec, Forecaster, Lexicon, RecordReport,
+                   Spatial, TrapVocab, message_time_rule, numbered_rules)
 
 # Margin guards: no event may sit this close to a threshold, so that display rounding (0.1 km or mi,
 # 0.001 degrees, minute-precision times) can never change a correct answer. Magnitudes need no
@@ -151,13 +151,17 @@ TRAP_VOCAB = TrapVocab(
 # every digest", which a run of several domains contradicts (each prints its own), so the rules are
 # headed as every domain's are (record_rules). And rule 9 lists the lines without data that the 0.2.0
 # digest prints; the other genres also print section titles (subheads, captions), greetings and
-# signatures, which the rule now names as the record rules do.
+# signatures, which the rule now names as the record rules do. It opens with what a notice is
+# (NOTICE_RULE, as the record rules' rule 3 does), which the 0.2.0 rules leave to the notices' keywords:
+# in an email thread, a radio net, a form or a table a notice looks like any other message, and it may
+# be printed before the report it names. Rule 10 also says that a WIRE line's bracketed time is its
+# report's own (message_time_rule).
 LEGACY_RULES_HEADING = "Reading rules (identical for every digest):\n"
 RULES_HEADING = "Reading rules:\n"
 LEGACY_RULE_9 = ("9. Lines that are neither reports nor notices (headers, station status, editor's notes,\n"
                  "   reminders) carry no data and change nothing.\n")
-OTHER_LINES_RULE = ("Lines that are neither reports nor notices (headers, section titles, station status, editor's "
-                    "notes, reminders, greetings, signatures) carry no data and change nothing.")
+OTHER_LINES_RULE = (f"{NOTICE_RULE} Lines that are neither reports nor notices (headers, section titles, station "
+                    "status, editor's notes, reminders, greetings, signatures) carry no data and change nothing.")
 
 
 def _genre_reading_rules() -> str:
@@ -235,9 +239,9 @@ class Earthquakes(Domain):
 
     def rules_text(self) -> str:
         """The reading rules of an earthquake prompt off the legacy path (GENRE_READING_RULES): the 0.2.0
-        rules, headed as every domain's are and with rule 9 naming every kind of line without data, and
-        the genre-neutral rules on message times and repeats. A legacy prompt prints the 0.2.0 rules
-        (rules.READING_RULES) alone."""
+        rules, headed as every domain's are and with rule 9 saying what a notice is and naming every kind
+        of line without data, and the genre-neutral rules on message times and repeats. A legacy prompt
+        prints the 0.2.0 rules (rules.READING_RULES) alone."""
         return GENRE_READING_RULES
 
     def prompt_lexicon(self) -> Lexicon:

@@ -507,9 +507,37 @@ def test_domains_can_register_their_own_answer_types(answer_registry):
     register_answer_type(AnswerType("observation_id", "id", id_pattern=r"k[a-z]{3}-\d{4}"))
     assert normalize("observation_id", "Observation KSFO-0001.") == "ksfo-0001"
     assert normalize("observation_id", "ksfo-0001 or kbos-0003") is None
-    register_answer_type(AnswerType("us_region", "group", suffix="states"))
+    register_answer_type(AnswerType("us_region", "group", suffixes=("states",)))
     assert normalize("us_region", "The Northeast states") == "northeast"
     assert normalize("us_region", "equal") == "tie"
+    register_answer_type(AnswerType("basin", "group", suffixes=("area", "sea area", "basin")))
+    assert normalize("basin", "North Sea sea area") == normalize("basin", "the north sea basin.") == "north sea"
+    assert normalize("basin", "Kessel area basin") == "kessel area"  # one group word, never two
+
+
+def test_every_domain_reads_a_group_answer_that_adds_the_group_word_its_prompt_prints():
+    """"Nevada region" is the region Nevada, and so in every domain: a group answer may end in the group
+    word that its instance prints, which an invented instance draws for itself ("Nerm Halt berth" where
+    the groups are berths). The scorer reads answers by the type registered when the domain was loaded,
+    so that type strips every word a surface can draw, never only the unbound domain's own: otherwise
+    14 invented instances in 15 would score compare_groups answers more strictly than every other domain,
+    and the source gap, which compares domains, would measure the scorer."""
+    compiled_at = 1_780_000_000
+    words = set()
+    for name in ("earthquakes", "weather", "neo", "invented"):
+        domain = domains.get_domain(name)
+        records = domain.synthetic(random.Random(3), 300, compiled_at, domain.synthetic_window_hours)
+        bindings = ([domain.bind(domain.draw_surface(random.Random(seed))) for seed in range(60)]
+                    if domain.has_surface else [domain])
+        for bound in bindings:
+            words.add(bound.group_label)
+            groups = {bound.dress(record).group for record in records}
+            assert len(groups) >= 3, name
+            for group in groups:
+                for answer in (f"{group} {bound.group_label}", f"The {group} {bound.group_label.title()}."):
+                    assert is_correct(domain.group_answer_type, group, answer), (name, answer)
+                assert not is_correct(domain.group_answer_type, group, f"{group} {bound.group_label}s"), name
+    assert {"region", "body", "depot", "berth", "outpost"} <= words and len(words) >= 12
 
 
 def test_a_type_can_parse_its_own_numbers(answer_registry):

@@ -39,6 +39,10 @@ WAVE = FieldSpec(
     threshold_step=0.1, jitter=0.15, positive_threshold=True, filters=("below", "at_least"),
     terminals=("max", "min"),
 )
+# Without a position there is no rank question (P09, the one rank template, is spatial), so a toy without
+# one declares no rank of the temperature (Domain.validate refuses a terminal no question ends in): it
+# has this field instead (Toy.__init__).
+FLAT_TEMPERATURE = replace(TEMPERATURE, terminals=("argmax", "max", "time_of_max"))
 
 SPATIAL = Spatial(
     radii={"km": (30, 50, 75, 100, 150, 200, 250, 300), "mi": (20, 30, 50, 75, 100, 150, 200)},
@@ -76,7 +80,7 @@ GROUP_LABELS = ("sea area", "basin", "zone")
 TEMPERATURE_LABELS = ("water temperature", "sea temperature", "surface temperature")
 WAVE_LABELS = ("wave height", "swell height", "sea height")
 PREFIXES = ("bq-", "sx-", "tz-", "wm-", "ko-")
-AREA_NAMES = ("Varnholt Deep", "Kessel Reach", "Ostra Sound", "Mirren Banks", "Tolva Basin", "Drask Shelf",
+AREA_NAMES = ("Varnholt Deep", "Kessel Reach", "Ostra Sound", "Mirren Banks", "Tolva Shoal", "Drask Shelf",
               "Hemmar Sound", "Lusk Deep", "Fenwy Reach", "Ardal Banks")
 SOURCE_NAMES = ("ostr", "kvel", "maro", "tusk", "bren", "dalv")
 
@@ -95,9 +99,10 @@ class Toy(Domain):
     id_prefix = "by-"
     id_answer_type = "toy_reading_id"
     group_answer_type = "toy_area"
+    surface_group_labels = GROUP_LABELS  # every variant shares the type, so every one strips them all
     trap_vocab = TrapVocab(
         rereporting_sources=("gts", "emsn"),
-        duplicate_notes=("same reading as", "relay of"),
+        duplicate_notes=("same reading as", "duplicate of"),
         retraction_reasons=("probe fault", "test transmission", "buoy adrift"),
         retraction_notices=("RETRACTED", "withdrawn"),
         correction_notices=("revised to", "corrected to"),
@@ -105,6 +110,9 @@ class Toy(Domain):
 
     def __init__(self, name: str, *, located: bool, window_hours: int = 24, dressed: bool = False) -> None:
         self.name = name
+        if not located:  # no question asks a rank without a position, so no field declares one
+            self.fields = tuple(replace(spec, terminals=tuple(kind for kind in spec.terminals if kind != "rank"))
+                                for spec in self.fields)
         self.spatial = SPATIAL if located else None
         self.synthetic_window_hours = window_hours
         self.has_surface = dressed

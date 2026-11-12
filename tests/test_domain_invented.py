@@ -154,6 +154,24 @@ def test_every_word_of_a_surface_is_its_own_and_none_is_reserved():
             assert normalize("invented_group", name) == name.casefold()
 
 
+def test_a_group_answer_may_add_the_group_word_its_instance_prints():
+    """Every domain reads "<group> <group word>" as the group: "Nevada region", "Earth body". An invented
+    instance draws its own group word ("berth", "quay", ...), and the scorer reads answers by the type
+    registered when the domain was loaded, so that type strips every group word a surface can draw, the
+    drawn one included, never only the unbound domain's "depot". No group name ends in one of them."""
+    labels: Counter = Counter()
+    for surface in surfaces(150, start=300):
+        bound = INVENTED.bind(surface)
+        labels[bound.group_label] += 1
+        for name in bound.surface.groups.values():
+            assert is_correct("invented_group", name, f"{name} {bound.group_label}"), (name, bound.group_label)
+            assert is_correct("invented_group", name, f"the {name} {bound.group_label.upper()}.")
+            assert not is_correct("invented_group", name, f"{name} {bound.group_label}s")
+    assert len(labels) >= 12 and sum(n for label, n in labels.items() if label != "depot") >= 130
+    berth = INVENTED.bind(INVENTED.draw_surface(random.Random(5)))  # the audit's example
+    assert berth.group_label == "berth" and is_correct("invented_group", "Nerm Halt", "Nerm Halt berth")
+
+
 def test_no_unit_symbol_or_coined_word_is_a_common_english_word():
     """A unit symbol follows every value it writes, so a symbol that is a word ("a gross heft of 15.3 so",
     "dwell time 4 set") makes prose read two ways: about one surface in six drew such a symbol before the
@@ -345,8 +363,8 @@ def test_questions_are_worded_from_each_surfaces_words():
                     label = next(spec.label for spec in bound.fields if spec.label in filled)
                     assert f"with {'an' if label[0] in 'aeiou' else 'a'} {label} of" in filled
     assert set(wordings) == {"at_least(f1)", "below(f1)", "below(f2)", "at_least(f2)", "time_between", "in_group",
-                             "count", "compare_groups", "argmax(f1)", "rank(f1)", "max(f1)", "time_of_max(f1)",
-                             "max(f2)", "min(f2)"}
+                             "count", "compare_groups", "argmax(f1)", "max(f1)", "time_of_max(f1)", "max(f2)",
+                             "min(f2)"}  # no rank: records have no location, and the one rank template is spatial
 
 
 # ------------------------------------------------------------------------------- whole runs

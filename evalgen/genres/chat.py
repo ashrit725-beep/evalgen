@@ -29,7 +29,7 @@ The four voices of a report, here a re-report in the words of the test-only toy 
             recorded 06:12:19 UTC on 12 April 2026: water temperature 54.1 °F (spar), wave height
             6.07 ft; same reading as by-12345. Place: Dogger Bank.
     terse   tomh: by-54321 (emsn, preliminary) — North Sea — 56.512°N, 3.104°E — 2026-04-12 06:12:19
-            UTC — water temperature 12.3 °C (spar); wave height 1.85 m — relay of by-12345 — place:
+            UTC — water temperature 12.3 °C (spar); wave height 1.85 m — duplicate of by-12345 — place:
             Dogger Bank
     paste   dana_k: `2026-04-12T06:12:19+00:00 ref=by-54321 src=emsn status=preliminary group="North
             Sea" loc=56.512,3.104 temp=12.3°C probe=spar wave=1.85m same_as=by-12345 place="Dogger

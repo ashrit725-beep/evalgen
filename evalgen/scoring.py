@@ -14,7 +14,7 @@ but a string holding several different values ("7 or 8", "3-4", two event IDs) c
 
 Answer types live in a registry (``ANSWER_TYPES``). A type's kind (count, id, number, group, clock
 or probability) says how its answers are read; the type adds its tolerance, ID pattern, number
-parser or group suffix. The types above are built in. Every other type belongs to a domain, which
+parser or group words. The types above are built in. Every other type belongs to a domain, which
 declares it (``Domain.answer_types``: one per field, plus the types of its record IDs and its
 groups), and registering the domain registers its types (see evalgen.domains). A type that is not
 registered yet makes ``get_answer_type`` discover the built-in domains first, so a fresh process
@@ -85,7 +85,8 @@ class AnswerType:
                     units whose values are on another scale (inches of mercury beside hectopascals)
     id_pattern      id: the regex that picks the ID out of a longer answer, matched in lower case
     parse           count, number, probability: a raw answer as one number, or None when ambiguous
-    suffix          group: a trailing word an answer may add, in lower case ("Nevada region" is "Nevada")
+    suffixes        group: the trailing words an answer may add, one of them, in lower case ("Nevada
+                    region" is "Nevada"): a domain's group label, and every one its instances can draw
     """
 
     name: str
@@ -94,7 +95,7 @@ class AnswerType:
     unit_tolerance: Mapping[str, tuple[float, float]] = dataclasses.field(default_factory=dict)
     id_pattern: str | None = None
     parse: Callable[[Any], float | None] = _number
-    suffix: str | None = None
+    suffixes: tuple[str, ...] = ()
 
     def tolerance_in(self, unit: str | None) -> tuple[float, float]:
         """The (abs, rel) tolerance of an answer given in `unit` (None: a unitless answer)."""
@@ -131,8 +132,8 @@ def _read_group(t: AnswerType, value: Any) -> str | None:
         return "tie"
     if re.search(r"\bor\b", text):
         return None  # "Nevada or Utah" is not an answer
-    if t.suffix:
-        text = re.sub(r"\s+" + re.escape(t.suffix) + "$", "", text)
+    if t.suffixes:  # one group word that ends the answer, the longest: "north sea sea area" is "north sea"
+        text = re.sub(r"\s+(?:" + "|".join(re.escape(word) for word in t.suffixes) + ")$", "", text)
     return text or None
 
 
@@ -159,7 +160,7 @@ ANSWER_TYPES: dict[str, AnswerType] = {t.name: t for t in (
     AnswerType("magnitude", "number", (0.05, 0.0)),
     AnswerType("depth", "number", (0.3, 0.02)),
     AnswerType("distance", "number", (1.5, 0.03)),
-    AnswerType("region", "group", suffix="region"),
+    AnswerType("region", "group", suffixes=("region",)),
     AnswerType("utc_time", "clock", (TIME_TOLERANCE_MIN, 0)),
     AnswerType("probability", "probability", parse=_parse_probability),
 )}

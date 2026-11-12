@@ -532,7 +532,7 @@ A domain module exports `DOMAIN`, an instance of a `Domain` subclass. The regist
 | part | what it declares |
 |---|---|
 | vocabulary | `noun`, `plural`, `id_label`, `source_label`, `group_label`: "weather observation", "observation ID", "feed", "region" |
-| `fields` | one `FieldSpec` per numeric field: its key and label; its canonical unit, other units and stored decimals; its answer type and tolerance (abs, rel); its guard margin (abs, rel) and rank gap; how thresholds are drawn (quantiles, jitter, steps); the filter and terminal kinds that apply to it; a qualifier stored with the value (an earthquake's magnitude type); whether it is signed and whether notices can correct it |
+| `fields` | one `FieldSpec` per numeric field: its key and label; its canonical unit, other units and stored decimals; its answer type and tolerance (abs, rel); its guard margin (abs, rel) and rank gap; how thresholds are drawn (quantiles, jitter, steps); the filter and terminal kinds that apply to it (exactly the terminals that P01–P12 end in on its role: `validate` refuses one that no question would end in); a qualifier stored with the value (an earthquake's magnitude type); whether it is signed and whether notices can correct it |
 | `roles` | which field plays the 0.2.0 *primary* role (magnitude) and which the *secondary* one (depth), so that P01–P12 bind to every domain |
 | `spatial` | radii, distance guards and the precision of positions, for records with a location. A domain without one drops the spatial templates (P02, P07, P09, P12) and their twins as a pair |
 | groups and sources | every record belongs to a group (a region, a body, a depot), which `in_group` and `compare_groups` ask about and digests focus on (3–4 per digest), and has a source that filed it (a network, a feed, a catalogue, an agency) |
@@ -542,8 +542,8 @@ A domain module exports `DOMAIN`, an instance of a `Domain` subclass. The regist
 | `statuses` | the status of the report that settles a record's values, then the one that does not ("reviewed", "preliminary") |
 | `trap_vocab` | re-reporting sources, duplicate notes, retraction reasons, and the phrases of retraction and correction notices |
 | `chatter`, `lexicon` | lines without data, and the wording of questions (`standard_lexicon` words any domain from its own words) |
-| `rules_text()`, `glossary(surface)` | the reading rules and the glossary its prompts print |
-| `draw_surface(rng)`, `bind(surface)` | per-instance surface words, for a domain that draws them |
+| `rules_text()`, `report_time()`, `glossary(surface)` | the reading rules (in which `report_time` says what a report's time is) and the glossary its prompts print |
+| `draw_surface(rng)`, `bind(surface)`, `surface_group_labels` | per-instance surface words, for a domain that draws them, and every group label they can draw: the scorer, which reads answers by the types registered when the domain was loaded, lets a group answer end in any of them ("Nerm Halt berth" is "Nerm Halt"), and `bind` refuses a surface that calls its groups anything else or names a group with one |
 | `resolve`, `to_generic`, `from_generic` | the reading rules in code, and the map between a domain's own record types and the generic ones that genres write |
 
 Earthquakes keep their 0.2.0 record types (`Event`, `Report`), which gained read-only generic names
@@ -586,20 +586,30 @@ answer is then the one the printed text gives, not one decided by a last digit o
 genre-neutral and say:
 
 - which report settles a record, and that unsettled values are superseded;
+- what a notice is (a message about a report, not a report), and that it applies wherever in the
+  digest it is printed, before or after that report: most genres print some notices first;
 - how re-reports, corrections and retractions read, quoting every phrase of the domain's trap
   vocabulary;
 - that values are converted as the glossary says;
-- that times are given in UTC or with their offset, and that the time a message was sent,
-  forwarded or relayed is never a record's time;
+- that times are given in UTC or with their offset, what a report's time is (when its record was
+  recorded; for a close approach, the moment the object passed closest: `Domain.report_time`), and
+  that the time a message was sent, forwarded or relayed is never a record's time, while a WIRE line
+  is a report whose bracketed time is its own;
 - that a quoted or read-back repeat of a report or notice is not a new one, while a forwarded or
   relayed one counts, once;
 - that group names are matched as printed;
 - that lines which are neither reports nor notices change nothing.
 
+Every article fits the word it stands before, whatever words a domain or a drawn surface gives ("an
+outpost"). No duplicate note borrows a word that the rules give a meaning of their own: weather's
+notes are "same observation as", "duplicate of" and "mirror of", since a re-report noted "relay of"
+an ID would read as the relayed report that rule 7 counts on its own.
+
 Weather, neo and invented add rules of their own. Earthquake prompts off the legacy path print the
-0.2.0 rules 1–8 word for word, followed by three rules: rule 9, which now also names the section
-titles, greetings and signatures that the other genres print among the lines without data, and the
-rules on message times and repeats (rules 10 and 11). They are headed `Reading rules:`, as every
+0.2.0 rules 1–8 word for word, followed by three rules: rule 9, which now opens with what a notice
+is, in the words of every domain's rules, and also names the section titles, greetings and
+signatures that the other genres print among the lines without data, and the rules on message times
+(with the WIRE line's time) and repeats (rules 10 and 11). They are headed `Reading rules:`, as every
 domain's are, since the 0.2.0 heading ("identical for every digest") is not true of a run whose
 domains print different rules. Legacy prompts print the 0.2.0 rules alone, heading included.
 
@@ -712,7 +722,9 @@ instance stores its surface, so that scoring and the audit can read it back.
     surfaces than they did before this check (`tests/fixtures/invented/pinned.json` was pinned again;
     the synthetic world is unchanged).
   - Values come from fixed log-normal distributions per canonical depot, so margins and steps keep
-    their meaning under every surface. Tolerances are relative, so they hold in every drawn unit.
+    their meaning under every surface. Tolerances are relative, so they hold in every drawn unit,
+    and the group type strips every group label a surface can draw, so a group answer may end in
+    the instance's own ("Nerm Halt berth"), as an earthquake answer may end in "region".
   - An extra rule says that the glossary is the only definition of its words.
 
 ### Genres (`evalgen/genres/`)
@@ -744,7 +756,12 @@ exact inverse of `render`).
     repeat still reads each notice exactly once.
   - A message's own time (an email's Date header, a chat time stamp, a transmission time, a form's
     sent time) is never a record's time, and every report states its record's time in full, to the
-    second.
+    second. A classic wire line prints it in brackets after its source ("KPHL WIRE [05:55:26
+    (UTC-05:00) 18 Feb 2026] ..."), where a chat log prints a message's stamp, so the rules say that
+    a WIRE line is a report and its bracketed time the report's.
+  - A notice applies wherever it is printed: the pinned board of a chat log heads the log, and
+    most genres print some notices before the report they name, so the rules define a notice by
+    what it says, never as a message about an "earlier" report.
   - Lines that are neither reports nor notices carry no data, and the parsers read nothing from
     them. In a news paragraph every free word (a source, a group, a place) lies between typed slots
     (an ID, a status, a time, a position, a value in a unit) or long literal text, so it cannot be
@@ -941,9 +958,10 @@ So the 0.2.0 study in the README regenerates byte for byte under 0.3.0.
   the legacy path made by development versions of 0.3.0 do not regenerate byte for byte under the
   release. Before commit `f8a0835` (their manifests still say 0.2.0) traps, twins, the codec and the
   rules changed. The last commits before the release changed what those prompts print (the
-  glossary's ID line, the earthquake rules' heading and rule 9, the wording of radii, some news,
-  chat and form wordings, and the invented domain's surfaces) and the format of the frozen NWS
-  bundle. Legacy runs from every one of those versions do regenerate.
+  glossary's ID line, the earthquake rules' heading and rule 9, every domain's rules on notices and
+  times, the wording of radii, some news, chat and form wordings, weather's duplicate notes, and the
+  invented domain's surfaces) and the format of the frozen NWS bundle. Legacy runs from every one of
+  those versions do regenerate.
 * Python 3.9 for 0.3.0 was checked by script, because pytest is not installed for the system
   Python 3.9 of the machine that built it. `tests/test_python39.py` scans the code for what 3.9
   cannot run. Under Python 3.9.6, the 0.2.0 regression run matches the hashes its test pins, and
