@@ -69,9 +69,18 @@ Why fine-tuning on the benchmark buys nothing beyond the real skill:
 
 **Keep the seed secret until the run is over.** `manifest.json` (a private file) holds the seed, a
 random 128-bit nonce, and the commitment `sha256("evalgen-seed:<seed>:<nonce>")`. Publish only the
-commitment before the evaluation; the nonce makes it impossible to brute-force even for a small
+commitment before the evaluation, all 64 hexadecimal digits of it, as `generate` prints it and the
+manifest records it (`seed_commitment`); the nonce makes it impossible to brute-force even for a small
 seed such as 42. Revealing the seed and nonce afterwards lets anyone verify the commitment,
 regenerate the exact instances and audit them.
+
+**Use a seed that nobody can guess.** The nonce protects only the commitment. The instances are a
+function of the seed and the public code, so anyone can generate those of a small seed in advance, and
+any one prompt of a run gives a small seed back by brute force in seconds: its compile time and record
+IDs pin it down. For an evaluation, leave `--seed` out: `generate` draws a fresh 64-bit seed and logs
+it. Small seeds such as 42 or 7, as in the examples here, are for demos, tests and reproductions, and
+`generate` warns (on the console only; the run's files do not change) about an explicit seed of fewer
+than 48 bits.
 
 What this design does *not* claim: a model that genuinely learns to read noisy reports carefully
 will score well, and that is the intended skill. The template grammar is finite, so the
@@ -134,20 +143,23 @@ takes a built-in name such as `earthquakes` or `classic`. Both stop `generate` w
 
 The random nonce stops anyone from recovering a config of a few names from its hash, so `generate`
 refuses a nonce that looks typed: fewer than 32 hexadecimal digits, fewer than 8 different digits,
-or one run of digits repeated. No check can prove a nonce random. A nonce that contains `EXAMPLE`,
-as the published example's does, is accepted with a loud warning that its commitment can be
-guessed, so that the held-out metrics can be demonstrated offline.
+or one run of digits repeated. No check can prove a nonce random. The one nonce exempt from the check
+is the published example's own (`EXAMPLE-ONLY-draw-your-own-with-secrets.token_hex`, `mix.EXAMPLE_NONCE`):
+it is accepted with a loud warning that its commitment can be guessed, so that the held-out metrics can
+be demonstrated offline. Any other nonce is checked, one that merely contains `EXAMPLE` included.
 
 **What the evaluator publishes, and when.** Before the evaluation: the two commitments that
 `generate` records in the manifest, `seed_commitment` and `private_config_commitment`, and nothing
-else (not the manifest, which holds the seed, nor the config or its plugins). After it: the config,
-its plugin files, and the seed with its nonce.
+else (not the manifest, which holds the seed, nor the config or its plugins). Publish each in full, all
+64 hexadecimal digits, as `generate` prints them: a prefix of 16 digits could be matched by another
+config or seed in about 2^32 tries. After it: the config, its plugin files, and the seed with its nonce.
 
 **Verifying a revealed config.** `python3 cli.py verify-config RUN_DIR CONFIG` prints `ok` (exit
 status 0) when the config hashes to the run's commitment, and `MISMATCH` (1) otherwise, including
 for a file that is not JSON. It exits with `error: ...` (2) for a run generated without a config,
-which has no commitment to check, and for a config that gives a key twice in one object, which reads
-as two configs. The hash is over canonical JSON, so re-indenting the file or reordering its keys
+which has no commitment to check, for a config that gives a key twice in one object, which reads
+as two configs, and for arguments that are not a run and a config file (given the wrong way round,
+say), so that status 1 always means MISMATCH. The hash is over canonical JSON, so re-indenting the file or reordering its keys
 changes nothing, while any change to a name, to the order of a list, the nonce, a plugin entry or the
 note breaks the match.
 
@@ -169,6 +181,24 @@ commitment; within one process, a later step registers again the plugins that th
 ran for that config, without running any of their code again. evalgen never executes a file that a
 run directory names by itself, so reporting on a run received from someone else runs none of its
 code.
+
+**A received run cannot reach outside its folder.** Every step after `generate` reads a run strictly
+before it reads or writes anything else. It refuses, with `error: ...` (exit status 2):
+
+- a run directory that holds a symbolic link anywhere, which could point at any file (the folder
+  itself may be reached through a link: the evaluator names it);
+- a folder without a `manifest.json` that evalgen wrote, so that a mistyped path is an error, never a
+  run with nothing to do;
+- an instance file whose instance ID is not its file name (`instances/inst-007.json` holds
+  `inst-007`), or whose renderings are not `v0`, `v1`, ... each once. These IDs name the files that
+  `run` writes and `score` reads (`responses/<model>/<instance>__<variant>.json`), so an ID such as
+  `../../x` would otherwise send them outside the run;
+- instance files that the manifest does not list, or listed ones that are missing.
+
+Every file evalgen writes into a run directory goes through one writer (`util.write_in`). It refuses a
+path that leaves the folder or passes through a link, and it writes a new file beside the old one that
+then takes its name, so a link or a hard link planted in a file's place is replaced, never written
+through, and no reader sees half a file.
 
 ---
 
@@ -258,6 +288,7 @@ python3 cli.py demo --mix random                                    # every buil
 python3 cli.py demo --mix random --private-config configs/private.example.json   # held-out metrics, offline
 python3 cli.py generate --seed 7 --mix weather,neo:email,invented:table         # an explicit mix
 python3 cli.py generate --seed 7 --mix random --private-config private.json     # the evaluator's held-out sets
+# (an evaluation leaves --seed out, and a fresh 64-bit seed is drawn: the small seeds here are for examples)
 python3 cli.py run runs/random-synthetic-seed7 --models mock,mock:held_out=0.3 --private-config private.json
 python3 cli.py score runs/random-synthetic-seed7 --private-config private.json
 python3 cli.py report runs/random-synthetic-seed7 --private-config private.json
@@ -267,7 +298,19 @@ python3 cli.py generate --seed 7 --mix random --source live --snapshot-dir runs/
 ```
 
 `--force` overwrites an existing run directory, but only one that evalgen created (it carries
-evalgen's marker file or its own manifest); any other folder is left untouched.
+evalgen's marker file or its own manifest); any other folder is left untouched. Nor does it replace a
+folder that holds what the new run reads: the frozen feed or snapshots it replays (`--snapshot-file`,
+`--snapshot-dir`), its private config or a plugin. A run folder can hold the only copy of a live feed,
+so `generate` stops with `error: ...` (exit status 2) before deleting anything and asks for another
+`--out`. `--instances` is at least 1 and `--variants` at least 0.
+
+Each step needs what the steps before it wrote, and says so with `error: ...` (exit status 2) instead
+of writing less. `report` refuses a run whose instance files are missing, as in a committed run (git
+keeps only a run's manifest and report: regenerate it from the manifest's seed and config first), and
+a run that has no scores yet, so that it never replaces a report with an empty one. `resolve` refuses
+a path that is not a run. `run` reads every model spec before it asks any model: a spec that names no
+model, or options its model does not take, is refused; an API model whose key is not set is skipped
+with a note, and a `run` with no model left to ask is an error.
 
 `--max-tokens` (default 16000) is the output budget per reply for API models. Models that think
 before answering need room: at 4,096 tokens, Claude Haiku 5.5 hit the limit on two thirds of its
@@ -402,7 +445,13 @@ records compliance:
 * **failed:** nothing usable.
 
 API failures and replies cut off at the output-token limit are recorded separately from parse
-failures, and the report warns about both.
+failures, and the report warns about both. A prompt that has no stored reply that can be read (a
+`run` cut short, a reply removed or broken since) counts as unanswered too, with the status
+`missing`, so accuracy and the gaps are always over every question of the run, while metamorphic and
+cross-genre consistency and the trap counts, which compare a model's own answers, leave those prompts
+out, as before: a missing reply is a gap in the run, not an answer. The report and the console summary
+say how many replies are missing (`format.missing` in `report.json`, only when there are any), and the
+next `run` asks only those prompts.
 
 | answer type | rule |
 |---|---|
@@ -482,7 +531,7 @@ A domain module exports `DOMAIN`, an instance of a `Domain` subclass. The regist
 | `spatial` | radii, distance guards and the precision of positions, for records with a location. A domain without one drops the spatial templates (P02, P07, P09, P12) and their twins as a pair |
 | groups and sources | every record belongs to a group (a region, a body, a depot), which `in_group` and `compare_groups` ask about and digests focus on (3–4 per digest), and has a source that filed it (a network, a feed, a catalogue, an agency) |
 | `synthetic(rng, n, compiled_at, window_hours)` | the seeded generator, which never reads the clock |
-| `live` | an optional live source. `fetch` downloads it once, and the raw bytes are frozen in the run and SHA-256 hashed. `parse` reads them without the clock or the network, so a replay rebuilds the snapshot exactly. A source that cannot be reached, or that gives too few usable records, falls back to synthetic data, with a note |
+| `live` | an optional live source. `fetch` downloads it once, and the raw bytes are frozen in the run and SHA-256 hashed. `parse` reads them without the clock or the network, so a replay rebuilds the snapshot exactly. A source that cannot be reached, that answers with bytes its parser cannot read, or that gives too few usable records, falls back to synthetic data, with a note. The note names the failure without what changes from one moment to the next (a URL's query, such as the start time of an NWS request, and an object's address), so two offline runs of one seed write the same files |
 | IDs | `id_pattern` (the scorer also reads ID answers with it), `new_id` and `mimic_id`, so that planted reports carry IDs shaped like real ones |
 | `statuses` | the status of the report that settles a record's values, then the one that does not ("reviewed", "preliminary") |
 | `trap_vocab` | re-reporting sources, duplicate notes, retraction reasons, and the phrases of retraction and correction notices |
@@ -745,7 +794,7 @@ legacy path is named after its mix, as in `runs/random-synthetic-seed7`.
 | `--source live` | generate, demo | off the legacy path, each domain's own live source: USGS, NWS or JPL, and synthetic data, with a note, for a domain without one. `--source usgs` still names the USGS feed (off the legacy path, only for a mix of earthquakes alone), and `--feed hour` is for legacy runs only |
 | `--snapshot-file PATH` | generate | replays one frozen live feed: the USGS GeoJSON of a legacy run, as in 0.2.0, or the frozen feed of the one domain of a mix |
 | `--snapshot-dir DIR` | generate | replays an earlier run's snapshot folder, off the legacy path. Each domain is rebuilt as that run read it: from its frozen bytes, or from the seed where that run drew synthetic records. A live run of several domains thus regenerates byte for byte, offline |
-| `verify-config RUN CONFIG` | its own command | checks a revealed config against a run's commitment: `ok` (exit status 0), `MISMATCH` (1, also for a file that is not JSON), or `error:` (2: no commitment to check, or a config that gives a key twice) |
+| `verify-config RUN CONFIG` | its own command | checks a revealed config against a run's commitment: `ok` (exit status 0), `MISMATCH` (1, also for a file that is not JSON), or `error:` (2: no commitment to check, a config that gives a key twice, or arguments that are not a run and a config) |
 
 Frozen bytes are parsed and checked before the run directory is created, on the legacy path too: a
 `--snapshot-file`, and every frozen feed under `--snapshot-dir`. A domain without a live source,

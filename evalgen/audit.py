@@ -19,7 +19,7 @@ from .domains.base import Domain, Record
 from .models import Event, Instance
 from .ops import describe
 from .scoring import wilson
-from .util import plain_number, utc_iso
+from .util import plain_number, utc_iso, write_in
 
 OK_WORDS = {"ok", "correct", "pass", "fine"}
 ERROR_WORDS = {"error", "wrong", "ambiguous", "fail", "bad"}
@@ -56,12 +56,10 @@ def write_audit_sample(run_dir: Path, instances: Sequence[Instance], records: Ma
             "auditor": "",
             "notes": "",
         })
-    audit_dir = Path(run_dir) / "audit"
-    audit_dir.mkdir(parents=True, exist_ok=True)
-    with open(audit_dir / "audit_sample.jsonl", "w", encoding="utf-8") as fh:
-        for entry in entries:
-            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    (audit_dir / "audit_sample.md").write_text(_markdown(entries, instances), encoding="utf-8")
+    audit_dir = Path(run_dir) / "audit"  # written through the run directory's one writer (util.write_in)
+    write_in(run_dir, audit_dir / "audit_sample.jsonl",
+             "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries))
+    write_in(run_dir, audit_dir / "audit_sample.md", _markdown(entries, instances))
     return {"population": len(items), "sampled": n, "rate": rate, "file": "audit/audit_sample.jsonl"}
 
 

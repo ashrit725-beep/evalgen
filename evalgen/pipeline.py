@@ -25,6 +25,7 @@ Run directory layout:
 """
 from __future__ import annotations
 
+import os
 import random
 import shutil
 import time
@@ -38,7 +39,7 @@ from typing import Any, Callable, ClassVar, Mapping, Sequence
 import requests
 
 from . import __version__
-from .adapters import DEFAULT_MAX_TOKENS, AdapterError, Task, is_truncated, make_adapter, token_usage
+from .adapters import DEFAULT_MAX_TOKENS, AdapterError, MissingKey, Task, is_truncated, make_adapter, token_usage
 from .answers import parse_reply
 from .audit import write_audit_sample
 from .digest import make_chatter
@@ -53,14 +54,14 @@ from .models import Instance, Question, Rendering
 from .ops import execute, role
 from .prompt import build_prompt, domain_prompt
 from .questions import Context, Template, compose_new_templates, compose_questions, phrase_question, public_templates
-from .report import code_fingerprint, load_instances, write_report
+from .report import code_fingerprint, load_instances, read_run_json, read_scores, write_report
 from .rules import READING_RULES
 from .scoring import is_correct, normalize, same_answer
 from .seeds import SeedLog, derive_seed, fresh_nonce, seed_commitment
 from .solver import extract_digest, solve
 from .sources import LIVE, Snapshot, build_domain_snapshot, build_snapshot, frozen_feed, read_frozen_feed, save_snapshot
 from .traps import TrapConfig, inject_traps
-from .util import read_json, sha256_hex, slugify, write_json
+from .util import read_json, read_manifest, sha256_hex, slugify, write_in, write_json
 
 RUNS_DIR = Path("runs")
 RUN_MARKER = ".evalgen-run"  # lets --force recognise (and only delete) evalgen run directories
@@ -91,6 +92,32 @@ class GenerateConfig:
     snapshot_dir: str | None = None
 
     OPTIONAL_KEYS: ClassVar[tuple[str, ...]] = ("mix", "private_config", "snapshot_dir")  # recorded only when set
+    PATHS: ClassVar[tuple[str, ...]] = ("snapshot_file", "private_config", "snapshot_dir")
+
+    def __post_init__(self) -> None:
+        """A path option given as a Path is kept as its text, as the command line gives it, which is what the
+        manifest records."""
+        for name in self.PATHS:
+            if getattr(self, name) is not None:
+                setattr(self, name, os.fspath(getattr(self, name)))
+
+    def problems(self) -> list[str]:
+        """What no run can be generated with: no instance, fewer than no variant, an empty snapshot pool,
+        record and question ranges that are empty, or an audit rate that is not a share."""
+        def whole(value: Any, least: int) -> bool:
+            return isinstance(value, int) and not isinstance(value, bool) and value >= least
+
+        problems = [f"{name} must be a whole number of {least} or more, not {getattr(self, name)!r}"
+                    for name, least in (("instances", 1), ("variants", 0), ("pool_size", 1), ("events_min", 1),
+                                        ("events_max", 1), ("questions_min", 1), ("questions_max", 1))
+                    if not whole(getattr(self, name), least)]
+        for low, high in (("events_min", "events_max"), ("questions_min", "questions_max")):
+            if not problems and getattr(self, low) > getattr(self, high):
+                problems.append(f"{low} ({getattr(self, low)}) is more than {high} ({getattr(self, high)})")
+        if isinstance(self.audit_rate, bool) or not isinstance(self.audit_rate, (int, float)) or not (
+                0 <= self.audit_rate <= 1):
+            problems.append(f"audit_rate must be a share between 0 and 1, not {self.audit_rate!r}")
+        return problems
 
     def to_dict(self) -> dict[str, Any]:
         """The config as the manifest records it: asdict without the 0.3.0 options that keep their
@@ -388,6 +415,27 @@ def _check_frozen(domain: Domain, path: str | Path) -> None:
         raise MixError(f"the frozen feed cannot be replayed: {exc}") from None
 
 
+def _inputs_in(run_dir: Path, cfg: GenerateConfig, plan: Plan, frozen: Mapping[str, Path | None]) -> list[str]:
+    """What a run reads that lies in the folder `run_dir`, as given: the frozen feed or the frozen snapshots it
+    replays (`frozen`: each domain's feed, from _check_sources), with the snapshot.json beside each feed, its
+    private run config and the config's plugins. Replacing `run_dir` would delete them: the frozen bytes
+    before they are read (a run folder may hold the only copy of a live feed), the config after the new
+    manifest has committed to it. A path is in `run_dir` as written or as it resolves: deleting the folder
+    removes the entry below it, and the file that a link elsewhere points to below it."""
+    feeds = [Path(cfg.snapshot_file)] if cfg.snapshot_file else []
+    feeds += [Path(feed) for feed in frozen.values() if feed is not None]
+    inputs = [Path(p) for p in (cfg.snapshot_dir, cfg.private_config) if p is not None]
+    inputs += feeds + [feed.with_name("snapshot.json") for feed in feeds]
+    if plan.config is not None:
+        named = [e if isinstance(e, str) else e["path"] for e in plan.config.data.get("plugins", [])]
+        inputs += [plan.config.path.parent / name for name in named] + list(plan.config.plugins)
+
+    def within(path: Path) -> bool:
+        return any(Path(where(path)).is_relative_to(where(run_dir)) for where in (os.path.abspath, os.path.realpath))
+
+    return list(dict.fromkeys(str(path) for path in inputs if within(path)))
+
+
 def _snapshot_entry(snapshots: Mapping[str, Snapshot]) -> dict[str, Any]:
     """The manifest's record of a run's snapshots: "snapshot", as in 0.2.0, for a run of one domain;
     "snapshots", by domain, for a run of several."""
@@ -429,7 +477,14 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
     legacy (0.2.0) run, and any other mix is generated on seed paths of its own (see evalgen.mix). The
     mix and the config are read, and their plugins loaded, before anything is written. A run off the
     legacy path replays an earlier run's frozen snapshots (cfg.snapshot_dir), one per domain, so that a
-    live run of several domains regenerates exactly from its seed, without the network."""
+    live run of several domains regenerates exactly from its seed, without the network.
+
+    Every file goes through the run directory's one writer (util.write_in). An existing run directory is
+    replaced only with `force`, only if evalgen made it, and never while it holds what this run reads (a
+    frozen feed or snapshot folder, the private run config or a plugin), which replacing it would delete."""
+    problems = cfg.problems()
+    if problems:
+        raise ValueError("cannot generate this run: " + "; ".join(problems))
     plan = plan_mix(cfg.mix, cfg.private_config)
     frozen: dict[str, Path | None] = {}
     if not plan.legacy:
@@ -443,21 +498,30 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
     elif cfg.snapshot_file:  # the frozen USGS feed of a legacy run, read as the replay reads it
         _check_frozen(EARTHQUAKES, cfg.snapshot_file)
     run_dir = Path(run_dir) if run_dir else RUNS_DIR / run_name(cfg)
+    if run_dir.exists() and not run_dir.is_dir():
+        raise FileExistsError(f"{run_dir} is a file, not a run directory")
     if run_dir.exists() and any(run_dir.iterdir()):
+        held = _inputs_in(run_dir, cfg, plan, frozen)
+        if held:
+            raise FileExistsError(f"{run_dir} holds what this run reads ({', '.join(held)}), which replacing it would "
+                                  "delete: write the run to another folder with --out")
         if not force:
             raise FileExistsError(f"{run_dir} already exists (use --force to overwrite, or --out)")
         if not is_run_dir(run_dir):
             raise FileExistsError(f"{run_dir} is not an evalgen run directory; refusing to delete it")
         shutil.rmtree(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / RUN_MARKER).write_text("evalgen run directory\n", encoding="utf-8")
+    write_in(run_dir, run_dir / RUN_MARKER, "evalgen run directory\n")
 
     seedlog = SeedLog(cfg.seed)
     nonce = fresh_nonce()
     commitment = seed_commitment(cfg.seed, nonce)
-    log(f"[generate] master seed {cfg.seed} (publishable commitment {commitment[:16]}…)")
+    # The commitments in full: what the evaluator publishes before the evaluation is the whole value (a prefix
+    # of 16 hexadecimal digits could be matched by another seed or config in about 2**32 tries).
+    log(f"[generate] master seed {cfg.seed} (publishable commitment {commitment}: seed_commitment in manifest.json)")
     if plan.config is not None:
-        log(f"[generate] private run config committed as {plan.config.commitment[:16]}… (publishable)")
+        log(f"[generate] private run config committed as {plan.config.commitment} (publishable: "
+            "private_config_commitment in manifest.json)")
         if plan.config.example:
             log("[generate] WARNING: the private run config keeps the nonce of a published EXAMPLE, so anyone can "
                 "recover which domains and genres it holds out from its commitment. Use it for demos only: a real "
@@ -478,9 +542,9 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
                                                   snapshot_file=cfg.snapshot_file)
         folder = run_dir / "snapshot" if len(domains) == 1 else run_dir / "snapshot" / domain.name
         if raw is None or plan.legacy:
-            save_snapshot(snapshot, raw, folder)
+            save_snapshot(snapshot, raw, folder, root=run_dir)
         else:  # frozen bytes of the domain's live source
-            save_snapshot(snapshot, raw, folder, raw_filename=domain.live.raw_filename)
+            save_snapshot(snapshot, raw, folder, raw_filename=domain.live.raw_filename, root=run_dir)
         snapshots[domain.name] = snapshot
         about = "" if len(domains) == 1 else f" ({domain.name})"
         if snapshot.note:
@@ -507,11 +571,9 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
                               genre_plan=None if drawn is None else drawn.genres,
                               split=None if drawn is None else drawn.split)
         instances.append(inst)
-        write_json(run_dir / "instances" / f"{inst.instance_id}.json", inst.to_dict())
+        write_json(run_dir / "instances" / f"{inst.instance_id}.json", inst.to_dict(), root=run_dir)
         for rendering in inst.renderings:
-            path = run_dir / "prompts" / inst.instance_id / f"{rendering.variant}.txt"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(rendering.prompt, encoding="utf-8")
+            write_in(run_dir, run_dir / "prompts" / inst.instance_id / f"{rendering.variant}.txt", rendering.prompt)
 
     self_check = generator_self_check(instances)
     records = _instance_records(instances, snapshots, {d.name: d for d in domains})
@@ -519,7 +581,7 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
     forecasts = [dict(inst.forecast, instance_id=inst.instance_id, **_recorded(domain=inst.domain))
                  for inst in instances if inst.forecast]
     if forecasts:
-        write_json(run_dir / "forecasts.json", forecasts)
+        write_json(run_dir / "forecasts.json", forecasts, root=run_dir)
     seedlog.seed("mock")  # the simulated model's seed, so it is logged too
     write_json(run_dir / "manifest.json", {
         "evalgen_version": __version__,
@@ -538,7 +600,7 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
         "audit": audit,
         "seeds": seedlog.seeds,
         "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    })
+    }, root=run_dir)
     n_questions = sum(len(inst.questions) for inst in instances)
     log(f"[generate] {len(instances)} instances, {n_questions} questions, {cfg.variants + 1} renderings each; "
         f"oracle self-check {self_check['oracle_agreements']}/{self_check['oracle_checks']}; "
@@ -555,19 +617,29 @@ def run_models(run_dir: Path, specs: Sequence[str], *, workers: int = 4, force: 
     """Ask each model (an adapter spec) every rendering's prompt, keeping replies already stored. A
     run's plugins are loaded first, from its private run config (mix.load_run_plugins); the simulated
     model also learns whether each instance's domain and each rendering's genre are public or held out
-    (Task.split, Task.genre_split)."""
+    (Task.split, Task.genre_split).
+
+    Every spec is read before any model runs: one that names no model, or options that its model does
+    not take, is refused (adapters.UnknownModel, a ValueError). An API model whose key is not set is
+    skipped with a note, and a run in which no model is left to ask raises ValueError, so a typing slip
+    never passes for a finished run."""
     run_dir = Path(run_dir)
-    manifest = read_json(run_dir / "manifest.json")
+    manifest = read_manifest(run_dir)
     load_run_plugins(manifest, private_config, log=log)
     inventory = Inventory.of_run(manifest)
-    instances = load_instances(run_dir)
-    finished = []
+    instances = load_instances(run_dir, manifest)
+    adapters, skipped = [], []
     for spec in specs:
         try:
-            adapter = make_adapter(spec, seed=derive_seed(manifest["seed"], "mock"), max_tokens=max_tokens)
-        except AdapterError as exc:
+            adapters.append(make_adapter(spec, seed=derive_seed(manifest["seed"], "mock"), max_tokens=max_tokens))
+        except MissingKey as exc:
             log(f"[run] skipping {spec}: {exc}")
-            continue
+            skipped.append(f"{spec}: {exc}")
+    if not adapters:
+        raise ValueError("no model to ask" + (f" ({'; '.join(skipped)})" if skipped else
+                                              ": name one or more with --models"))
+    finished = []
+    for adapter in adapters:
         out_dir = run_dir / "responses" / slugify(adapter.name)
         jobs = [(inst, r) for inst in instances for r in inst.renderings
                 if force or not _has_reply(out_dir / f"{inst.instance_id}__{r.variant}.json")]
@@ -591,7 +663,7 @@ def run_models(run_dir: Path, specs: Sequence[str], *, workers: int = 4, force: 
             else:
                 completion = adapter.complete(rendering.prompt, task)
                 record.update(text=completion.text, error=None, meta=completion.meta)
-            write_json(out_dir / f"{inst.instance_id}__{rendering.variant}.json", record)
+            write_json(out_dir / f"{inst.instance_id}__{rendering.variant}.json", record, root=run_dir)
             return record["error"] is None and not is_truncated(record)
 
         if adapter.concurrent and workers > 1:
@@ -607,23 +679,28 @@ def run_models(run_dir: Path, specs: Sequence[str], *, workers: int = 4, force: 
     return finished
 
 
-def _load_plugins_of(run_dir: Path, private_config: str | Path | None, log: Log) -> None:
-    """Load the plugins the run in `run_dir` was generated with, if its manifest lists any, from its
-    private run config (mix.load_run_plugins)."""
-    if (run_dir / "manifest.json").exists():
-        load_run_plugins(read_json(run_dir / "manifest.json"), private_config, log=log)
+def _stored_reply(path: Path) -> dict | None:
+    """The reply stored at `path`, as `run` writes it: a JSON object whose text is a string (or None) and
+    whose meta is an object; None when there is none, or when it cannot be read as one (a reply edited or
+    copied by hand, or broken off), so that `score` counts its prompt as unanswered and the next `run`
+    asks it again."""
+    if not path.is_file():
+        return None
+    try:
+        record = read_json(path)
+    except (ValueError, OSError):
+        return None
+    if not isinstance(record, dict) or not isinstance(record.get("text"), (str, type(None))) or not isinstance(
+            record.get("meta") or {}, dict):
+        return None
+    return record
 
 
 def _has_reply(path: Path) -> bool:
     """A stored reply counts as done unless its API call failed or the reply was cut off at the
-    output-token limit; those prompts are asked again on the next run."""
-    if not path.exists():
-        return False
-    try:
-        record = read_json(path)
-    except (ValueError, OSError):
-        return False
-    return record.get("error") is None and not is_truncated(record)
+    output-token limit; those prompts are asked again on the next run, as is a reply that cannot be read."""
+    record = _stored_reply(path)
+    return record is not None and record.get("error") is None and not is_truncated(record)
 
 
 # --------------------------------------------------------------------------------- score
@@ -631,33 +708,45 @@ def _has_reply(path: Path) -> bool:
 
 def score_run(run_dir: Path, *, private_config: str | Path | None = None, log: Log = print) -> list[Path]:
     """Grade every stored reply. A run's plugins are loaded first, from its private run config: their
-    domains' answer types score the answers."""
+    domains' answer types score the answers.
+
+    Every prompt of the run is scored for every model that has replies: a prompt without a reply that can
+    be read (a run that was cut short, a reply removed or broken since) counts as unanswered, as a failed
+    API call does, so that accuracy and the gaps are always over every question of the run. Its reply is
+    recorded with the status "missing" and its rows are marked "missing", so that the metrics that compare a
+    model's own answers (consistency, the traps) leave it out; the report and the console summary say how
+    many there are."""
     run_dir = Path(run_dir)
+    manifest = read_manifest(run_dir)
     responses = run_dir / "responses"
-    if not responses.exists():
+    if not responses.is_dir():
         raise FileNotFoundError(f"no responses in {run_dir}; run `python cli.py run {run_dir}` first")
-    _load_plugins_of(run_dir, private_config, log)
-    instances = load_instances(run_dir)
+    load_run_plugins(manifest, private_config, log=log)
+    instances = load_instances(run_dir, manifest)
     written = []
     for model_dir in sorted(p for p in responses.iterdir() if p.is_dir()):
         rows, replies, forecasts = [], [], []
         model, kind = model_dir.name, None
         for inst in instances:
             for rendering in inst.renderings:
-                path = model_dir / f"{inst.instance_id}__{rendering.variant}.json"
-                if not path.exists():
-                    continue
-                record = read_json(path)
-                model, kind = record.get("model", model), record.get("kind", kind)
-                expected = [q.qid for q in inst.questions] + ([inst.forecast["qid"]] if inst.forecast else [])
-                parsed = parse_reply(record.get("text"), expected)
-                input_tokens, output_tokens = token_usage(record)
-                replies.append({"instance_id": inst.instance_id, "variant": rendering.variant, "status": parsed.status,
-                                "api_error": record.get("error"), "parse_error": parsed.error,
-                                "truncated": is_truncated(record),
-                                "stale_prompt": record.get("prompt_sha256") != rendering.prompt_sha256,
-                                "input_tokens": input_tokens, "output_tokens": output_tokens,
-                                "latency_s": record.get("latency_s")})
+                record = _stored_reply(model_dir / f"{inst.instance_id}__{rendering.variant}.json")
+                if record is None:  # unanswered: no reply that can be read
+                    replies.append({"instance_id": inst.instance_id, "variant": rendering.variant, "status": "missing",
+                                    "api_error": None, "parse_error": "no stored reply", "truncated": False,
+                                    "stale_prompt": False, "input_tokens": None, "output_tokens": None,
+                                    "latency_s": None})
+                    parsed = parse_reply(None)
+                else:
+                    model, kind = record.get("model", model), record.get("kind", kind)
+                    expected = [q.qid for q in inst.questions] + ([inst.forecast["qid"]] if inst.forecast else [])
+                    parsed = parse_reply(record.get("text"), expected)
+                    input_tokens, output_tokens = token_usage(record)
+                    replies.append({"instance_id": inst.instance_id, "variant": rendering.variant,
+                                    "status": parsed.status, "api_error": record.get("error"),
+                                    "parse_error": parsed.error, "truncated": is_truncated(record),
+                                    "stale_prompt": record.get("prompt_sha256") != rendering.prompt_sha256,
+                                    "input_tokens": input_tokens, "output_tokens": output_tokens,
+                                    "latency_s": record.get("latency_s")})
                 for q in inst.questions:
                     given = parsed.answers.get(q.qid)
                     key = inst.answer_key[q.qid]
@@ -666,7 +755,8 @@ def score_run(run_dir: Path, *, private_config: str | Path | None = None, log: L
                                  "unit": q.unit, "key": key, "given": given,
                                  "normalized": normalize(q.answer_type, given),
                                  "correct": is_correct(q.answer_type, key, given, unit=q.unit),
-                                 **_recorded(domain=inst.domain, genre=rendering.genre)})
+                                 **_recorded(domain=inst.domain, genre=rendering.genre),
+                                 **({"missing": True} if record is None else {})})
                 if inst.forecast:
                     forecasts.append({"instance_id": inst.instance_id, "variant": rendering.variant,
                                       "probability": normalize("probability", parsed.answers.get(inst.forecast["qid"]))})
@@ -680,10 +770,14 @@ def score_run(run_dir: Path, *, private_config: str | Path | None = None, log: L
                                for iid, e in per_instance.items()}
         out = run_dir / "scores" / f"{model_dir.name}.json"
         write_json(out, {"model": model, "kind": kind, "rows": rows, "replies": replies, "forecasts": forecasts,
-                         "per_instance": per_instance_scores})
+                         "per_instance": per_instance_scores}, root=run_dir)
         correct = sum(r["correct"] for r in rows if r["variant"] == "v0")
         total = sum(1 for r in rows if r["variant"] == "v0")
         log(f"[score] {model}: {correct}/{total} correct on original renderings -> {out}")
+        missing = sum(1 for r in replies if r["status"] == "missing")
+        if missing:
+            log(f"[score] warning: {model} has no stored reply to {missing} of {len(replies)} prompts, which count as "
+                f"unanswered: `python cli.py run {run_dir}` with this model asks only those")
         written.append(out)
     return written
 
@@ -702,14 +796,18 @@ def build_report(run_dir: Path, *, private_config: str | Path | None = None, log
 def resolve_run(run_dir: Path, *, now: int | None = None, fetch: Callable | None = None,
                 private_config: str | Path | None = None, log: Log = print) -> dict:
     """Grade the pending forecasts whose window has passed, each with the forecaster of the domain
-    that asked it, and refresh the report. A run's plugins are loaded from its private run config."""
+    that asked it, and refresh the report. A run's plugins are loaded from its private run config. A path
+    that is not a run raises FileNotFoundError, so that a scheduled resolve with a mistyped path fails
+    instead of reporting a run without forecasts."""
     run_dir = Path(run_dir)
+    manifest = read_manifest(run_dir)
     path = run_dir / "forecasts.json"
     if not path.exists():
-        log("[resolve] this run has no forecast questions (they are only generated with --source usgs)")
+        log("[resolve] this run has no forecast questions (only earthquake instances from the live USGS feed ask "
+            "one: --source usgs, or --source live with earthquakes in the mix)")
         return {}
-    _load_plugins_of(run_dir, private_config, log)  # a plugin domain resolves its own forecasts
-    forecasts = read_json(path)
+    load_run_plugins(manifest, private_config, log=log)  # a plugin domain resolves its own forecasts
+    forecasts = read_run_json(path)
     by_domain: dict[str | None, list[dict]] = {}  # a legacy run records no domain: its forecasts are earthquake ones
     for forecast in forecasts:
         by_domain.setdefault(forecast.get("domain"), []).append(forecast)
@@ -719,8 +817,8 @@ def resolve_run(run_dir: Path, *, now: int | None = None, fetch: Callable | None
     summary = parts[0]
     for part in parts[1:]:  # counts add up and error lists join
         summary = {key: summary[key] + part[key] for key in summary}
-    write_json(path, forecasts)
-    if (run_dir / "scores").exists():
+    write_json(path, forecasts, root=run_dir)
+    if read_scores(run_dir):
         write_report(run_dir, private_config=private_config)
     log(f"[resolve] {summary['newly_resolved']} newly resolved, {summary['resolved']} resolved in total, "
         f"{summary['pending']} still pending" + (f"; errors: {summary['errors']}" if summary["errors"] else ""))
@@ -768,6 +866,8 @@ def summary_lines(run_dir: Path) -> list[str]:
             note = f"{m['format']['api_errors']}/{m['format']['replies']} API calls failed"
         if m["format"].get("truncated"):
             note = (note + "; " if note else "") + f"{m['format']['truncated']}/{m['format']['replies']} replies cut off"
+        if m["format"].get("missing"):  # prompts without a stored reply, counted as unanswered
+            note = (note + "; " if note else "") + f"{m['format']['missing']}/{m['format']['replies']} replies missing"
         lines.append(f"{m['model']:<28} {_pct(m['accuracy']['rate']):>9} {_pct(m['consistency']['rate']):>9} "
                      f"{_pct(m['pools']['public']['rate']):>8} {_pct(m['pools']['new']['rate']):>8} "
                      f"{_points(m['gap'], 'public_minus_new'):>8} {_pct(m['traps']['caught']['rate']):>8}  {note}")

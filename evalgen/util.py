@@ -1,13 +1,28 @@
-"""Small shared helpers: canonical hashing, JSON files, UTC timestamps, exact number text."""
+"""Small shared helpers: canonical hashing, JSON files, the one writer of every file in a run
+directory and the one reader of its manifest, UTC timestamps, exact number text."""
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import itertools
 import json
+import os
 import re
+import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+
+_TEMPORARY = itertools.count()  # numbers the temporary files of write_in, so that no two writes share one
+MANIFEST_KEYS = ("evalgen_version", "run_id", "self_check")  # in every manifest that evalgen writes
+
+
+class RunDirError(ValueError):
+    """A run directory that evalgen will not read or write: a symbolic link in it, a path that leaves it,
+    a manifest that evalgen did not write, or an instance file whose IDs are not the ones its name gives.
+    A run received from someone else could hold any of these, to make a step read or overwrite a file
+    outside the run directory. The command line reports it and exits with status 2."""
 
 
 def canonical_json(obj: Any) -> str:
@@ -21,14 +36,98 @@ def sha256_hex(data: bytes | str) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def write_json(path: Path, obj: Any) -> None:
-    path = Path(path)
+def inside(root: Path, path: Path) -> Path:
+    """`path`, checked to lie in the directory `root`: a path that is not below `root` as written (an
+    absolute path elsewhere, or one that climbs out with '..'), and one that passes through a symbolic
+    link at any step below `root`, raise RunDirError. `root` itself may be reached through links: the
+    evaluator names it."""
+    root, path = Path(root), Path(path)
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        raise RunDirError(f"{path} lies outside the run directory {root}") from None
+    if not parts or os.pardir in parts:
+        raise RunDirError(f"{path} is not a file in the run directory {root}")
+    step = root
+    for part in parts:
+        step = step / part
+        if step.is_symlink():
+            raise RunDirError(f"{step} is a symbolic link: evalgen never reads or writes through a link in a run "
+                              "directory, which could point anywhere")
+    return path
+
+
+def check_run_dir(run_dir: Path) -> None:
+    """Refuse (RunDirError) a run directory that holds a symbolic link, at any depth: a run received from
+    someone else could link a file or a folder anywhere, and a later step would read or write it there. A
+    run directory that does not exist passes: the step that reads it says what is missing."""
+    folders = [Path(run_dir)] if Path(run_dir).is_dir() else []
+    while folders:
+        with os.scandir(folders.pop()) as listing:
+            entries = sorted(listing, key=lambda entry: entry.name)
+        for entry in entries:
+            if entry.is_symlink():
+                raise RunDirError(f"{entry.path} is a symbolic link: evalgen does not read or write a run directory "
+                                  "that holds one, since a run received from someone else could point it anywhere")
+            if entry.is_dir(follow_symlinks=False):
+                folders.append(Path(entry.path))
+
+
+def write_in(root: Path, path: Path, data: str | bytes) -> None:
+    """Write `data` (text, as UTF-8, or bytes) to the file `path` in the run directory `root`: the one way
+    evalgen writes into a run directory. The path must lie in `root`, with no symbolic link on the way or
+    in its place (inside). The missing folders are made, and the data goes whole into a new file beside
+    `path`, which then takes its name (os.replace): a link or a hard link that takes the name meanwhile is
+    replaced, never written through, and no reader sees half a file. Text is written as Path.write_text
+    writes it, so the bytes are the same."""
+    path = inside(root, path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    while True:
+        temporary = path.with_name(f".{path.name}.{os.getpid()}-{threading.get_ident()}-{next(_TEMPORARY)}.tmp")
+        try:
+            fd = os.open(temporary, flags, 0o666)  # the mode a new file gets from open(), umask applied
+            break
+        except FileExistsError:  # left by a write that was killed: take the next number
+            continue
+    try:
+        with (os.fdopen(fd, "wb") if isinstance(data, bytes) else os.fdopen(fd, "w", encoding="utf-8")) as out:
+            out.write(data)
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
+
+
+def write_json(path: Path, obj: Any, *, root: Path | None = None) -> None:
+    """Write `obj` as indented JSON to `path` (write_in), in the run directory `root`; without one, in the
+    file's own folder, so that a symbolic link in the file's place is refused, never written through."""
+    path = Path(path)
+    write_in(path.parent if root is None else root, path, json.dumps(obj, indent=2, ensure_ascii=False) + "\n")
 
 
 def read_json(path: Path) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def read_manifest(run_dir: Path) -> dict[str, Any]:
+    """The manifest of the run in `run_dir`, read as every step after generate reads it: the directory may
+    hold no symbolic link (check_run_dir), and its manifest.json must be one that evalgen wrote, a JSON
+    object with MANIFEST_KEYS. FileNotFoundError for a folder (or a file) that is not a run, so that a
+    mistyped path stops a step instead of passing for a run with nothing to do; RunDirError otherwise."""
+    run_dir = Path(run_dir)
+    check_run_dir(run_dir)
+    path = run_dir / "manifest.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"{run_dir} is not an evalgen run directory: it has no manifest.json")
+    try:
+        manifest = read_json(path)
+    except ValueError as exc:  # not UTF-8, or not JSON
+        raise RunDirError(f"{path} is not JSON ({exc})") from None
+    if not isinstance(manifest, dict) or not set(MANIFEST_KEYS) <= set(manifest):
+        raise RunDirError(f"{path} is not the manifest of an evalgen run")
+    return manifest
 
 
 def plain_number(x: float | int) -> str:
