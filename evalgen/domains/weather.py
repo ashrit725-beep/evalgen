@@ -85,7 +85,7 @@ TEMPERATURE = FieldSpec(
     key="temp", label="temperature", canonical_unit="°C", units=(CELSIUS, FAHRENHEIT, KELVIN), decimals=1,
     answer_type="weather_temperature", tolerance=(0.3, 0.0), margin=(0.3, 0.0), rank_gap=0.5,
     quantiles=(0.2, 0.8), threshold_step=0.5, filters=("at_least", "below"),
-    terminals=("argmax", "rank", "max", "min", "time_of_max"), signed=True, correctable=True, jitter=1.5,
+    terminals=("argmax", "rank", "max", "time_of_max"), signed=True, correctable=True, jitter=1.5,
     coarse_step=1.0,
 )
 # Sustained winds run from calm to about 50 km/h: whole-unit thresholds (half m/s), moved up to 3 km/h,
@@ -98,10 +98,11 @@ WIND = FieldSpec(
 )
 # Sea-level pressures lie within a few tens of hectopascals of 1016: whole hPa (or 0.05 inHg), moved up
 # to 1.5 hPa, clear of every observation by 0.3 hPa, which covers a threshold restated to 0.01 inHg.
+# Pressure plays no role in P01-P12, so it is only ever a filter of the twins: no question ends in it.
 PRESSURE = FieldSpec(
     key="pressure", label="pressure", canonical_unit="hPa", units=(HPA, INHG), decimals=1,
     answer_type="weather_pressure", tolerance=(0.5, 0.0), margin=(0.3, 0.0), rank_gap=1.0,
-    quantiles=(0.2, 0.8), threshold_step=1.0, filters=("at_least", "below"), terminals=("max", "min"),
+    quantiles=(0.2, 0.8), threshold_step=1.0, filters=("at_least", "below"), terminals=(),
     jitter=1.5,
 )
 
@@ -236,18 +237,12 @@ LEXICON = Lexicon(
                        "ID."),
         "max(temp)": ("What was the highest temperature, in {unit}, among the {records}? {rounding}",
                       "Among the {records}, how warm was the warmest one, in {unit}? {rounding}"),
-        "min(temp)": ("What was the lowest temperature, in {unit}, among the {records}? {rounding}",
-                      "Among the {records}, how cold was the coldest one, in {unit}? {rounding}"),
         "time_of_max(temp)": ("At what time (UTC, HH:MM) was the warmest of the {records} recorded?",
                               "When, in UTC (HH:MM), was the highest temperature among the {records} observed?"),
         "max(wind)": ("What was the highest wind speed, in {unit}, among the {records}? {rounding}",
                       "Among the {records}, how strong was the strongest wind, in {unit}? {rounding}"),
         "min(wind)": ("What was the lowest wind speed, in {unit}, among the {records}? {rounding}",
                       "Among the {records}, how light was the lightest wind, in {unit}? {rounding}"),
-        "max(pressure)": ("What was the highest pressure, in {unit}, among the {records}? {rounding}",
-                          "Among the {records}, what was the highest pressure in {unit}? {rounding}"),
-        "min(pressure)": ("What was the lowest pressure, in {unit}, among the {records}? {rounding}",
-                          "Among the {records}, what was the lowest pressure in {unit}? {rounding}"),
         "nearest_to": ("Which of the {records} was closest to {place}? Give its observation ID.",
                        "Among the {records}, give the observation ID of the one nearest to {place}."),
         "nearest_distance": ("How far from {place}, in {unit}, is the closest of the {records}? {rounding}",
@@ -260,11 +255,13 @@ LEXICON = Lexicon(
 )
 
 # Relay feeds repeat a station's observation: under its ID, or under a reference of their own with a
-# note naming it. A phantom is withdrawn for a reason a station really fails for, and a temperature is
-# corrected as a corrected METAR would be.
+# note naming it. No note says "relay", which the rules give a meaning of their own ("a forwarded or
+# relayed report ... counts, once"): a re-report noted "relay of" an ID would read as a report that counts
+# on its own, where rule 1 makes it that observation. A phantom is withdrawn for a reason a station
+# really fails for, and a temperature is corrected as a corrected METAR would be.
 TRAP_VOCAB = TrapVocab(
     rereporting_sources=("MADIS", "NOAAPORT", "AWOSNET"),
-    duplicate_notes=("same observation as", "relay of", "mirror of"),
+    duplicate_notes=("same observation as", "duplicate of", "mirror of"),
     retraction_reasons=("sensor fault", "test transmission", "frozen sensor", "maintenance in progress",
                         "garbled transmission"),
     retraction_notices=("RETRACTED", "withdrawn", "cancelled"),

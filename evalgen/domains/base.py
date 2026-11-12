@@ -69,7 +69,11 @@ class FieldSpec(ExactValues):
     quantiles: tuple[float, float]
     threshold_step: float
     # Generic filter and terminal kinds that apply to it. The order of `filters` is the order in which
-    # twin templates sample them (see questions.filter_ops).
+    # twin templates sample them (see questions.filter_ops). Questions end only in the terminals that
+    # P01-P12 end in on the primary and secondary fields, since a twin keeps its template's terminal: the
+    # argmax, max and time_of_max of the primary field, and its rank where records have a location (P09
+    # is spatial); the max and min of the secondary field. A field declares exactly the terminals its
+    # role is asked, and Domain.validate refuses any other, which no question would ever end in.
     filters: tuple[str, ...]  # "at_least", "below"
     terminals: tuple[str, ...]  # "argmax", "rank", "max", "min", "time_of_max"
     qualifier: str | None = None  # qualifier stored with the value and revised with it: "mag_type"
@@ -435,6 +439,11 @@ class Domain:
     # Set by a domain whose surface words (record noun, labels, unit words, ID prefix, group names) are
     # drawn per instance; it implements draw_surface, and bind applies the drawn Surface.
     has_surface: bool = False
+    # Every group label such a surface may draw, besides `group_label`. The scorer reads a group answer by
+    # the type registered when the domain was loaded (answer_types), never by an instance, so that type
+    # lets an answer end in any of them, as it may end in `group_label` ("Nevada region" is "Nevada");
+    # bind refuses a surface whose group label is not one of them, or that names a group with one.
+    surface_group_labels: tuple[str, ...] = ()
     # Set on the copy that bind returns: the surface it is bound to, and the domain it was bound from.
     surface: Surface | None = None
     unbound: Domain | None = None
@@ -463,11 +472,19 @@ class Domain:
     def answer_types(self) -> tuple[AnswerType, ...]:
         """How the scorer reads the answers about this domain's records: one type per numeric field
         (with the field's tolerance, and its tolerance in every other unit), the type of a record ID
-        and the type of a group. Registering the domain registers them (see evalgen.domains)."""
+        and the type of a group, whose answers may end in one of the domain's group words
+        (group_words). Registering the domain registers them (see evalgen.domains)."""
         numbers = tuple(AnswerType(spec.answer_type, "number", spec.tolerance, unit_tolerance=spec.unit_tolerances())
                         for spec in self.fields)
         return (*numbers, AnswerType(self.id_answer_type, "id", id_pattern=self.id_pattern),
-                AnswerType(self.group_answer_type, "group", suffix=self.group_label.casefold()))
+                AnswerType(self.group_answer_type, "group", suffixes=self.group_words()))
+
+    def group_words(self) -> tuple[str, ...]:
+        """The words a group answer may end in, in lower case: the domain's own group label, then every one
+        a surface may draw (surface_group_labels). A bound copy gives those of the domain it was bound
+        from, so that its group type is the one that was registered."""
+        domain = self.unbound or self
+        return tuple(dict.fromkeys(label.casefold() for label in (domain.group_label, *domain.surface_group_labels)))
 
     def validate(self) -> None:
         """Check, before anything is built from the domain, that it is complete and consistent:
@@ -479,8 +496,9 @@ class Domain:
           - it has two status words and every kind of trap word that digests print;
           - each op name is the 0.2.0 alias of the kind and field it names (no other name runs),
             reading that field in the domain's units and answering with the domain's types;
-          - P01-P12 bind to its primary and secondary fields, and its lexicon words every filter a
-            template may use and every terminal the templates end in;
+          - P01-P12 bind to its primary and secondary fields, its fields declare no terminal that no
+            template ends in (no question would end in it), and its lexicon words every filter a template
+            may use and every terminal the templates end in;
           - its answer types agree with each other and with the registered ones.
         Raises ValueError naming every problem."""
         missing = [name for name in REQUIRED_ATTRIBUTES if not hasattr(self, name)]
@@ -529,7 +547,7 @@ class Domain:
 
     def _op_problems(self) -> list[str]:
         from ..ops import ALIASES, KINDS  # imported here: both modules import this one
-        from ..questions import filter_ops, public_templates
+        from ..questions import filter_ops, op_name, public_templates
 
         problems = []
         keys = {spec.key for spec in self.fields}
@@ -552,6 +570,13 @@ class Domain:
             public = public_templates(self)
         except (KeyError, ValueError) as exc:
             return problems + [f"P01-P12 do not bind to its fields ({exc})"]
+        # A twin keeps its template's terminal, so P01-P12 end in every terminal a question can end in.
+        declared = {op_name(self, kind, spec.key) for spec in self.fields for kind in spec.terminals}
+        unasked = sorted(declared - {t.terminal for t in public})
+        if unasked:
+            problems.append(f"no question ends in {', '.join(unasked)}, which its fields declare as terminals: "
+                            "questions end in the argmax, max and time_of_max of the primary field, its rank where "
+                            "records have a location, and the max and min of the secondary field")
         unworded = sorted({op for op in filter_ops(self) if op not in self.lexicon.filters}
                           | {t.terminal for t in public if t.terminal not in self.lexicon.questions})
         if unworded:
@@ -583,9 +608,10 @@ class Domain:
         binding: a domain without surface words words every instance alike.
 
         Raises ValueError when the bound domain would not hold together: a word for a field it does
-        not have, an ID prefix it has none to replace, two groups or two sources renamed alike, a unit
-        whose answers the scorer would read with the wrong tolerance, or a guard margin that no longer
-        covers the rounding of a threshold restated in another unit."""
+        not have, an ID prefix it has none to replace, two groups or two sources renamed alike, a group
+        word or a group name whose answers the scorer would misread, a unit whose answers it would read
+        with the wrong tolerance, or a guard margin that no longer covers the rounding of a threshold
+        restated in another unit."""
         if surface is None:
             return self
         if self.unbound is not None:  # a surface replaces another: bind the domain itself
@@ -616,6 +642,18 @@ class Domain:
                     for key in sorted((set(drawn.labels) | set(drawn.units)) - keys)]
         if drawn.id_prefix is not None and self.id_prefix is None:
             problems.append("the surface draws an ID prefix, but its IDs have no prefix to replace")
+        # The scorer strips one group word from a group answer, and from the key alike: a word it does not
+        # know stays on an answer ("Nerm Halt berth"), and a name that ends in one it knows loses it
+        # ("Tolva Basin" is read as "Tolva", so "Tolva Basin zone" would not match it).
+        words = self.group_words()
+        if drawn.group_label is not None and drawn.group_label.casefold() not in words:
+            problems.append(f"the surface calls its groups {drawn.group_label!r}, a word the scorer does not strip "
+                            "from group answers: declare it among the domain's surface_group_labels")
+        for name in drawn.groups.values():
+            ending = next((word for word in words if " ".join(name.casefold().split()).endswith(" " + word)), None)
+            if ending is not None:
+                problems.append(f"the surface names a group {name!r}, which ends in {ending!r}, a group word the "
+                                "scorer strips from group answers")
         for name in ("groups", "sources"):
             names = list(getattr(drawn, name).values())
             if len(set(names)) != len(names):
@@ -686,6 +724,12 @@ class Domain:
         """The reading rules printed in every prompt: the genre-neutral rules of every record domain,
         in this domain's words (``record_rules``). A domain with rules of its own overrides it."""
         return record_rules(self)
+
+    def report_time(self) -> str:
+        """What the time of one of its reports is, as the rule on times words it ("A report's time is
+        ..."): when its record was recorded. A domain whose records have a time of another kind (the
+        moment of a close approach) says so instead, so that its rules define a report's time once."""
+        return f"when its {self.noun} was recorded"
 
     @property
     def qualifier_keys(self) -> dict[str, str]:
@@ -841,11 +885,39 @@ RULES_WIDTH = 100  # record_rules wraps each rule at this many columns
 # the earthquake domain adds them to the 0.2.0 rules in its non-legacy prompts.
 REPEAT_RULE = ("A quoted or read-back repeat of a report or notice printed elsewhere in the digest is not a new "
                "report or notice. A forwarded or relayed report or notice is not a repeat: it counts, once.")
+# What a notice is, in any kind of document, where a notice can look like any other message (a forwarded
+# email, a pinned chat message, a footnote, an amendment form, a broadcast), and wherever it is printed:
+# most genres print some notices before the report they name (a chat log's pinned board heads the log),
+# so "a message about an earlier report" would invite a reader to drop them. record_rules opens its rule
+# on corrections with it; the earthquake domain opens rule 9 with it off the legacy path.
+NOTICE_RULE = ("A notice is a message about a report, not a report itself, and it applies wherever in the digest it "
+               "is printed, before or after that report.")
+# The classic genre's wire lines ("ukmo WIRE [2026-04-12 06:12:19 UTC] North Sea ...", and the 0.2.0 ones
+# of earthquakes) give their record's time in brackets after the source, where other genres print a
+# message's own time stamp ("[06:35] relaybot: ..."). Beside the rule on message times, the bracket could
+# pass for the time the wire relayed the report, which would leave the report with no time of its own.
+WIRE_RULE = "A WIRE line is a report, not a message: the time in its brackets is the report's time."
 
 
 def message_time_rule(record: str) -> str:
-    """The rule on message times, about `record` ("a weather observation", "an earthquake")."""
-    return f"The time at which a message was sent, forwarded or relayed is never the time of {record}."
+    """The rule on message times, about `record` ("a weather observation", "an earthquake"), and on the
+    one report line whose time could pass for a message's (WIRE_RULE)."""
+    return f"The time at which a message was sent, forwarded or relayed is never the time of {record}. {WIRE_RULE}"
+
+
+# Words whose first letter does not give their article: a vowel read as a consonant ("a unit"), or a
+# silent h ("an hour").
+_A_BEFORE = ("unit", "union", "unique", "univers", "uniform", "use", "usual", "util", "one", "once", "eu", "ewe")
+_AN_BEFORE = ("hour", "honest", "honor", "honour", "heir")
+
+
+def indefinite(word: str) -> str:
+    """The indefinite article before `word`: "an" before a vowel ("an outpost", "an hour"), else "a" ("a
+    unit"). Domains name their words freely and surfaces draw them, so the rules never assume one."""
+    folded = word.casefold()
+    if folded.startswith(_AN_BEFORE):
+        return "an"
+    return "an" if folded[:1] in ("a", "e", "i", "o", "u") and not folded.startswith(_A_BEFORE) else "a"
 
 
 def numbered_rules(rules: Sequence[str], start: int = 1) -> str:
@@ -861,34 +933,38 @@ def record_rules(domain: Domain) -> str:
     record, how re-reports, corrections and retractions read, units, positions and times, and that
     nothing else in a digest carries data. They are genre-neutral: they say what a notice, a note, a
     repeat, a forward and a message time are in any kind of document, and they quote every phrase the
-    domain's notices print (its trap vocabulary), so that no notice is a gotcha."""
+    domain's notices print (its trap vocabulary), so that no notice is a gotcha. A report's time is
+    defined once, as the domain words it (``Domain.report_time``), and every article fits the word it
+    stands before, whatever words a domain or a drawn surface gives (``indefinite``)."""
     noun, id_label, source, group = domain.noun, domain.id_label, domain.source_label, domain.group_label
     final, draft = (f'"{status}"' for status in domain.statuses)
+    a_final, a_draft = (indefinite(status) for status in domain.statuses)
     vocab = domain.trap_vocab
     position = (" Positions are latitude then longitude in decimal degrees; signed values are negative for south "
                 "and west. Distances are great-circle distances on a sphere of radius 6371 km."
                 if domain.has_location else "")
     rules = (
-        f"Every {noun} has exactly one {id_label}: the ID printed on its {final} report. A {noun} may appear in "
-        f"several reports: a {draft} report from its own {source}, or a re-report from another {source}, either "
-        f"under the same {id_label} or under its own reference with a note naming the {id_label} it repeats. "
-        f"Reports with the same {id_label}, or that name it in such a note, are the same {noun}. Count each {noun} "
-        f"once and refer to it by its {id_label}.",
+        f"Every {noun} has exactly one {id_label}: the ID printed on its {final} report. "
+        f"{indefinite(noun).capitalize()} {noun} may appear in several reports: {a_draft} {draft} report from its "
+        f"own {source}, or a re-report from another {source}, either under the same {id_label} or under its own "
+        f"reference with a note naming the {id_label} it repeats. Reports with the same {id_label}, or that name it "
+        f"in such a note, are the same {noun}. Count each {noun} once and refer to it by its {id_label}.",
         f"If reports of the same {noun} disagree, use the values from its {final} report: {draft} values are "
         "superseded.",
-        "A notice is a message about an earlier report, not a report itself. A correction (a CORRECTION notice, a "
-        f"notice saying that a value was revised, or any notice saying {_alternatives(vocab.correction_notices)}) "
-        f"replaces the stated value for the named {noun}, even on a {final} report.",
+        f"{NOTICE_RULE} A correction (a CORRECTION notice, a notice saying that a value was revised, or any notice "
+        f"saying {_alternatives(vocab.correction_notices)}) replaces the stated value for the named {noun}, even on "
+        f"{a_final} {final} report.",
         f"A retraction (a RETRACTION notice, a notice saying that a report was not a real {noun}, or any notice "
         f"saying {_alternatives(vocab.retraction_notices)}) means the named report was not a real {noun}: ignore "
         "that report completely.",
         "Each value may be given in any unit the glossary lists for its field: convert it as the glossary says. "
         "Values are compared as plain numbers once rules 2 and 3 have settled them." + position,
-        "Times may be in UTC or in another time zone with its UTC offset stated. A report's time is when its "
-        f"{noun} was recorded; a notice's time is when the notice was issued. {message_time_rule(f'a {noun}')} A "
-        "time window includes its start and excludes its end.",
+        "Times may be in UTC or in another time zone with its UTC offset stated. A report's time is "
+        f"{domain.report_time()}; a notice's time is when the notice was issued. "
+        f"{message_time_rule(f'{indefinite(noun)} {noun}')} A time window includes its start and excludes its end.",
         REPEAT_RULE,
-        f"A {group} in a question is the {group} printed on the report, matched exactly as written.",
+        f"{indefinite(group).capitalize()} {group} in a question is the {group} printed on the report, matched "
+        "exactly as written.",
         "Lines that are neither reports nor notices (headers, section titles, status messages, editor's notes, "
         "reminders, greetings, signatures) carry no data and change nothing.",
     )

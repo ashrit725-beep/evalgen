@@ -89,7 +89,8 @@ RELATIVE_VELOCITY = FieldSpec(
     decimals=2, answer_type="neo_velocity", tolerance=(0.01, 0.002), margin=(0.02, 0.01),
     rank_gap=0.25,  # the fastest approach beats the next by a quarter km/s, whatever units they are given in
     quantiles=(0.2, 0.8), threshold_step=0.5, positive_threshold=True,
-    filters=("at_least", "below"), terminals=("argmax", "rank", "max", "time_of_max"), correctable=True,
+    filters=("at_least", "below"), correctable=True,
+    terminals=("argmax", "max", "time_of_max"),  # no rank: the one rank template, P09, is spatial
 )
 ABSOLUTE_MAGNITUDE = FieldSpec(
     key="h", label="absolute magnitude", canonical_unit=None, units=(), decimals=3,
@@ -128,9 +129,6 @@ LEXICON = Lexicon(
         "argmax(v_rel)": ("Among the {records}, which one had the highest relative velocity? Give its approach ID.",
                           "Which of the {records} was the fastest relative to the body it passed? Give its approach "
                           "ID."),
-        "rank(v_rel)": ("Among the {records}, which one had the {nth}-highest relative velocity? Give its approach ID.",
-                        "Rank the {records} by relative velocity, fastest first: which one is {nth}? Give its approach "
-                        "ID."),
         "max(v_rel)": ("What was the highest relative velocity, in {unit}, among the {records}? {rounding}",
                        "Among the {records}, how fast was the fastest one, in {unit}? {rounding}"),
         "time_of_max(v_rel)": ("At what UTC time of day (HH:MM) did the fastest of the {records} make its closest "
@@ -167,9 +165,11 @@ CHATTER = (
     "Objects discovered after compilation will be listed in the next edition.",
 )
 
+# What a report's time is, in the rule on times that every record domain shares (record_rules, rule 6), in
+# place of "when its close approach was recorded", which could be read as when a catalogue logged it.
+REPORT_TIME = "the time of its close approach, the moment the object passed closest to the body"
 # What these records need beyond the rules every record domain shares (record_rules).
 RULES = (
-    "The time of a report is the time of its close approach: the moment the object passed closest to the body.",
     "An approach ID is an object's designation in lower case without its spaces, then \"-ca\" and a number that "
     "tells that object's close approaches apart: 2026vk2-ca1 and 2026vk2-ca2 are two close approaches of the object "
     "2026 VK2 (one to Earth and one to the Moon, say), so they are two records, each counted on its own. A re-report "
@@ -510,9 +510,14 @@ class Neo(Domain):
                 return ref
         raise ValueError(f"no fresh designation like {example!r} is left")
 
+    def report_time(self) -> str:
+        """A report's time, as the shared rule on times gives it: the moment of its close approach."""
+        return REPORT_TIME
+
     def rules_text(self) -> str:
-        """The rules every record domain shares (record_rules), then what close approaches need besides:
-        what their times are, how approach IDs tell an object's approaches apart, and what the fields mean."""
+        """The rules every record domain shares (record_rules), whose rule on times says what the time of a
+        close approach is (report_time), then what close approaches need besides: how approach IDs tell an
+        object's approaches apart, and what the fields mean."""
         shared = record_rules(self)
         last = max(int(number) for number in re.findall(r"^(\d+)\. ", shared, flags=re.MULTILINE))
         extra = [textwrap.fill(f"{number}. {rule}", width=RULES_WIDTH, subsequent_indent=" " * len(f"{number}. "),

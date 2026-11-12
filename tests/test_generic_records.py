@@ -28,7 +28,8 @@ from evalgen.models import Instance, Notice, Question, Rendering, Trap
 from evalgen.ops import Step, execute, rows_after_filters, terminal_step
 from evalgen.pipeline import GenerateConfig, compose_instance, sample_events
 from evalgen.questions import (Context, _draw_threshold, _draw_window, compose_new_templates, fingerprint, fmt_num,
-                               guards_ok, phrase_question, public_templates, round_to_step, rounding_text)
+                               guards_ok, op_name, parse_op, phrase_question, public_templates, round_to_step,
+                               rounding_text)
 from evalgen.report import TRAP_KINDS, answer_type_order, load_instances, model_metrics, trap_kinds
 from evalgen.rules import Mishandle
 from evalgen.scoring import get_answer_type, is_correct, normalize
@@ -78,7 +79,7 @@ def test_a_tolerance_holds_in_every_unit_an_answer_can_be_asked_in(toys):
     def variant(*fields):
         return type("Variant", (module.Toy,), {"fields": fields})("variant", located=False)
 
-    temperature, wave = module.TEMPERATURE, module.WAVE
+    temperature, wave = module.FLAT_TEMPERATURE, module.WAVE  # without a location: no rank
     kilometres = Unit("km", "kilometres", 1000.0, decimals=5)
     cases = [
         (variant(temperature, replace(wave, tolerance_scales=False, units=(module.METRE, kilometres))),
@@ -94,6 +95,40 @@ def test_a_tolerance_holds_in_every_unit_an_answer_can_be_asked_in(toys):
                     units=(module.CELSIUS, own)), wave).validate()
     depth = EARTHQUAKES.field("depth")  # 0.2.0 depths keep one tolerance in km and in miles
     assert not depth.tolerance_scales and depth.unit_tolerances() == {}
+
+
+def test_a_domain_declares_only_the_terminals_its_questions_end_in(toys):
+    """Questions end in the terminals that P01-P12 end in on the primary and secondary fields (a twin keeps
+    its template's terminal), and in no rank where records have no location, since P09 is spatial. A field
+    that declares another terminal promises questions that are never asked (weather declared the lowest
+    temperature and both extremes of pressure, neo and invented a rank), so validate refuses it, and a
+    bound surface is checked alike."""
+    module = toys.module
+    temperature, wave = module.TEMPERATURE, module.WAVE
+
+    def variant(*fields, located: bool):
+        return type("Variant", (module.Toy,), {"fields": fields})("variant", located=located)
+
+    variant(temperature, wave, located=True).validate()
+    flat = copy.copy(toys.flat)
+    flat.fields = (temperature, wave)  # the rank of the located toy's temperature, without a location
+    cases = [
+        (variant(replace(temperature, terminals=(*temperature.terminals, "min")), wave, located=True), "min(temp)"),
+        (variant(temperature, replace(wave, terminals=("max", "min", "argmax")), located=True), "argmax(wave)"),
+        (flat, "rank(temp)"),
+    ]
+    for domain, op in cases:
+        with pytest.raises(ValueError, match=re.escape(f"no question ends in {op}, which its fields declare")):
+            domain.validate()
+    unbound = copy.copy(toys.dressed)
+    unbound.fields = (temperature, wave)
+    with pytest.raises(ValueError, match=re.escape("no question ends in rank(temp)")):
+        unbound.bind(toys.dressed.draw_surface(random.Random(2)))
+    for domain in (*(get_domain(name) for name in ("earthquakes", "weather", "neo", "invented")), toys.toy,
+                   toys.flat, toys.dressed):
+        declared = {op_name(domain, kind, spec.key) for spec in domain.fields for kind in spec.terminals}
+        asked = {t.terminal for t in public_templates(domain)}
+        assert declared == {op for op in asked if parse_op(op)[1] is not None}, domain.name
 
 
 # ----------------------------------------------------------------------------------- mixes
@@ -458,6 +493,9 @@ def test_binding_refuses_a_surface_that_does_not_hold_together(toys):
         ({**surface, "units": {"wave": [module.METRE.to_dict(), replace(module.FOOT, decimals=0).to_dict()]}},
          "the wave margin 0.08 is smaller than the rounding of a threshold restated in ft"),
         ({**surface, "units": {"temp": []}}, "the surface gives temp no units, which it has"),
+        ({**surface, "group_label": "trench"}, "calls its groups 'trench', a word the scorer does not strip"),
+        ({**surface, "groups": {**surface["groups"], "North Sea": "Tolva Basin"}},
+         "names a group 'Tolva Basin', which ends in 'basin', a group word the scorer strips"),
         (wordy.to_dict(), "its lexicon has no wording for"),
         ({**surface, "colour": "teal"}, "a surface has no colour"),
     ]
@@ -469,7 +507,7 @@ def test_binding_refuses_a_surface_that_does_not_hold_together(toys):
     with pytest.raises(ValueError, match="its IDs have no prefix to replace"):
         prefixless.bind({"id_prefix": "zz-"})
     relative = copy.copy(dressed)  # a field whose tolerance is relative only is scored right in any drawn unit
-    relative.fields = (module.TEMPERATURE, replace(module.WAVE, tolerance=(0.0, 0.02)))
+    relative.fields = (module.FLAT_TEMPERATURE, replace(module.WAVE, tolerance=(0.0, 0.02)))
     bound = relative.bind({**surface, "units": {"wave": [module.METRE.to_dict(), yard.to_dict()]}})
     assert bound.units["wave"][1] == yard
     renamed = dressed.bind(surface)

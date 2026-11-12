@@ -33,7 +33,7 @@ A form is drawn in one of four frames, per form, from the rendering's preset:
     numbered  "REPORT FORM OB-11 · no. 4417", numbered fields ("2. Reading ID: by-33617") and
               "--- end of form 4417 ---"
     dotted    "OBSERVATION REPORT FORM 40-C   Ref. no. 04440/26   Page 1 of 1", dot leaders
-              ("Duplicate note .............. relay of by-50562"), units in the labels, latitude and
+              ("Duplicate note .............. duplicate of by-50562"), units in the labels, latitude and
               longitude on lines of their own
 
 Every word of a form is the glossary's (record noun, ID label, source and group labels, field labels,

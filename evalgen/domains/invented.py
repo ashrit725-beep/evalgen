@@ -36,7 +36,9 @@ draw: the scorer registers a field's tolerance once, when the domain is loaded, 
 symbols it has never seen. A unit drawn for an instance answers to as many places as keep its last
 digit no coarser than a stored step, and its thresholds are rounded to a step near the field's own
 (``drawn_unit``), which keeps every guard margin above the rounding of a threshold restated in
-another unit.
+another unit. In the same way, the group type it registers lets an answer end in any group label a
+surface can draw (``surface_group_labels``): "Nerm Halt berth" is read as "Nerm Halt" in an instance
+that calls its groups berths, as "Nevada region" is read as "Nevada".
 
 The canonical world (``DEPOTS``, ``SOURCES``, IDs "iv-NNNNN") is what the snapshot stores; a surface
 renames its groups and sources and replaces the ID prefix (Surface.dress). Records have no location,
@@ -53,7 +55,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 from ..units import Unit
-from .base import (RULES_WIDTH, Domain, FieldSpec, Lexicon, Record, Surface, TrapVocab, record_rules,
+from .base import (RULES_WIDTH, Domain, FieldSpec, Lexicon, Record, Surface, TrapVocab, indefinite, record_rules,
                    standard_lexicon)
 
 # ---------------------------------------------------------------------------- the canonical world
@@ -108,7 +110,7 @@ PRIMARY = FieldSpec(
     key="f1", label="gross heft", canonical_unit="vk", units=(HEFT, TALLEN), decimals=1,
     answer_type="invented_f1", tolerance=(0.0, 0.005), margin=(0.5, 0.004), rank_gap=2.0, quantiles=(0.25, 0.85),
     threshold_step=5.0, jitter=4.0, positive_threshold=True, filters=("at_least", "below"),
-    terminals=("argmax", "rank", "max", "time_of_max"), correctable=True,
+    terminals=("argmax", "max", "time_of_max"), correctable=True,  # no rank: the one rank template is spatial
 )
 SECONDARY = FieldSpec(
     key="f2", label="dwell time", canonical_unit="mr", units=(DWELL, SKELL), decimals=1,
@@ -388,6 +390,7 @@ class Invented(Domain):
     trap_vocab = TRAP_VOCAB
     chatter = CHATTER
     has_surface = True
+    surface_group_labels = GROUP_LABELS  # the scorer strips any of them from a group answer
 
     def __init__(self) -> None:
         self.lexicon = self.surface_lexicon()
@@ -498,11 +501,11 @@ class Invented(Domain):
         stored value."""
         rules = record_rules(self)
         number = len(re.findall(r"^\d+\. ", rules, flags=re.MULTILINE)) + 1
-        rule = (f"The glossary is the only definition of the words in this digest: what a {self.noun} is, what each "
-                "field label means, and every unit with its conversion. A value written in a unit other than its "
-                "field's stored unit stands for that value converted into the stored unit and rounded to the decimal "
-                "places the glossary gives for the field; no value is written so that it converts to exactly halfway "
-                "between two of them.")
+        rule = (f"The glossary is the only definition of the words in this digest: what {indefinite(self.noun)} "
+                f"{self.noun} is, what each field label means, and every unit with its conversion. A value written "
+                "in a unit other than its field's stored unit stands for that value converted into the stored unit "
+                "and rounded to the decimal places the glossary gives for the field; no value is written so that it "
+                "converts to exactly halfway between two of them.")
         wrapped = textwrap.fill(f"{number}. {rule}", width=RULES_WIDTH, subsequent_indent=" " * (len(str(number)) + 2),
                                 break_long_words=False, break_on_hyphens=False)
         return rules + wrapped + "\n"
