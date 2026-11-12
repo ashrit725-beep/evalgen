@@ -118,8 +118,10 @@ A plugin is given by its path (relative to the config) and the SHA-256 of its by
 alone, as a plain string.
 
 `generate --private-config` checks the config whole before it writes anything. It needs the three
-required keys, distinct names that each appear in one list only, and names the registries know
-once the plugins are loaded. The config is read strictly: a file that gives a key twice in one JSON
+required keys, distinct names that each appear in one list only, and names that evalgen or one of the
+config's own plugins defines once they are loaded (a name that the process knows only because a
+caller, or another config's plugin, registered it could not regenerate the run in another process).
+The config is read strictly: a file that gives a key twice in one JSON
 object is malformed (JSON readers keep one of the two values, so such a file could show one config
 and verify as another), and so is a plugin whose registry refuses its entry, for example one that
 takes a built-in name such as `earthquakes` or `classic`. Both stop `generate` with `error: ...`
@@ -156,8 +158,12 @@ commitment: `generate` and every later step check its bytes before any of it run
 whose bytes differ, so a held-out domain or genre cannot change once the commitment is published,
 and what runs is exactly the bytes that were checked (compiled from them, with no bytecode cache read
 or written beside the plugin). A plugin given by its path alone is committed to by that path only:
-the manifest records its SHA-256, a later step loads a changed file with a warning and lists it in
-`report.json` (`plugins_changed`), and only a regeneration of the revealed run shows what it was.
+the manifest records the SHA-256 of the bytes that ran, a later step loads a changed file with a
+warning and lists it in `report.json` (`plugins_changed`), and only a regeneration of the revealed
+run shows what it was. A process runs one version of each plugin: once it has run a plugin file, a
+run or a step that would load that file with other bytes (it was edited since) stops with
+`error: ...`, pinned or not, rather than run the old code under the new bytes' name, and a new
+process loads the new bytes.
 Regenerating the run with the same evalgen code, the revealed seed, mix and config, and its plugins
 at the same relative paths, rebuilds the same instances and prompts byte for byte.
 
@@ -166,9 +172,9 @@ at the same relative paths, rebuilds the same instances and prompts byte for byt
 step in a new process (`run`, `score`, `report`, `resolve`) loads them only from the config that
 the evaluator passes with `--private-config`, after checking that config against the run's
 commitment; within one process, a later step registers again the plugins that the process already
-ran for that config, without running any of their code again. evalgen never executes a file that a
-run directory names by itself, so reporting on a run received from someone else runs none of its
-code.
+ran for that config, as they ran, without running any of their code again. evalgen never executes a
+file that a run directory names by itself, so reporting on a run received from someone else runs
+none of its code.
 
 ---
 
@@ -718,8 +724,8 @@ exact inverse of `render`).
 | mix | instances come from |
 |---|---|
 | `legacy` (the default) | earthquakes in the classic genre, on the 0.2.0 seed paths: the 0.2.0 run. It takes no private config |
-| `random` | every domain, in every genre. Without a private config, that is every registered domain and genre (built-ins in module order, then plugins), all public; with one, exactly the domains and genres it lists, with their splits |
-| a list, e.g. `weather,neo:email,invented:table` | the entries named: `domain:genre`, or a bare domain, in any genre (with a config, any genre it lists). With a config, the list may name only what the config lists |
+| `random` | every domain, in every genre. Without a private config, that is every built-in domain and genre, all public, and never a plugin's, even one that the process has loaded; with one, exactly the domains and genres it lists, with their splits |
+| a list, e.g. `weather,neo:email,invented:table` | the entries named: `domain:genre`, or a bare domain, in any built-in genre (with a config, any genre it lists). With a config, the list may name only what the config lists. Without one, it may also name an entry that a caller of the Python API registered itself, but not one that a private run config loaded into the process |
 
 A mix that leaves a choice draws each instance from `seedlog.rng("instance", i, "mix")`, a seed path
 that no legacy run creates. It draws the instance's domain (every domain of the mix alike), then the
@@ -727,12 +733,21 @@ genre of its original rendering (every genre allowed for that domain alike), the
 variant: one other than the original's whenever the mix allows one, every other genre in turn
 before any of them twice. A mix of one domain and one genre draws nothing.
 
+Before anything is drawn, what a mix allows is put in a canonical order: the built-in domains and
+genres in module order, then those of the config's plugins in the config's plugin order (and any
+other entry that a list names, by name). So `weather,neo` and `neo,weather` are one mix and draw one
+run, and a list that allows a domain in a genre twice (`weather,weather:email`: a bare domain is in
+every genre) is refused. Nothing that a process loaded for an earlier run changes what a later run
+may draw, or in which order. (Before this rule, a list drew in the order it named its entries, so a
+run of a list written out of that order by an earlier version draws differently now.)
+
 Each domain keeps its own snapshot (`snapshot/<domain>/` in a run of several), its own twin
 templates (seed path `templates/new/<domain>`) and its own balance of the template pools, so the
 public and new pools stay matched within every domain. No concrete question repeats in the run.
 Instances record their domain, its split and any surface words, and renderings record their genre.
-The manifest records the mix, the inventory, the config's commitment and the plugins, and, for a
-run of several domains, one snapshot per domain; legacy runs record none of these. A run off the
+The manifest records the mix in its canonical form, the inventory, the config's commitment and the
+plugins, and, for a run of several domains, one snapshot per domain; legacy runs record none of these
+(nor does `--mix " legacy "`, which is the legacy run). A run off the
 legacy path is named after its mix, as in `runs/random-synthetic-seed7`.
 
 ### Command-line options
@@ -1058,7 +1073,7 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
 
 **Mixes**
 
-* **Random draws depend on the registry.** Without a private config, `--mix random` draws from every
-  registered domain and genre in registry order, so adding a built-in domain or genre changes what a
-  seed draws in random mode. Legacy runs are unaffected, and a config fixes the inventory: a new
-  built-in that it does not list changes nothing.
+* **Random draws depend on the built-in set.** Without a private config, `--mix random` draws from
+  every built-in domain and genre in module order, and a bare domain from every built-in genre, so
+  adding a built-in domain or genre changes what a seed draws in those mixes. Legacy runs are
+  unaffected, and a config fixes the inventory: a new built-in that it does not list changes nothing.
