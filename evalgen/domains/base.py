@@ -438,6 +438,12 @@ class Domain:
     # Set on the copy that bind returns: the surface it is bound to, and the domain it was bound from.
     surface: Surface | None = None
     unbound: Domain | None = None
+    # Near twins: real records as close to each other as a re-report can be to its record (a station's
+    # next observation, an aftershock). Off the legacy path a digest draws, for `twin_share` of its
+    # records, the record of the snapshot with the same twin_key nearest in time, when it lies within
+    # `twin_seconds` (pipeline.sample_with_slots). None: the domain's records have no near twins.
+    twin_seconds: int | None = None
+    twin_share: float = 0.0
 
     @property
     def has_location(self) -> bool:
@@ -657,6 +663,31 @@ class Domain:
         """How much likelier than others a record is to be drawn into a digest (1: all alike)."""
         return 1.0
 
+    def twin_key(self, record: Any) -> Any:
+        """What a record's near twins share (see twin_seconds): by default its group and its place, so
+        a station's observations are each other's twins. None: the record has no twin."""
+        return (record.group, record.place)
+
+    def planted_value(self, spec: FieldSpec, value: float, like: float, peers: Sequence[float] = ()) -> float:
+        """A value of `spec` that the trap builders plant, `value`, written as a real report would write it,
+        never below zero unless the field is signed, and never -0.0. `like` is the real value it copies or
+        stands for (a re-report's record's), and `peers` the values of the same field that the same source
+        files in the digest. By default a source writes every value of a field to the same places, which
+        its values show: the most places of `like` and `peers` (one value alone can end in zeros by chance).
+        A domain whose precision belongs to the record (an object's H, a five-minute observation's whole
+        degrees) writes to `like`'s own places, and one whose real values lie on a coarser grid (whole knots,
+        hundredths of an inch) puts planted ones on it."""
+        places = max(stored_places(v, spec.decimals) for v in (like, *peers))
+        return round(value if spec.signed else max(0.0, value), places) + 0.0
+
+    def rereport_ref(self, record: Any, slot: Any, rng: random.Random, taken: set[str]) -> str:
+        """The reference of its own under which a source re-reports `record` in `slot`'s place (a record
+        drawn with the digest but not kept, filed by that source): by default the slot's own ID, which no
+        other line of the digest carries, so that a re-report's reference is a real ID of that source. A
+        domain whose IDs tell something about the record (an object's designation) mimics the record's
+        ID instead."""
+        return slot.id
+
     def glossary(self, surface: Mapping[str, Any] | None = None) -> Glossary:
         """The data dictionary that non-legacy prompts print, in the words of `surface` (a drawn
         Surface's dict; None: the domain's own words, or those of the surface it is bound to): what the
@@ -714,6 +745,15 @@ class Domain:
         """A RecordReport or Notice that a genre read from a digest, as this domain's digests hold it:
         the inverse of ``to_generic``."""
         return item
+
+
+def stored_places(value: float, decimals: int) -> int:
+    """The decimal places a stored value is written to: the fewest, up to `decimals`, that hold it
+    (15.0 has 0, 15.4 has 1, 21.35 has 2)."""
+    for places in range(decimals):
+        if round(value, places) == value:
+            return places
+    return decimals
 
 
 def _margin_problems(name: str, margin: float, units: Sequence[Unit], decimals: int) -> list[str]:

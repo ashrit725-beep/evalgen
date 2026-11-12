@@ -45,14 +45,14 @@ import itertools
 import math
 import random
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .domains.base import Domain, FieldSpec, Record, RecordReport
 from .domains.earthquakes import EARTHQUAKES, Earthquakes
 from .geo import COMPASS16, compass_point, destination, haversine_km, initial_bearing
 from .models import Event, Notice, Question, Report, Trap
-from .ops import EPS, DigestData, Step, canonical_threshold, execute
+from .ops import EPS, DigestData, Step, canonical_threshold, execute, passes, role
 from .questions import Context, guards_ok
 from .rules import Mishandle
 from .scoring import get_answer_type, normalize, same_answer
@@ -74,6 +74,12 @@ class TrapConfig:
     # guards, and a placement whose every reading does is preferred (see the module docstring). False is
     # the 0.2.0 placement, which the legacy path keeps.
     guarded: bool = False
+    # Off the legacy path: a load-bearing planted report must change an answer, so it lies in more of the
+    # questions' scopes (it passes all of a question's filters) than a real record does. So each trap draws
+    # the number of scopes a real record of the digest lies in, and prefers, among its placements of the
+    # same rank, one whose planted report lies in exactly that many (when it is none: one whose readings all
+    # hold, load-bearing or not). False on the legacy path, which draws nothing for it.
+    match_scope: bool = False
 
 
 @dataclass
@@ -82,6 +88,7 @@ class _Candidate:
     add_reports: list[Any]  # Reports, or the RecordReports of a generic domain
     add_notices: list[Notice]
     replace_at: tuple[int, Any] | None = None
+    slot: str | None = None  # the ID of the slot whose place its planted report takes
 
 
 @dataclass
@@ -98,6 +105,14 @@ class _Site:
     reports: list[Any]  # the digest so far: a conflict may replace a settling report in it
     taken: set[str]  # every ID in use, including the IDs drawn for candidates that were not chosen
     used: set[str]  # records that already carry a duplicate or a conflict
+    # Off the legacy path: the records drawn with the digest but not kept (pipeline.sample_with_slots), as
+    # generic Records, and the IDs of those whose place a chosen trap has taken; the digest's records as
+    # generic Records; and whether a record with a place stands at a fixed site (_fixed).
+    slots: list[Record] = field(default_factory=list)
+    filled: set[str] = field(default_factory=set)
+    records: list[Record] = field(default_factory=list)
+    fixed: bool = True
+    correction: bool = False  # the form the conflict being planted drew (_slot_conflict)
 
 
 # Optional, not "X | None": this alias is evaluated at import, and Python 3.9 has no such unions.
@@ -200,6 +215,36 @@ def _rank(readings: Sequence[_Reading], key: Mapping[str, Any], guarded: bool) -
 
 
 TOP, GUARDED_TOP = 2, 3  # the best rank of a placement, 0.2.0 and guarded: the first one found is taken
+
+
+class _Scopes:
+    """How many of the questions' scopes a row lies in: the questions all of whose filters it passes."""
+
+    def __init__(self, questions: Sequence[Question], units: Mapping[str, Sequence[Unit]]) -> None:
+        self.filters = [[raw for raw in q.chain if role(raw["op"]) == "filter"] for q in questions]
+        self.units = units
+
+    def count(self, row: Any) -> int:
+        return sum(all(passes(step, row, self.units) for step in steps) for steps in self.filters)
+
+
+def _planted(candidate: _Candidate) -> Any:
+    """The planted report of a placement: the one it adds, or the settling report it shows a wrong value on."""
+    return candidate.add_reports[0] if candidate.add_reports else candidate.replace_at[1]
+
+
+def _fit(rank: int, scope: int, target: int, top: int) -> tuple:
+    """How well a placement of `rank`, whose planted report lies in `scope` of the questions' scopes, fits a
+    trap that draws `target` (TrapConfig.match_scope): by rank first and then by the scope, except that for
+    a target of none, any placement whose readings all hold (rank 1 and up) and that lies in no scope wins."""
+    if target == 0:
+        return rank >= 1, scope == 0, rank, -scope
+    return rank, scope == target, -abs(scope - target)
+
+
+def _best_fit(target: int, top: int) -> tuple:
+    """The fit at which the search for a placement stops (_fit)."""
+    return (True, True, top, 0) if target == 0 else (top, True, 0)
 
 
 def score_traps(traps: list[Trap], questions: list[Question], key: dict, reports: list[Report],
@@ -584,29 +629,321 @@ def _record_conflict(trap_id: str, site: _Site) -> _Candidate | None:
     return _Candidate(trap, [second], [])
 
 
+# ------------------------------------------------- off the legacy path: planted reports in slots' places
+# Off the legacy path every domain's traps are planted by these builders, earthquakes included (their
+# 0.2.0 Events and Reports are read and written in the generic form, Domain.to_generic / from_generic). A
+# planted report stands where a real record could have stood: in the place of a slot, a record drawn with
+# the digest but not kept (pipeline.sample_with_slots). So a phantom is a slot, filed as it is (its time,
+# position, place, group, source, values with their precision, qualifiers and ID), and a re-report or a
+# second report of a record takes a slot's time, source and (but at a fixed site) position, and copies the
+# record's values at the record's own precision (Domain.planted_value). A slot is drawn at random and the
+# record it re-reports is the real record nearest to it in time in its group (at its place, when records
+# stand at fixed sites: a relay repeats a station's observation at that station). The distance from a
+# re-report to its record is then the distance from a real record to its neighbour, the sources of planted
+# reports file real records as often as they file planted ones, and nothing but the signals the reading
+# rules name (a shared ID or a note naming it, the status, the notices) sets a planted line apart. When no
+# slot is left, a builder plants as a real record's neighbour would stand (_virtual_pair, _virtual_phantom).
+
+
+def _generic(item: Any, domain: Domain) -> Record:
+    """A record of a digest (an Event, or a generic Record) as a generic Record."""
+    if isinstance(item, Record):
+        return item
+    return Record(id=item.id, time=item.time, lat=item.lat, lon=item.lon, group=item.group, source=item.source,
+                  values=dict(item.values),
+                  qualifiers={key: getattr(item, key) for key in domain.qualifier_keys.values()}, place=item.place)
+
+
+def _fixed(site: _Site, record: Record) -> bool:
+    """Whether `record` stands at a fixed site, a place every report of it gives (a weather station): a
+    generic record with a place. An earthquake's place is a note on where it struck."""
+    return site.fixed and record.place is not None
+
+
+def _slot_pair(site: _Site) -> tuple[Record, Record] | None:
+    """A slot not taken yet, drawn at random among those that can re-report a record, and that record: the
+    real record nearest to the slot in time in its group (at its place, at a fixed site) that carries no
+    trap yet (ties: the earlier, then the smaller ID). None when no slot can.
+
+    A report at a fixed site always shares its place with its record, so it can never be the only one
+    there, as a real record can. A slot is therefore drawn with a weight of one over the number of real
+    records at its place, so that a re-report joins a place of few reports more often than of many, and
+    the number of reports at a planted report's place is distributed as at a real one's."""
+    options, weights = [], []
+    for slot in site.slots:
+        if slot.id in site.filled:
+            continue
+        fixed = _fixed(site, slot)
+        mates = [r for r in site.records if r.id not in site.used and r.group == slot.group
+                 and (not fixed or r.place == slot.place)]
+        if mates:
+            options.append((slot, min(mates, key=lambda r: (abs(r.time - slot.time), r.time, r.id))))
+            weights.append(1.0 / sum(r.place == slot.place for r in site.records) if fixed else 1.0)
+    return site.rng.choices(options, weights=weights, k=1)[0] if options else None
+
+
+def _neighbour(record: Record, records: Sequence[Record]) -> Record | None:
+    """The record of `records` other than `record` nearest to it in time (ties: the earlier, then the
+    smaller ID), or None."""
+    others = [r for r in records if r.id != record.id]
+    return min(others, key=lambda r: (abs(r.time - record.time), r.time, r.id)) if others else None
+
+
+def _beside(record: Record, donor: Record, site: _Site, *, earliest: int, latest: int) -> Record:
+    """Where a report would stand that is as far from `record` as `donor`, a real record, is from its
+    nearest neighbour in time: as many seconds before or after it (whichever stays in [earliest, latest]),
+    filed by the donor's source; at the record's own place when it stands at a fixed site, else as far
+    from it, in a random direction, as the donor is from that neighbour. A slot without an ID of its own."""
+    rng, spatial = site.rng, site.domain.spatial
+    near = _neighbour(donor, site.records)
+    gap = abs(near.time - donor.time) if near is not None else rng.randint(60, 3600)
+    times = [t for t in (record.time - gap, record.time + gap) if earliest <= t <= latest]
+    when = rng.choice(times) if times else min(max(record.time, earliest), latest)
+    lat, lon, place = record.lat, record.lon, record.place
+    if spatial is not None and not _fixed(site, record):
+        km = haversine_km(donor.lat, donor.lon, near.lat, near.lon) if near is not None else rng.uniform(1.0, 40.0)
+        lat, lon = destination(record.lat, record.lon, km, rng.uniform(0.0, 360.0))
+        lat, lon = round(lat, spatial.coord_decimals) + 0.0, round(lon, spatial.coord_decimals) + 0.0
+        place = _place_for(record, lat, lon, site.records) if record.place else None
+    return Record(id="", time=when, lat=lat, lon=lon, group=record.group, source=donor.source,
+                  values=dict(donor.values), qualifiers=dict(donor.qualifiers), place=place)
+
+
+def _virtual_pair(site: _Site) -> tuple[Record, Record] | None:
+    """When no slot is left: a record that carries no trap yet, drawn at random, and a slot made beside it
+    (_beside) from a donor, a real record of its group (at its place, at a fixed site) drawn at random."""
+    record = _pick_unused(site.records, site.used, site.rng)
+    if record is None:
+        return None
+    donors = [r for r in site.records if r.group == record.group and r.id != record.id
+              and (not _fixed(site, record) or r.place == record.place)] or [record]
+    donor = site.rng.choice(donors)
+    return _beside(record, donor, site, earliest=site.window_start, latest=site.compiled_at - 1), record
+
+
+def _peers(record: Record, spec: FieldSpec, site: _Site) -> list[float]:
+    """The values of `spec` that `record`'s source files in the digest: what its precision is read from."""
+    return [r.values[spec.key] for r in site.records if r.source == record.source]
+
+
+def _copied_values(record: Record, site: _Site, share: float = 0.08) -> dict[str, float]:
+    """A record's values as another report gives them: each moved by up to `share` of its field's spread in
+    the digest, and written at the record's precision (Domain.planted_value)."""
+    domain = site.domain
+    return {spec.key: domain.planted_value(spec, record.values[spec.key]
+                                           + site.rng.uniform(-share, share) * _spread(site.events, spec),
+                                           record.values[spec.key], _peers(record, spec, site))
+            for spec in domain.fields}
+
+
+def _stand(record: Record, slot: Record, site: _Site) -> tuple[float | None, float | None, str | None]:
+    """Where a report of `record` filed in `slot`'s place stands: at the record's own site when it stands at a
+    fixed one (a station does not move), else where the slot stands, with the slot's own place note."""
+    if _fixed(site, record):
+        return record.lat, record.lon, record.place
+    return slot.lat, slot.lon, slot.place
+
+
+def _own_ref(record: Record, slot: Record, site: _Site) -> str:
+    """The reference of its own under which `slot`'s source re-reports `record`: the slot's real ID, as the
+    domain shapes it (Domain.rereport_ref); without a real slot, an ID shaped like the record's, or, for an
+    earthquake re-reported by another network, one in that network's own style."""
+    domain = site.domain
+    if slot.id:
+        return domain.rereport_ref(record, slot, site.rng, site.taken)
+    if slot.source == record.source or not isinstance(domain, Earthquakes):
+        return domain.mimic_id(record.id, site.rng, site.taken)
+    return _fresh_ref(slot.source, site, slot.time)
+
+
+def _slot_duplicate(trap_id: str, site: _Site) -> _Candidate | None:
+    rng, domain = site.rng, site.domain
+    pair = _slot_pair(site) or _virtual_pair(site)
+    if pair is None:
+        return None
+    slot, e = pair
+    form = rng.choice(("same_id", "cross_ref"))
+    ref = e.id if form == "same_id" else _own_ref(e, slot, site)
+    status = domain.statuses[1]
+    lat, lon, place = _stand(e, slot, site)
+    values = _copied_values(e, site)
+    dup = RecordReport(ref=ref, source=slot.source, status=status, time=slot.time, lat=lat, lon=lon, group=e.group,
+                       values=values, qualifiers=dict(e.qualifiers), place=place,
+                       same_as=None if form == "same_id" else e.id, role="duplicate", trap_id=trap_id)
+    how = f"under the same {domain.id_label}" if form == "same_id" else f"as {ref} with a note naming it"
+    description = (f"{slot.source} re-reported {e.id} {how}: {status} {_shown(values, domain)} "
+                   f"({domain.statuses[0]}: {_shown(e.values, domain)})")
+    trap = Trap(trap_id, "duplicate", form, e.id, description,
+                mishandles=[Mishandle(split=((ref, slot.source, status),)).to_dict()])
+    return _Candidate(trap, [domain.from_generic(dup)], [], slot=slot.id or None)
+
+
+def _virtual_phantom(site: _Site) -> Record:
+    """When no slot is left: a phantom's slot made beside a real record drawn at random (_beside), with
+    values typical of that record's group, at that record's precision, and an ID shaped like its own."""
+    rng, domain, records = site.rng, site.domain, site.records
+    donor = rng.choice(records)
+    slot = _beside(donor, donor, site, earliest=site.window_start + 60, latest=site.compiled_at - 601)
+    peers = [r for r in records if r.group == donor.group]
+    pool = peers if len(peers) >= 3 else records
+    values = {}
+    for spec in domain.fields:
+        observed = sorted(r.values[spec.key] for r in pool)
+        values[spec.key] = domain.planted_value(spec, observed[int(rng.uniform(0.0, 1.0) * (len(observed) - 1))]
+                                                + rng.uniform(-0.05, 0.05) * _spread(records, spec),
+                                                donor.values[spec.key], _peers(donor, spec, site))
+    ref = (domain.mimic_id(donor.id, rng, site.taken) if not isinstance(domain, Earthquakes)
+           else _fresh_ref(donor.source, site, slot.time))
+    return replace(slot, id=ref, values=values)
+
+
+def _slot_phantom(trap_id: str, site: _Site) -> _Candidate:
+    """A slot filed as it is, under its settling status, which a later notice retracts. Its retraction is
+    issued 10 to 90 minutes after it, before the digest is compiled, so the slot lies before then."""
+    rng, domain = site.rng, site.domain
+    open_slots = [s for s in site.slots if s.id not in site.filled
+                  and site.window_start + 60 <= s.time < site.compiled_at - 600]
+    slot = rng.choice(open_slots) if open_slots else _virtual_phantom(site)
+    phantom = RecordReport(ref=slot.id, source=slot.source, status=domain.statuses[0], time=slot.time, lat=slot.lat,
+                           lon=slot.lon, group=slot.group, values=dict(slot.values), qualifiers=dict(slot.qualifiers),
+                           place=slot.place, role="phantom", trap_id=trap_id)
+    reason = rng.choice(domain.trap_vocab.retraction_reasons)
+    notice = Notice(kind="retraction", target=slot.id, time=min(site.compiled_at - 60, slot.time + rng.randint(600, 5400)),
+                    reason=reason, trap_id=trap_id)
+    description = f"phantom report {slot.id} ({_shown(slot.values, domain)}, {slot.group}) later retracted: {reason}"
+    trap = Trap(trap_id, "retraction", "phantom", slot.id, description,
+                mishandles=[Mishandle(keep_retracted=(slot.id,)).to_dict()])
+    return _Candidate(trap, [domain.from_generic(phantom)], [notice], slot=slot.id if open_slots else None)
+
+
+def _wrong_value(e: Record, spec: FieldSpec, site: _Site) -> float:
+    """A wrong value of `spec` for `e`, distributed as the real values of `e`'s group are: the value of
+    another record of the group, in the digest or among the slots (of any group when it has none), moved by
+    up to 2% of the field's spread and written at `e`'s precision (Domain.planted_value).
+
+    Up to seven times in ten it is aimed across a threshold that the questions ask about on the field: a
+    value of the group on the other side of it from `e`'s, at least the field's guard margin beyond it
+    (filters compare as ops does, with EPS), so that a careless reader sees it across the threshold at any
+    printed precision. Aimed values come from one side of a threshold, so the aim is taken from the side
+    with the larger share of the group's values only (share there / share here) ** 2 as often: then a wrong
+    value lies on each side of the threshold, as far beyond it and as typical of its group, as often as a
+    real value does. Otherwise it is any value of the group that differs from `e`'s by more than twice the
+    scoring tolerance."""
+    rng, domain = site.rng, site.domain
+    value, spread = e.values[spec.key], _spread(site.events, spec)
+    others = [r for r in (*site.records, *site.slots) if r.id != e.id]
+    pool = ([r.values[spec.key] for r in others if r.group == e.group]
+            or [r.values[spec.key] for r in others])
+    peers = _peers(e, spec, site)
+
+    def written(v: float) -> float:
+        return domain.planted_value(spec, v + rng.uniform(-0.02, 0.02) * spread, value, peers)
+
+    def beyond(x: float, v: float) -> bool:
+        """`v` lies on the other side of the threshold `x` from `e`'s value, at least the guard margin from it."""
+        side = v < x - EPS if value >= x - EPS else v >= x - EPS  # e passes "at least x": its wrong value does not
+        return side and abs(v - x) >= max(spec.margin[0], spec.margin[1] * abs(x))
+
+    thresholds = [x for x in _canonical_thresholds(site.questions, spec.key, domain.units)
+                  if any(beyond(x, v) for v in pool)]  # only across a threshold that values of the group cross
+    if thresholds:
+        x = rng.choice(thresholds)
+        there = [v for v in pool if beyond(x, v)]
+        here = sum((v >= x - EPS) == (value >= x - EPS) for v in pool) + 1  # e's side, e included
+        if rng.random() < 0.7 * min(1.0, (len(there) / here) ** 2):
+            wrong = written(rng.choice(there))
+            if beyond(x, wrong):
+                return wrong
+            across = _across(x, value, spec, rng, reach=0.1 * spread)
+            wrong = domain.planted_value(spec, across, value, peers)
+            return wrong if beyond(x, wrong) else _stored(across, spec)
+    tolerance = max(spec.tolerance[0], spec.tolerance[1] * abs(value))
+    options = [v for v in pool if abs(v - value) > 2 * tolerance]
+    if options:
+        return written(rng.choice(options))
+    return domain.planted_value(spec, value + rng.choice((-1, 1)) * rng.uniform(0.2, 0.45) * spread, value, peers)
+
+
+def _slot_conflict(trap_id: str, site: _Site) -> _Candidate | None:
+    """A conflicting value in the form the trap drew (_Site.correction): the settling report shows it and a
+    correction fixes it, or a second report under the same ID gives it, in a slot's place. The form is
+    drawn once per trap, not per placement, so that which form a digest gets never depends on which form
+    finds a placement more easily in it (a correction adds no line, and digests of either form must not
+    differ in size)."""
+    rng, domain = site.rng, site.domain
+    spec = rng.choice([s for s in domain.fields if s.correctable] or list(domain.fields))
+    slot: Record | None = None
+    if spec.correctable and site.correction:  # the settling report shows the wrong value, a correction fixes it
+        e = _pick_unused(site.records, site.used, rng)
+        if e is None:
+            return None
+    else:  # a second report under the same ID, in a slot's place
+        pair = _slot_pair(site) or _virtual_pair(site)
+        if pair is None:
+            return None
+        slot, e = pair
+    value = e.values[spec.key]
+    wrong = _wrong_value(e, spec, site)
+    if abs(wrong - value) <= max(spec.tolerance[0], spec.tolerance[1] * abs(value)):
+        return None  # a careless reader would still be right
+    kind = "conflicting_magnitude" if isinstance(domain, Earthquakes) else "conflicting_value"
+    unit = "" if spec.canonical_unit is None else f" {spec.canonical_unit}"
+    final, draft = domain.statuses
+    if slot is None:
+        index = next(i for i, r in enumerate(site.reports) if r.ref == e.id and r.role == "primary")
+        primary = domain.to_generic(site.reports[index])
+        shown = replace(primary, values={**primary.values, spec.key: wrong}, role="conflict", trap_id=trap_id)
+        issued = min(site.compiled_at - 30, max(e.time + 30, e.time + rng.randint(900, 7200)))
+        notice = Notice(kind="correction", target=e.id, time=issued, trap_id=trap_id, field=spec.key, new_value=value,
+                        old_value=wrong, qualifier=e.qualifiers.get(spec.qualifier) if spec.qualifier else None)
+        description = (f"{e.id} filed with {spec.label} {plain_number(wrong)}{unit} on its {final} report, then "
+                       f"CORRECTED to {plain_number(value)}{unit}")
+        trap = Trap(trap_id, kind, "correction", e.id, description,
+                    mishandles=[Mishandle(ignore_correction_for=(e.id,)).to_dict()])
+        return _Candidate(trap, [], [domain.from_generic(notice)], replace_at=(index, domain.from_generic(shown)))
+    # A careless reader either takes the second report's values, or counts it as a record of its own.
+    lat, lon, place = _stand(e, slot, site)
+    second = RecordReport(ref=e.id, source=slot.source, status=draft, time=slot.time, lat=lat, lon=lon, group=e.group,
+                          values={**_copied_values(e, site), spec.key: wrong}, qualifiers=dict(e.qualifiers),
+                          place=place, role="conflict", trap_id=trap_id)
+    description = (f"{e.id} also reported with {spec.label} {plain_number(wrong)}{unit} ({draft}, {slot.source}) "
+                   f"beside the {final} {plain_number(value)}{unit}")
+    trap = Trap(trap_id, kind, "second_report", e.id, description,
+                mishandles=[Mishandle(prefer_preliminary_for=(e.id,)).to_dict(),
+                            Mishandle(split=((e.id, slot.source, draft),)).to_dict()])
+    return _Candidate(trap, [domain.from_generic(second)], [], slot=slot.id or None)
+
+
 EARTHQUAKE_BUILDERS = Builders(primary_report, _duplicate, _phantom, _conflict)  # the 0.2.0 builders
 
 
-def builders_for(domain: Domain) -> Builders:
-    """The builders that plant traps in a domain's digests. Earthquake domains (whose records are 0.2.0
-    Events and Reports) keep the 0.2.0 builders; every other domain's Records are planted by the generic
-    builders, whose settling reports carry the domain's first status."""
+def builders_for(domain: Domain, *, slotted: bool = False) -> Builders:
+    """The builders that plant traps in a domain's digests. On the legacy path (and without `slotted`),
+    earthquake domains (whose records are 0.2.0 Events and Reports) keep the 0.2.0 builders, and every
+    other domain's Records are planted by the generic builders, whose settling reports carry the domain's
+    first status. Off the legacy path (`slotted`) every domain is planted in the place of its slots."""
+    primary = (primary_report if isinstance(domain, Earthquakes)
+               else functools.partial(record_report, status=domain.statuses[0]))
+    if slotted:
+        return Builders(primary, _slot_duplicate, _slot_phantom, _slot_conflict)
     if isinstance(domain, Earthquakes):
         return EARTHQUAKE_BUILDERS
-    return Builders(functools.partial(record_report, status=domain.statuses[0]), _record_duplicate, _record_phantom,
-                    _record_conflict)
+    return Builders(primary, _record_duplicate, _record_phantom, _record_conflict)
 
 
 def inject_traps(events: list[Event], questions: list[Question], rng: random.Random, *, compiled_at: int,
-                 window_hours: int, config: TrapConfig = TrapConfig(),
-                 domain: Domain = EARTHQUAKES) -> tuple[list[Report], list[Notice], list[Trap]]:
+                 window_hours: int, config: TrapConfig = TrapConfig(), domain: Domain = EARTHQUAKES,
+                 slots: Sequence[Any] = ()) -> tuple[list[Report], list[Notice], list[Trap]]:
     """Build the digest's reports and notices: one reviewed report per event, plus the traps. Each trap
-    is the best of up to `config.candidates` placements (_rank), guarded off the legacy path."""
-    build = builders_for(domain)
+    is the best of up to `config.candidates` placements (_rank), guarded off the legacy path, where the
+    planted reports take the places of `slots`, records drawn with the digest but not kept."""
+    build = builders_for(domain, slotted=config.guarded)
     units = domain.units
     site = _Site(domain, events, questions, rng, compiled_at, window_start=compiled_at - window_hours * 3600,
-                 id_style=config.id_style, reports=[build.primary(e) for e in events], taken={e.id for e in events},
-                 used=set())
+                 id_style=config.id_style, reports=[build.primary(e) for e in events],
+                 taken={e.id for e in events} | {s.id for s in slots}, used=set(),
+                 slots=[_generic(s, domain) for s in slots], records=[_generic(e, domain) for e in events],
+                 fixed=not isinstance(domain, Earthquakes))
     notices: list[Notice] = []
     traps: list[Trap] = []
     key = {q.qid: execute(q.chain, events, units=units) for q in questions}
@@ -615,18 +952,26 @@ def inject_traps(events: list[Event], questions: list[Question], rng: random.Ran
     builders = {"duplicate": build.duplicate, "retraction": build.retraction, "conflict": build.conflict}
     plan = (["duplicate"] * rng.randint(*config.duplicates) + ["retraction"] * config.retractions
             + ["conflict"] * config.conflicts)
+    scopes = _Scopes(questions, units) if config.match_scope else None
+    real_scopes = [] if scopes is None else [scopes.count(e) for e in events]
     for number, kind in enumerate(plan, start=1):
         trap_id = f"T{number}"
-        best: tuple[int, _Candidate] | None = None
+        best: tuple[tuple, _Candidate] | None = None
+        # Off the legacy path, a scope drawn from the real records' (see TrapConfig.match_scope), and a
+        # conflict's form, drawn once for the trap (_slot_conflict).
+        target = rng.choice(real_scopes) if real_scopes else None
+        if kind == "conflict" and config.guarded:
+            site.correction = rng.random() < 0.5
         for _ in range(config.candidates):
             candidate = builders[kind](trap_id, site)
             if candidate is None:
                 continue
             trial = DigestData(*_apply(site.reports, notices, candidate))
             rank = _rank(_single_readings(candidate.trap, questions, trial, domain, time_margin), key, config.guarded)
-            if best is None or rank > best[0]:
-                best = (rank, candidate)
-            if rank == top:
+            fit = (rank,) if target is None else _fit(rank, scopes.count(_planted(candidate)), target, top)
+            if best is None or fit > best[0]:
+                best = (fit, candidate)
+            if fit == ((top,) if target is None else _best_fit(target, top)):
                 break
         if best is None:
             continue
@@ -634,6 +979,8 @@ def inject_traps(events: list[Event], questions: list[Question], rng: random.Ran
         site.reports, notices = _apply(site.reports, notices, chosen)
         traps.append(chosen.trap)
         site.used.add(chosen.trap.target)
+        if chosen.slot is not None:
+            site.filled.add(chosen.slot)
     reports = site.reports
     # authoritative, on the final digest
     score_traps(traps, questions, key, reports, notices, domain=domain, time_margin=time_margin)

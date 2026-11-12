@@ -292,6 +292,14 @@ WEATHER_RULE = ("Temperatures are signed numbers, so -2.5 °C is colder than 0.5
 GAMMA_1_5 = math.gamma(1.5)  # the mean of a Weibull distribution of shape 2 is its scale times this
 MAX_WIND_KMH = 100.0  # sustained winds above this are left to hurricanes
 MEAN_PRESSURE_HPA = 1016.0
+# When observations are taken, as at NWS stations: each station's routine (hourly) observation at a minute
+# of its own near the end of every hour, and five-minute observations, which give whole degrees.
+ROUTINE_MINUTES = (51, 52, 53, 54, 56)
+FIVE_MINUTE_SHARE = 0.25
+# Feeds that relay stations' observations. They file a share of the observations themselves (one that
+# reached the digest through them), as the stations' own feeds file the rest.
+RELAY_SHARE = 0.2
+RELAY_WEIGHTS = (0.5, 0.3, 0.2)  # of TRAP_VOCAB.rereporting_sources, in its order
 
 
 @dataclass(frozen=True)
@@ -330,6 +338,17 @@ def _stored(value: float) -> float:
     return round(value, 1) + 0.0
 
 
+def whole_knots(kmh: float) -> float:
+    """A wind speed (km/h) as an observation reports it: in whole knots, stored in km/h to a tenth."""
+    return _stored(max(0, round(kmh / KNOT.scale)) * KNOT.scale)
+
+
+def altimeter(hpa: float) -> float:
+    """A pressure (hPa) as an observation reports it: in hundredths of an inch of mercury, stored in hPa to
+    a tenth."""
+    return _stored(round(hpa / INHG.scale, 2) * INHG.scale)
+
+
 # ------------------------------------------------------------------------------ the domain
 
 
@@ -356,43 +375,75 @@ class Weather(Domain):
     statuses = ("verified", "preliminary")  # the NWS quality-control codes V and Z
     trap_vocab = TRAP_VOCAB
     chatter = CHATTER
+    # A station's observations are each other's near twins (Domain.twin_key: its region and its place): a
+    # digest often lists a station's next observation, five minutes or an hour later.
+    twin_seconds = 2 * 3600
+    twin_share = 0.6
 
     def __init__(self, live: NwsObservations | None = None) -> None:
         self.live = NwsObservations() if live is None else live
 
     def synthetic(self, rng: random.Random, n: int, compiled_at: int, window_hours: int) -> list[Record]:
-        """`n` observations at stations drawn alike, at any second of the window: each region's weather
-        system is drawn first, then every station's own offsets of temperature and pressure, then the
-        observations one by one."""
+        """`n` observations at stations drawn alike, timed as NWS stations take them: each region's weather
+        system is drawn first, then every station's own offsets of temperature and pressure and the minute
+        of its routine observations, then the observations one by one, each at its station's routine minute
+        of an hour of the window or, a share of the time, on a five-minute mark (a five-minute observation),
+        to the minute. Values are reported as observations report them: temperatures to a tenth of a degree
+        (whole degrees in a five-minute observation), winds in whole knots and pressures in hundredths of an
+        inch of mercury, stored in the canonical units. A share of the observations are filed by a relay
+        feed; every ID starts with the identifier of the station observed."""
         span = window_hours * 3600
         systems = {region: _System.draw(rng) for region in REGIONS}
         offsets = {station.id: (rng.gauss(0.0, 1.0), rng.gauss(0.0, 0.8)) for station in STATIONS}
+        minutes = {station.id: rng.choice(ROUTINE_MINUTES) for station in STATIONS}
         taken: set[str] = set()
+        seen: set[tuple[str, int]] = set()
         records = []
-        for _ in range(n):
+        while len(records) < n:
             station = rng.choice(STATIONS)
-            when = compiled_at - rng.randrange(60, span)
+            drawn = compiled_at - rng.randrange(60, span)
+            five_minute = rng.random() < FIVE_MINUTE_SHARE
+            when = drawn - drawn % 300 if five_minute else drawn - drawn % 3600 + minutes[station.id] * 60
+            if not compiled_at - span <= when < compiled_at or (station.id, when) in seen:
+                continue
+            seen.add((station.id, when))
             progress = (when - (compiled_at - span)) / span - 0.5  # -0.5 at the window's start, 0.5 at its end
             system, (temp_offset, pressure_offset) = systems[station.region], offsets[station.id]
             hour = _solar_hour(when, station.lon)
             afternoon = math.cos(2 * math.pi * (hour - 15.0) / 24.0)  # 1 at 15:00 local time, -1 at 03:00
             temp = (_seasonal_mean(station, when) + station.diurnal / 2 * afternoon + system.temp_anomaly
                     + system.temp_trend * progress + temp_offset + rng.gauss(0.0, 0.5))
-            if rng.random() < 0.25:  # a five-minute observation: whole degrees
+            if five_minute:  # whole degrees
                 temp = float(round(temp))
             mean_wind = station.wind_kt * KNOT.scale * system.wind_factor * (1.0 + 0.25 * afternoon)
             wind = min(rng.weibullvariate(mean_wind / GAMMA_1_5, 2.0), MAX_WIND_KMH)
             pressure = (MEAN_PRESSURE_HPA + system.pressure_anomaly + system.pressure_trend * progress
                         + pressure_offset + rng.gauss(0.0, 0.4))
-            records.append(Record(id=self.new_id(station.id, rng, taken), time=when, lat=station.lat,
-                                  lon=station.lon, group=station.region, source=station.id,
-                                  values={"temp": _stored(temp), "wind": _stored(wind),
-                                          "pressure": _stored(pressure)},
+            relayed = rng.random() < RELAY_SHARE
+            source = (rng.choices(TRAP_VOCAB.rereporting_sources, weights=RELAY_WEIGHTS, k=1)[0] if relayed
+                      else station.id)
+            records.append(Record(id=_fresh(station.id, rng, taken), time=when, lat=station.lat, lon=station.lon,
+                                  group=station.region, source=source,
+                                  values={"temp": _stored(temp), "wind": whole_knots(wind),
+                                          "pressure": altimeter(pressure)},
                                   place=station.name))
         return sorted(records, key=lambda r: (r.time, r.id))
 
+    def planted_value(self, spec: FieldSpec, value: float, like: float, peers: Sequence[float] = ()) -> float:
+        """A planted value as an observation reports it: a wind in whole knots and a pressure in hundredths of
+        an inch of mercury, as every observation does (live or synthetic), and a temperature to the places
+        of the one it copies or stands for (a five-minute observation gives whole degrees, a routine one
+        tenths), whatever the station's other observations give."""
+        if spec.key == WIND.key:
+            return whole_knots(value)
+        if spec.key == PRESSURE.key:
+            return altimeter(value)
+        return super().planted_value(spec, value, like)
+
     def new_id(self, source: str, rng: random.Random, taken: set[str]) -> str:
-        """A fresh "<feed>-<5 digits>" ID for an observation `source` files, added to `taken`."""
+        """A fresh "<prefix>-<5 digits>" ID with the prefix of `source`'s name, added to `taken`. An
+        observation's ID starts with its station's identifier, whichever feed files it, so the trap
+        builders give a re-report an ID shaped like its record's (mimic_id)."""
         return _fresh(id_prefix(source), rng, taken)
 
     def mimic_id(self, example: str, rng: random.Random, taken: set[str]) -> str:

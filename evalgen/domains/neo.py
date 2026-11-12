@@ -144,10 +144,10 @@ LEXICON = Lexicon(
     },
 )
 
-# Catalogues of close approaches. JPL's lists every live record; synthetic records come from all three.
-# Mirrors re-report other catalogues' approaches: a re-reporter is never the record's own catalogue.
-SOURCES = ("jpl", "neocc", "neodys")
-SOURCE_WEIGHTS = (0.55, 0.3, 0.15)
+# Catalogues of close approaches. JPL's lists every live record; synthetic records come from all four, the
+# Minor Planet Center's included, so that every catalogue that re-reports approaches also lists its own.
+SOURCES = ("jpl", "neocc", "neodys", "mpc")
+SOURCE_WEIGHTS = (0.5, 0.25, 0.13, 0.12)
 TRAP_VOCAB = TrapVocab(
     rereporting_sources=("mpc", "neocc", "neodys"),
     duplicate_notes=("same approach as", "duplicate of", "mirror of"),
@@ -221,25 +221,33 @@ def _provisional(rng: random.Random, year: int, last_half: int) -> str:
     return f"{year}{rng.choice(HALF_MONTHS[:last_half + 1])}{rng.choice(ORDER_LETTERS)}{_cycle(rng)}"
 
 
-def _number(rng: random.Random, digits: int) -> str:
-    return str(rng.randrange(10 ** (digits - 1), 10 ** digits))
+NUMBERED = (3000, 650_000)  # the asteroid numbers synthetic objects carry (_draw_designation)
+
+
+def _number(rng: random.Random, digits: int, within: tuple[int, int] = (1, 1 << 62)) -> str:
+    """A number of `digits` digits, inside `within` (from, below) where the two ranges meet."""
+    low, high = max(10 ** (digits - 1), within[0]), min(10 ** digits, within[1])
+    if low >= high:
+        low, high = 10 ** (digits - 1), 10 ** digits
+    return str(rng.randrange(low, high))
 
 
 def _like(example: str, rng: random.Random) -> str:
-    """A packed designation of the same kind as `example` (upper case): a provisional one of its year,
-    found no later in it (a comet's with its type letter), a periodic comet's or an asteroid's number of
-    as many digits, or else its digits redrawn."""
+    """A packed designation of the same kind as `example` (upper case), drawn as such designations are:
+    a provisional one of its year and half-month, with its order letter and cycle drawn afresh (a comet's
+    with its type letter), a periodic comet's number of as many digits, an asteroid's number of as many
+    digits inside the range numbered objects come from, or else its digits redrawn."""
     comet = _COMET.fullmatch(example)
     if comet is not None:
         return comet["kind"] + _like(comet["rest"], rng)
     found = _PROVISIONAL.fullmatch(example)
     if found is not None:
-        return _provisional(rng, int(found["year"]), HALF_MONTHS.index(found["half"]))
+        return f"{found['year']}{found['half']}{rng.choice(ORDER_LETTERS)}{_cycle(rng)}"
     periodic = _PERIODIC.fullmatch(example)
     if periodic is not None:
         return _number(rng, len(periodic["number"])) + periodic["kind"]
     if example.isdigit():
-        return _number(rng, len(example))
+        return _number(rng, len(example), NUMBERED)
     return "".join(rng.choice("0123456789") if c.isdigit() else c for c in example)
 
 
@@ -313,6 +321,19 @@ def _clamped(value: float, least: float, most: float) -> float:
     return min(max(value, least), most)
 
 
+MOON_MIN_AU = 0.0003  # the closest synthetic approach to the Moon (about 45,000 km)
+
+
+def _reflected(value: float, least: float, most: float) -> float:
+    """`value` folded back into [least, most] at whichever end it passes, so that no value piles up at an
+    end, as clamping would make it do (then clamped, should a fold pass the other end)."""
+    if value < least:
+        value = 2 * least - value
+    elif value > most:
+        value = 2 * most - value
+    return _clamped(value, least, most)
+
+
 def _draw_year(rng: random.Random, h: float, current: int) -> int:
     """The year of a provisional designation: small objects are mostly found in the year they pass close."""
     if h >= 24.0 and rng.random() < 0.65:
@@ -331,7 +352,7 @@ def _draw_designation(rng: random.Random, h: float, when: int, taken: set[str]) 
     current = _year(when)
     while True:
         if rng.random() < numbered_chance:
-            designation = str(rng.randrange(3000, 650_000))
+            designation = str(rng.randrange(*NUMBERED))
         else:
             year = _draw_year(rng, h, current)
             designation = _provisional(rng, year, half_month(when) if year == current else len(HALF_MONTHS) - 1)
@@ -360,7 +381,7 @@ def _draw_object(rng: random.Random, body: BodyModel, compiled_at: int, window_h
     source = rng.choices(SOURCES, weights=SOURCE_WEIGHTS, k=1)[0]
     approaches = [Approach(designation, time, body.name, source, _values(dist_au, velocity, h))]
     if body.name == "Earth" and dist_au < MOON_PAIR_MAX_AU and rng.random() < MOON_PAIR_CHANCE:
-        moon_au = _clamped(dist_au + rng.uniform(-MOON_ORBIT_AU, MOON_ORBIT_AU), 0.0003, MOON_PAIR_MAX_AU - 0.0001)
+        moon_au = _reflected(dist_au + rng.uniform(-MOON_ORBIT_AU, MOON_ORBIT_AU), MOON_MIN_AU, MOON_PAIR_MAX_AU - 0.0001)
         moon_velocity = max(0.15, velocity + rng.uniform(-1.0, 1.0))
         moon_time = time + rng.randint(-MOON_PAIR_HOURS * 3600, MOON_PAIR_HOURS * 3600)
         if compiled_at - window_hours * 3600 < moon_time <= compiled_at - 60:
@@ -471,6 +492,27 @@ class Neo(Domain):
     statuses = ("confirmed", "preliminary")
     trap_vocab = TRAP_VOCAB
     chatter = CHATTER
+    # An object's close approaches are each other's near twins: a digest that lists an object passing
+    # Earth often lists it passing the Moon hours away (pipeline.sample_with_slots).
+    twin_seconds = MOON_PAIR_HOURS * 3600
+    twin_share = 0.5
+
+    def twin_key(self, record: Record) -> str:
+        """An approach's twins are the other approaches of its object: its designation."""
+        return designation_of(record.id)
+
+    def planted_value(self, spec: FieldSpec, value: float, like: float, peers: Sequence[float] = ()) -> float:
+        """An object's H is written to the places its own listing gives it, which go with its designation (a
+        recently found object's to 3, an older one's to 1 or 2: _draw_object), whatever the catalogue's other
+        objects have; the other fields as every domain's (Domain.planted_value)."""
+        if spec.key == ABSOLUTE_MAGNITUDE.key:
+            return super().planted_value(spec, value, like)
+        return super().planted_value(spec, value, like, peers)
+
+    def rereport_ref(self, record: Record, slot: Record, rng: random.Random, taken: set[str]) -> str:
+        """A catalogue re-reports an approach under another designation of its object (see the rules), shaped
+        like the object's own, whose kind goes with the precision of its H (_draw_object)."""
+        return self.mimic_id(record.id, rng, taken)
 
     def sample_weight(self, record: Record) -> float:
         """Closer approaches make the digest more often: one that grazes the body is up to four times as
