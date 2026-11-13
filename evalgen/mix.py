@@ -417,15 +417,16 @@ Entrant = Union[Domain, Genre]  # Union, not "X | Y": this alias is evaluated at
 _CONFIG_PLUGINS: dict[str, tuple[Path, ...]] = {}
 
 
-def load_plugin(path: str | Path, sha256: str | None = None) -> list[Entrant]:
+def load_plugin(path: str | Path, sha256: str | None = None, *, private: bool = False) -> list[Entrant]:
     """Register what a plugin file defines: its domain (``DOMAIN``), its genre (``GENRE``) or both,
     each in its registry. With `sha256` (what a private run config commits the file to), a file whose
     bytes have another SHA-256 is refused before any of it runs, and what runs is exactly the bytes
     that were checked. A file that this process has run already is not run again, and its bytes must
-    still be those that ran: a process runs one version of a plugin (registry.load_module). Raises
-    MixError for a file that is gone, refused, changed since this process ran it, defines neither entry,
-    or defines one that its registry refuses (a name a built-in or another plugin already has, or a
-    domain that does not hold together)."""
+    still be those that ran: a process runs one version of a plugin (registry.load_module). With
+    `private` (a private run config's plugin), each entry is marked private as soon as it is registered
+    (_register_module). Raises MixError for a file that is gone, refused, changed since this process ran
+    it, defines neither entry, or defines one that its registry refuses (a name a built-in or another
+    plugin already has, or a domain that does not hold together)."""
     path = Path(path).resolve()
     if not path.is_file():
         raise MixError(f"the plugin {path} does not exist")
@@ -437,17 +438,24 @@ def load_plugin(path: str | Path, sha256: str | None = None) -> list[Entrant]:
         module = registry.load_module(path, source)
     except registry.PluginChanged as exc:
         raise MixError(str(exc)) from None
-    return _register_module(path, module)
+    return _register_module(path, module, private=private)
 
 
-def _register_module(path: Path, module: Any) -> list[Entrant]:
-    """Register what an executed plugin module defines, each entry in its registry (load_plugin)."""
+def _register_module(path: Path, module: Any, *, private: bool = False) -> list[Entrant]:
+    """Register what an executed plugin module defines, each entry in its registry (load_plugin). With
+    `private`, each entry is marked private (_mark_private) as soon as it is registered: a config whose
+    loading fails later (a genre of this file, or another plugin, refused) has run this file all the
+    same, and its entries stay registered, so they must never be drawable by a run without the config."""
     loaded: list[Entrant] = []
     try:
         if hasattr(module, "DOMAIN"):
             loaded.append(domains.load_plugin(path))
+            if private:
+                _mark_private(loaded[-1:])
         if hasattr(module, "GENRE"):
             loaded.append(genres.load_plugin(path))
+            if private:
+                _mark_private(loaded[-1:])
     except (TypeError, ValueError) as exc:  # the registry refuses the entry
         raise MixError(f"the plugin {path} cannot be registered: {exc}") from None
     if not loaded:
@@ -464,13 +472,13 @@ def _mark_private(entries: Sequence[Entrant]) -> None:
 
 def _load_config_plugins(config: PrivateConfig) -> tuple[list[Domain], list[Genre]]:
     """Load the plugins of a private run config, each checked against the SHA-256 the config gives it
-    (load_plugin); mark what they define as private (_mark_private) and remember them for later steps of
-    this process (_CONFIG_PLUGINS). Returns the domains and the genres they define, in the config's
+    (load_plugin); mark what they define as private (_mark_private, entry by entry as each registers, so
+    that a config refused halfway leaves nothing drawable without it) and remember them for later steps
+    of this process (_CONFIG_PLUGINS). Returns the domains and the genres they define, in the config's
     plugin order."""
     found: list[Entrant] = []
     for path, sha256 in config.pinned():  # a plugin whose bytes are not those the config gives is refused
-        found += load_plugin(path, sha256=sha256)
-    _mark_private(found)
+        found += load_plugin(path, sha256=sha256, private=True)
     if config.plugins:
         _CONFIG_PLUGINS[config.commitment] = config.plugins
     plugin_domains = {entry.name: entry for entry in found if isinstance(entry, Domain)}
@@ -509,7 +517,8 @@ def load_run_plugins(manifest: Mapping[str, Any], private_config: str | Path | N
     code runs again, and a plugin counts as changed only if the code that ran differs from the run's
     record. Any other plugin, and a config the run did not commit to, raise MixError, as does a plugin
     that is gone, and a run that draws on a domain or genre that neither evalgen nor these plugins
-    define (a caller registered it in the process that generated the run)."""
+    define (it was registered in the process that generated the run, by its caller or by a plugin that
+    process loaded)."""
     entries = list(manifest.get("plugins") or ())
     recorded = manifest.get("private_config_commitment")
     if private_config is not None:
@@ -535,10 +544,9 @@ def load_run_plugins(manifest: Mapping[str, Any], private_config: str | Path | N
         if not path.is_file():
             raise MixError(f"the run was generated with the plugin {path}, which is gone: restore it to read the run")
         if private_config is not None:
-            loaded = load_plugin(path, sha256=sha256)
+            load_plugin(path, sha256=sha256, private=True)
         else:  # what this process ran for the run's config, as it ran (registry.executed checked it ran)
-            loaded = _register_module(path, registry.load_module(path))
-        _mark_private(loaded)
+            _register_module(path, registry.load_module(path), private=True)
         if sha256 is None and entry.get("sha256") and registry.executed_sha256(path) != entry["sha256"]:
             changed.append(str(entry["path"]))
             if log is not None:
@@ -547,10 +555,11 @@ def load_run_plugins(manifest: Mapping[str, Any], private_config: str | Path | N
         _CONFIG_PLUGINS[recorded] = tuple(path for path, _ in plugins)
     unknown = _unknown_entries(manifest)
     if unknown:
-        them = "it" if len(unknown) == 1 else "them"
+        them, they = ("it", "it was") if len(unknown) == 1 else ("them", "they were")
         raise MixError(f"the run draws on {', '.join(unknown)}, which this process does not know: neither evalgen nor a "
-                       f"plugin of the run's private run config defines {them}, so the process that generated the run "
-                       f"registered {them} itself, and a process that reads the run must register {them} too")
+                       f"plugin of the run's private run config defines {them}, so {they} registered in the process "
+                       "that generated the run (by its caller or by a plugin it loaded), and a process that reads the run "
+                       f"must register {them} too")
     return changed
 
 
@@ -621,12 +630,17 @@ class Assignment:
 class Plan:
     """A run's mix, read against the registries and the private run config: the mix in its canonical
     form, every (domain, genre) an instance may be drawn as in canonical order (none on the legacy path;
-    see plan_mix), the run's inventory and the config."""
+    see plan_mix), the run's inventory, the config, and the genres a reader of the run's prompts may
+    meet, which the generator's self-check sniffs among (genres.detect_genre): the built-in genres in
+    module order, then those of the config's plugins in the config's plugin order, then any other genre
+    the mix names (one its caller registered). They are what a new process that loads the config knows,
+    whatever this process has registered besides."""
 
     mix: str  # canonical: "legacy", "random", or the entries of a list in canonical order
     options: tuple[tuple[Domain, Genre], ...]
     inventory: Inventory | None = None  # None on the legacy path
     config: PrivateConfig | None = None
+    readers: tuple[Genre, ...] = ()  # none on the legacy path, whose prompts are read as 0.2.0 read them
 
     @property
     def legacy(self) -> bool:
@@ -711,10 +725,12 @@ def plan_mix(mix: str, private_config: str | Path | None = None) -> Plan:
         return Plan(LEGACY, ())
     if config is None:  # the same in every process, whatever it has loaded
         domain_order, genre_order = domains.REGISTRY.builtins(), genres.REGISTRY.builtins()
+        readers = list(genre_order)
     else:
         plugin_domains, plugin_genres = _load_config_plugins(config)
         domain_order = _listed(config.domains, domains.REGISTRY.builtins(), plugin_domains, _domain, "domain")
         genre_order = _listed(config.genres, genres.REGISTRY.builtins(), plugin_genres, _genre, "genre")
+        readers = genres.REGISTRY.builtins() + plugin_genres
     domain_rank, genre_rank = _rank(domain_order), _rank(genre_order)
     if text == RANDOM:
         options = [(d, g) for d in domain_order for g in genre_order]
@@ -738,7 +754,12 @@ def plan_mix(mix: str, private_config: str | Path | None = None) -> Plan:
     used_genres = dict.fromkeys(g.name for _, g in options)
     inventory = Inventory({name: PUBLIC if config is None else config.domains[name] for name in used_domains},
                           {name: PUBLIC if config is None else config.genres[name] for name in used_genres})
-    return Plan(canonical, tuple(options), inventory, config)
+    known = {genre.name for genre in readers}
+    for _, genre in options:  # a genre that the mix names and its caller registered
+        if genre.name not in known:
+            known.add(genre.name)
+            readers.append(genre)
+    return Plan(canonical, tuple(options), inventory, config, tuple(readers))
 
 
 def single_choice(mix: str) -> tuple[Domain, Genre] | None:

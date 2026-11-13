@@ -9,8 +9,12 @@ entries, follow the same convention and are loaded by path with ``load_plugin``.
 
 A registry is shared by the whole process, so it remembers where each entry came from: the package's
 own entries (``builtins``) and the entries that a private run config's plugins define (``private``,
-marked by evalgen.mix). What a run may draw is decided from those, never from whatever else the
-process has registered, so it does not depend on what an earlier step of the same process loaded.
+marked by evalgen.mix). What a run may draw is decided from those (evalgen.mix): ``random`` and a bare
+domain draw from the built-in entries, and with a private run config from the built-in entries and
+those of the config's own plugins, never from whatever else the process has registered. A list may
+also name an entry that its caller registered itself, but a run without a config never draws an entry
+that a private run config loaded. So what a run draws does not depend on what an earlier step of the
+same process loaded.
 """
 from __future__ import annotations
 

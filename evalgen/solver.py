@@ -28,7 +28,7 @@ from .digest import MONTHS, MONTHS_LONG, WEEKDAYS
 from .domains import get_domain
 from .domains.base import Domain
 from .genres import detect_genre, get_genre
-from .genres.base import parse_glossary
+from .genres.base import Genre, parse_glossary
 from .geo import KM_PER_MILE, haversine_km
 from .models import EVENT_ID_PATTERN, Notice, Report
 from .ops import DigestData, Units, execute
@@ -216,17 +216,19 @@ def parse_digest(text: str) -> DigestData:
 # ---------------------------------------------------------------------------------- solving
 
 
-def read_digest(prompt: str, genre: str | None = None, domain: Domain | None = None) -> DigestData:
+def read_digest(prompt: str, genre: str | None = None, domain: Domain | None = None, *,
+                readers: Sequence[Genre] | None = None) -> DigestData:
     """The reports and notices of a prompt's digest about `domain`'s records (earthquakes when not
     given), read through the glossary the prompt prints (if any) by the parser of the genre that wrote
     it: `genre` when it is known, or else the genre that recognises the digest (genres.detect_genre,
-    which falls back to classic)."""
+    which falls back to classic), among `readers` when they are given."""
     text = extract_digest(prompt)
-    reader = get_genre(genre) if genre is not None else detect_genre(text)
+    reader = get_genre(genre) if genre is not None else detect_genre(text, readers)
     return reader.parse(text, parse_glossary(prompt), domain if domain is not None else get_domain())
 
 
-def _reading(prompt: str, domain: str | None, genre: str | None) -> tuple[DigestData, Domain | None, Units | None]:
+def _reading(prompt: str, domain: str | None, genre: str | None,
+             readers: Sequence[Genre] | None = None) -> tuple[DigestData, Domain | None, Units | None]:
     """A prompt's digest data, its domain and the units its chains use. Without a domain or a genre
     the prompt is a legacy one (earthquakes, classic), read exactly as 0.2.0 read it, and the domain
     and units are None. Otherwise the prompt's glossary is read from its text, and the units are those
@@ -237,18 +239,19 @@ def _reading(prompt: str, domain: str | None, genre: str | None) -> tuple[Digest
     records_domain = get_domain(domain)
     glossary = parse_glossary(prompt)
     units = records_domain.units if glossary is None else glossary.units
-    return read_digest(prompt, genre, records_domain), records_domain, units
+    return read_digest(prompt, genre, records_domain, readers=readers), records_domain, units
 
 
 def solve(prompt: str, questions: Sequence[dict], mode: str = "oracle", *, domain: str | None = None,
-          genre: str | None = None) -> dict[str, Any]:
+          genre: str | None = None, readers: Sequence[Genre] | None = None) -> dict[str, Any]:
     """Answer every question from the prompt text. mode: "oracle" or "naive".
 
     `domain` and `genre` name the instance's domain and the rendering's genre, as a non-legacy run
     records them; without either, the prompt is read as 0.2.0 read it. With the domain alone, the
     prompt is read from its text: its glossary, and the genre that recognises its digest (falling back
-    to classic). The oracle applies the reading rules of the instance's domain (Domain.resolve)."""
-    data, records_domain, units = _reading(prompt, domain, genre)
+    to classic), sniffed among `readers` when they are given (genres.detect_genre). The oracle applies
+    the reading rules of the instance's domain (Domain.resolve)."""
+    data, records_domain, units = _reading(prompt, domain, genre, readers)
     resolver = resolve if records_domain is None else records_domain.resolve
     skip = ("dedupe",) if mode == "naive" else ()
     return {q["qid"]: execute(q["chain"], data, skip=skip, units=units, resolver=resolver) for q in questions}

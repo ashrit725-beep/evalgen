@@ -21,7 +21,7 @@ Without the new options, 0.3.0 writes the 0.2.0 run byte for byte.
 python3 -m pip install -r requirements.txt     # requests + pytest (Python 3.10+)
 python3 cli.py demo --seed 42 --instances 20  # fully offline, no API keys, ~1 second
 python3 cli.py demo --mix random               # 0.3.0: every domain and genre, offline, ~3 seconds
-python3 -m pytest -q                           # 697 tests, ~2 minutes
+python3 -m pytest -q                           # 747 tests, ~2 minutes
 ```
 
 The demo writes `runs/demo-synthetic-seed42/report.md` (and `report.json`); with `--mix random` it
@@ -782,7 +782,10 @@ exact inverse of `render`).
   the text it gets each question's chain, as in 0.2.0, and the name of the instance's domain, which
   picks the reading rules in code and the record types. Sniffing is exclusive: each genre's digests
   are claimed by that genre alone, in every domain. The generator's self-check confirms that every
-  rendering is recognised as the genre it was written in.
+  rendering is recognised as the genre it was written in. It sniffs among the run's own genres (the
+  built-in ones, then those of its config's plugins, and any other genre its mix names), so a genre
+  that the process loaded for an earlier run, such as another config's held-out plugin, never changes
+  a later run's self-check or appears in it.
 - **Every domain in every genre.** `tests/test_matrix.py` runs all 28 built-in cells (domain ×
   genre). In each cell, every rendering reads back exactly from its prompt, the oracle scores 100%,
   no question repeats, every instance plants all three kinds of trap, every recorded careless
@@ -808,8 +811,10 @@ genres in module order, then those of the config's plugins in the config's plugi
 other entry that a list names, by name). So `weather,neo` and `neo,weather` are one mix and draw one
 run, and a list that allows a domain in a genre twice (`weather,weather:email`: a bare domain is in
 every genre) is refused. Nothing that a process loaded for an earlier run changes what a later run
-may draw, or in which order. (Before this rule, a list drew in the order it named its entries, so a
-run of a list written out of that order by an earlier version draws differently now.)
+may draw, or in which order, not even a config that was refused halfway through loading its plugins:
+each entry a config's plugin defines is marked as the config's as soon as it is registered. (Before
+this rule, a list drew in the order it named its entries, so a run of a list written out of that
+order by an earlier version draws differently now.)
 
 Each domain keeps its own snapshot (`snapshot/<domain>/` in a run of several), its own twin
 templates (seed path `templates/new/<domain>`) and its own balance of the template pools, so the
@@ -818,7 +823,10 @@ Instances record their domain, its split and any surface words, and renderings r
 The manifest records the mix in its canonical form, the inventory, the config's commitment and the
 plugins, and, for a run of several domains, one snapshot per domain; legacy runs record none of these
 (nor does `--mix " legacy "`, which is the legacy run). A run off the
-legacy path is named after its mix, as in `runs/random-synthetic-seed7`.
+legacy path is named after its mix, as in `runs/random-synthetic-seed7`. The default folder, and so
+the run ID, keep the mix as it was typed: `--mix weather,neo` and `--mix neo,weather` draw one run,
+recorded as `neo,weather`, but in the folders `weather_neo-synthetic-seed7` and
+`neo_weather-synthetic-seed7`.
 
 ### Command-line options
 
@@ -830,6 +838,7 @@ legacy path is named after its mix, as in `runs/random-synthetic-seed7`.
 | `--source live` | generate, demo | off the legacy path, each domain's own live source: USGS, NWS or JPL, and synthetic data, with a note, for a domain without one. `--source usgs` still names the USGS feed (off the legacy path, only for a mix of earthquakes alone), and `--feed hour` is for legacy runs only |
 | `--snapshot-file PATH` | generate | replays one frozen live feed: the USGS GeoJSON of a legacy run, as in 0.2.0, or the frozen feed of the one domain of a mix |
 | `--snapshot-dir DIR` | generate | replays an earlier run's snapshot folder, off the legacy path. Each domain is rebuilt as that run read it: from its frozen bytes, or from the seed where that run drew synthetic records. A live run of several domains thus regenerates byte for byte, offline |
+| `mock:held_out=P` | run `--models` | the simulated model with a penalty for held-out sets: `held_out=P` (domains and genres), `held_out_domains=P` or `held_out_genres=P`, joined with `+` for two penalties (see the model table above). Without a penalty it draws exactly as before |
 | `verify-config RUN CONFIG` | its own command | checks a revealed config against a run's commitment: `ok` (exit status 0), `MISMATCH` (1, also for a file that is not JSON), or `error:` (2: no commitment to check, a config that gives a key twice, or arguments that are not a run and a config) |
 
 Frozen bytes are parsed and checked before the run directory is created, on the legacy path too: a
@@ -837,7 +846,6 @@ Frozen bytes are parsed and checked before the run directory is created, on the 
 another source's bytes (even bytes that parse to no records) or a missing file stops `generate` with
 `error: ...` and exit status 2, as does a private config that is malformed or names a plugin that its
 registry refuses.
-| `mock:held_out=P` | run `--models` | the simulated model with a penalty for held-out sets (see the model table above). Without a penalty it draws exactly as before |
 
 ### Report additions
 
@@ -919,25 +927,29 @@ points:
 
 | mix; held-out domains; held-out genres | seed | instances | source gap: CI, coverage | genre gap: CI, coverage | the penalties |
 |---|---|---|---|---|---|
-| random; neo, invented; table, form, radio | 42 | 100 | ±13–15, 64% | ±6, 92% | each flagged by its own gap only, but the domain penalty of 0.2 was missed (+12 ± 13) |
-| the same | 43 | 300 | ±6, 84% | ±3, 98% | each flagged by its own gap only |
+| random; neo, invented; table, form, radio | 42 | 100 | ±12, 64% | ±6, 92% | each flagged by its own gap only; the mock without a penalty was flagged too, by the source gap (+12 ± 12) |
+| the same | 43 | 300 | ±6–7, 84% | ±3, 98% | each flagged by its own gap only |
 | random; invented; radio | 44 | 300 | ±7, 82% | ±5, 88% | each flagged by its own gap only |
 | random; toy; toy-telex (the example config) | 45 | 300 | ±6–7, 89% | ±3, 99% | each flagged by its own gap only |
-| the same (the demo, 0.3 penalties only) | 42 | 20 | ±35–40, 41% | ±17–19, 60% | the genre penalty flagged; the domain penalty missed |
-| `earthquakes,toy:toy-telex`; toy; toy-telex | 46 | 100 | ±14–16, 60% | ±8, 49% | each flagged by its own gap only |
+| the same (the demo, 0.3 penalties only) | 42 | 20 | ±35, 41% | ±17, 60% | the genre penalty flagged; the domain penalty missed |
+| `earthquakes,toy:toy-telex`; toy; toy-telex | 46 | 100 | ±14–16, 60% | ±8–9, 49% | each flagged by its own gap only |
 | `earthquakes:classic,toy:toy-telex`; toy; toy-telex | 47 | 60 | n/a | n/a | neither: the raw gaps move together |
 
-(The half-widths are those of the penalised mocks, measured with the released code; a reworded
-prompt reseeds the mock's errors, so a gap's value moves a little with the code, its width hardly.
+(The half-widths are those of the penalised mocks, measured with the released code. A reworded
+prompt reseeds the mock's errors, so each row is a new draw of the same experiment: rewording the
+reading rules moved the first row's source intervals from ±13–15 to ±12, caught the domain penalty
+of 0.2 that the earlier draw missed (+12 ± 13), and flagged the mock without a penalty (below).
 Before each gap was compared within the other kind's names and its intervals counted instances, the
 first row read ±10, 87% and ±6, 97%, and every penalty was flagged by its own gap. The random mixes
 of several domains and genres lost coverage to the finer strata. In the mixes of the example config,
 whose names and splits coincide, only the design effect changed anything: the source intervals of
 the mocks penalised on genres widened by up to a seventh, since a genre penalty costs all of an
-original's questions at once, so their rows go together.) In every one of these runs, the oracle,
-the naive reader and the mock without a penalty were flagged by neither gap. In the partly tied mix,
-a penalty on held-out domains also raised the raw genre gap (by 12 to 18 points), and a penalty on
-held-out genres the raw source gap (by 11 to 14); the adjusted gaps kept each penalty on its own gap.
+original's questions at once, so their rows go together.) The oracle and the naive reader were
+flagged by neither gap in any of these runs, and the mock without a penalty in all but the first,
+where its source gap read +12 ± 12: a chance excess of about two standard errors, which the
+simulated readers below show in 2–3% of 100-instance runs per gap. In the partly tied mix, a penalty
+on held-out domains also raised the raw genre gap (by 12 to 18 points), and a penalty on held-out
+genres the raw source gap (by 10 to 14); the adjusted gaps kept each penalty on its own gap.
 
 Simulated readers on the same kind of design (random mixes of 40 or 100 instances, neo and invented
 held out, and table, form and radio), 600 to 2,000 runs per cell, measured the intervals and the
@@ -1040,9 +1052,10 @@ evalgen/
   forecast.py           delayed-resolution questions and resolution (USGS FDSN)
   audit.py report.py    audit sample; report.md / report.json
   pipeline.py           one cycle end to end
-tests/                  697 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
+tests/                  747 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
                         digest parsing, reply parsing and scoring, USGS and forecasts, adapters, report,
-                        head to head, reading-rules coverage, CLI; each domain and genre, every domain in
+                        gap intervals, head to head, reading-rules coverage, CLI and its errors, received
+                        runs that try to reach outside their folder; each domain and genre, every domain in
                         every genre (test_matrix.py), mixes and held-out sets, the 0.2.0 regression test;
                         test-only plugins (toy_domain.py, toy_genre.py); fixtures/ holds recorded NWS and
                         JPL responses and pinned invented instances
@@ -1110,6 +1123,12 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   could change after the commitment is published, which the manifest's record and a regeneration of
   the revealed run show only afterwards. Give every real plugin its SHA-256. The nonce check refuses
   words, constants and patterns, but it cannot prove a nonce random.
+* **Neither commitment binds the generation settings.** The seed commitment binds the seed and the
+  config commitment the config's content. Neither binds the mix, the number of instances or variants,
+  or the other settings that the manifest records under `config` (source, pool size, audit rate). An
+  evaluator could choose them after the commitments were published, and the revealed run would still
+  verify and regenerate. Announce them with the commitments when that matters, minding that a list
+  mix names its domains and genres, held-out ones included.
 * **What a run's manifest names.** It names the private config by its file name and each plugin by
   its path as the config gives it, so a run names no folder that the revealed config does not. The
   0.2.0 fields that name files are as they were: the frozen feed a run replays (`snapshot_file`, as
@@ -1122,20 +1141,21 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
 **The source and genre gaps**
 
 * **Power.** The validation table above gives the scale. About 100 instances with two held-out
-  domains and three held-out genres put the adjusted source gap within about ±13 points and the
-  genre gap within ±6; 300 instances within ±6 and ±3. With 20 instances, a 30-point penalty on
-  held-out domains went unflagged. Fewer rows on the held-out side widen the interval: one held-out
-  genre out of seven gave ±5 at 300 instances, where three gave ±3. In simulated 100-instance runs of
-  that design, with answers independent, a reader 20 points worse on the held-out domains was flagged
-  in 93% of runs, 15 points worse in 72% and 10 points in 38%; one 15 points worse in the held-out
-  genres in 95% and 10 points in 50%.
+  domains and three held-out genres put the adjusted source gap within about ±12–15 points (the width
+  moves a little with the mock's draws) and the genre gap within ±6; 300 instances within ±6–7 and
+  ±3. With 20 instances, a 30-point penalty on held-out domains went unflagged. Fewer rows on the
+  held-out side widen the interval: one held-out genre out of seven gave ±5 at 300 instances, where
+  three gave ±3. In simulated 100-instance runs of that design, with answers independent, a reader 20
+  points worse on the held-out domains was flagged in 93% of runs, 15 points worse in 72% and 10
+  points in 38%; one 15 points worse in the held-out genres in 95% and 10 points in 50%.
 * **Comparing within names costs a random mix power.** Each gap compares within the names of the
   other kind (see Report additions), which a list mix needs and a random mix, which draws every genre
-  alike for every domain, does not; there the finer strata compare fewer rows. In the first row of
-  the validation table the source gap's coverage fell from 87% to 64% and its interval widened from
-  ±10 to ±13 points, and in simulation the share of 100-instance runs that flag a reader 15 points
-  worse on held-out domains fell from 83% to 72% (and of 40-instance runs from 42% to 25%); the genre
-  gap, compared within four domains rather than seven genres, lost almost nothing (95% either way).
+  alike for every domain, does not; there the finer strata compare fewer rows. When this was
+  introduced, the first row of the validation table lost source-gap coverage, from 87% to 64%, and
+  its interval widened from ±10 to ±13 points, and in simulation the share of 100-instance runs that
+  flag a reader 15 points worse on held-out domains fell from 83% to 72% (and of 40-instance runs
+  from 42% to 25%); the genre gap, compared within four domains rather than seven genres, lost almost
+  nothing (95% either way).
 * **Tied splits.** Both adjusted gaps compare within the other kind's names. When a mix ties domains
   to genres, the adjusted gap has low coverage (49–60% in the partly tied mix measured; 17% in a
   40-instance run of `weather,neo:email,invented:table` with email held out, in which only weather is

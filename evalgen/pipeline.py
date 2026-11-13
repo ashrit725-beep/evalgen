@@ -294,19 +294,22 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
     )
 
 
-def generator_self_check(instances: Sequence[Instance]) -> dict:
+def generator_self_check(instances: Sequence[Instance], readers: Sequence[Genre] | None = None) -> dict:
     """The generator audits itself: a solver that sees ONLY the prompt text must reproduce the key.
     Each rendering is read in the domain the run recorded for its instance (a legacy run records none,
     and its prompts are read as 0.2.0 read them), by the genre that recognises the digest, which must
-    be the genre it was rendered in; through the glossary the prompt prints, for a non-legacy run."""
+    be the genre it was rendered in; through the glossary the prompt prints, for a non-legacy run.
+    The genre is sniffed among `readers` when they are given: the run's own (mix.Plan.readers), so a
+    genre that this process registered for something else, such as an earlier run's private plugin,
+    never changes the check or appears in it. Without them, among every registered genre."""
     checks = agreements = 0
     problems: list[str] = []
     for inst in instances:
         specs = question_specs(inst)
         for rendering in inst.renderings:
-            got = solve(rendering.prompt, specs, mode="oracle", domain=inst.domain)
+            got = solve(rendering.prompt, specs, mode="oracle", domain=inst.domain, readers=readers)
             if rendering.genre is not None:
-                sniffed = detect_genre(extract_digest(rendering.prompt)).name
+                sniffed = detect_genre(extract_digest(rendering.prompt), readers).name
                 if sniffed != rendering.genre:
                     problems.append(f"{inst.instance_id}/{rendering.variant}: a {rendering.genre} digest is "
                                     f"recognised as {sniffed}")
@@ -575,7 +578,7 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
         for rendering in inst.renderings:
             write_in(run_dir, run_dir / "prompts" / inst.instance_id / f"{rendering.variant}.txt", rendering.prompt)
 
-    self_check = generator_self_check(instances)
+    self_check = generator_self_check(instances, plan.readers or None)
     records = _instance_records(instances, snapshots, {d.name: d for d in domains})
     audit = write_audit_sample(run_dir, instances, records, seedlog.rng("audit"), cfg.audit_rate)
     forecasts = [dict(inst.forecast, instance_id=inst.instance_id, **_recorded(domain=inst.domain))

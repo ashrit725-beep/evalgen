@@ -22,6 +22,8 @@ from conftest import quiet
 from test_usgs_forecast import fake_feed
 
 ROOT = Path(__file__).resolve().parents[1]
+# What git keeps of a run (.gitignore): its manifest, report and miss analysis.
+COMMITTED_RUN_FILES = ("manifest.json", "report.md", "report.json", "miss_analysis.md", "miss_analysis.json")
 WEATHER_FEED = ROOT / "tests" / "fixtures" / "weather" / "raw_feed.json"
 
 
@@ -226,9 +228,14 @@ def test_generate_force_never_deletes_what_the_run_reads(tmp_path, capsys):
 
 def test_report_never_replaces_a_report_with_one_built_from_no_data(tmp_path, capsys):
     """git keeps a run's manifest and report only. Before the fix, `report` on a committed run (or on a
-    fresh clone) replaced its 41,636-byte report with an empty one, "Instances: 0", and exited 0."""
-    committed = tmp_path / "compare-100-v2"
-    shutil.copytree(ROOT / "runs" / "compare-100-v2", committed)
+    fresh clone) replaced its 41,636-byte report with an empty one, "Instances: 0", and exited 0. The run
+    is copied as a fresh clone has it, its committed files alone: a checkout that made the run also holds
+    the files that .gitignore leaves out (instances, replies, scores), and `report` rightly reads those."""
+    source, committed = ROOT / "runs" / "compare-100-v2", tmp_path / "compare-100-v2"
+    committed.mkdir()
+    kept = [name for name in COMMITTED_RUN_FILES if (source / name).is_file()]
+    for name in kept:
+        shutil.copyfile(source / name, committed / name)
     before = {name: (committed / name).read_bytes() for name in ("report.md", "report.json")}
     assert cli.main(["report", str(committed)]) == 2
     err = capsys.readouterr().err
@@ -238,7 +245,7 @@ def test_report_never_replaces_a_report_with_one_built_from_no_data(tmp_path, ca
     for argv in (["run", str(committed), "--models", "oracle"], ["score", str(committed)]):
         assert cli.main(argv) == 2
         capsys.readouterr()
-    assert sorted(p.name for p in committed.iterdir()) == sorted(p.name for p in (ROOT / "runs" / "compare-100-v2").iterdir())
+    assert sorted(p.name for p in committed.iterdir()) == sorted(kept)  # nothing written
     # A run that has no scores yet has no report to write either.
     fresh = pipeline.generate(pipeline.GenerateConfig(seed=4, instances=1), tmp_path / "fresh", log=quiet)
     assert cli.main(["report", str(fresh)]) == 2

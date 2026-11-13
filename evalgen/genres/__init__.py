@@ -13,6 +13,7 @@ as 0.2.0 read it.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Sequence
 
 from .. import registry
 from .base import Genre
@@ -46,10 +47,12 @@ def load_plugin(path: str | Path) -> Genre:
     return REGISTRY.load_plugin(path)
 
 
-def detect_genre(digest_text: str) -> Genre:
+def detect_genre(digest_text: str, readers: Sequence[Genre] | None = None) -> Genre:
     """The genre that wrote `digest_text`: the first genre other than classic whose sniff recognises
-    it, or classic when none does."""
-    for genre in all_genres():
+    it, or classic when none does. The genres asked are `readers`, in their order, when given (a run's
+    own genres, mix.Plan.readers, so that what else the process has registered changes nothing), and
+    otherwise every registered genre (all_genres)."""
+    for genre in all_genres() if readers is None else readers:
         if genre.name != DEFAULT_GENRE and genre.sniff(digest_text):
             return genre
     return get_genre(DEFAULT_GENRE)

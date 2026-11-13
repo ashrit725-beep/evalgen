@@ -551,7 +551,7 @@ def test_every_reader_of_a_digest_applies_its_domains_reading_rules(answer_regis
     with pytest.raises(ValueError, match="gives a qualifier"):
         execute(warmest, data, units=OBSERVATIONS.units)
     monkeypatch.setattr(solver, "get_domain", lambda name=None: OBSERVATIONS)
-    monkeypatch.setattr(solver, "read_digest", lambda prompt, genre=None, domain=None: data)
+    monkeypatch.setattr(solver, "read_digest", lambda prompt, genre=None, domain=None, readers=None: data)
     specs = [{"qid": "Q1", "chain": warmest}, {"qid": "Q2", "chain": coolest}]
     assert solve("PROMPT", specs, domain="observations", genre="classic") == {"Q1": 21.0, "Q2": "obs-002"}
     assert solve("PROMPT", specs, mode="naive", domain="observations", genre="classic") == {"Q1": 23.0, "Q2": "obs-002"}

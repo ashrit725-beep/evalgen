@@ -39,6 +39,7 @@ from evalgen.genres.base import printed_glossary
 from evalgen.report import ANSWER_TYPE_ORDER, _public_held_out_note, answer_family, load_instances, model_metrics
 from evalgen.scoring import is_correct, normalize
 from evalgen.seeds import SeedLog, derive_seed
+from evalgen.solver import extract_digest
 from evalgen.util import canonical_json, read_json, slugify, write_json
 
 from conftest import TOY_PLUGIN, quiet
@@ -337,6 +338,72 @@ def test_a_run_without_a_config_never_draws_what_a_config_loaded(registries, tmp
     with pytest.raises(MixError, match="the run draws on toy, which this process does not know: neither evalgen nor"):
         pipeline.run_models(own, ["oracle"], log=quiet)
     assert cli.main(["report", str(own)]) == 2 and "error: the run draws on toy" in capsys.readouterr().err
+
+
+def test_a_config_that_fails_to_load_leaves_none_of_its_plugins_drawable_without_it(registries, tmp_path):
+    """A private run config refused halfway through loading has run what came before the refusal: its entries stay
+    registered, and no run without the config may draw them, as none may after a config that loads (audit D1).
+    Each entry is marked private as soon as it is registered: here the second plugin is not the file the config
+    pins, and then one file's domain registers but its genre, which takes a built-in name, is refused."""
+    config = write_config(tmp_path / "private.json")
+    data = json.loads(config.read_text(encoding="utf-8"))
+    data["plugins"][1] = {"path": data["plugins"][1], "sha256": "0" * 64}
+    config.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(MixError, match="is not the file its private run config commits to"):
+        plan_mix("random", config)
+    assert get_domain("toy")  # the first plugin ran, and its domain is registered
+    with pytest.raises(MixError, match="which a private run config loaded into this process"):
+        plan_mix("toy:classic")
+
+    plugin = tmp_path / "half.py"
+    plugin.write_text(BOTH.replace('name = "plain"', 'name = "news"  # a built-in name: its registry refuses it'),
+                      encoding="utf-8")
+    half = write_config(tmp_path / "half.json", held_out_domains=("earthquakes-twin",), held_out_genres=(),
+                        plugins=(plugin,))
+    with pytest.raises(MixError, match="cannot be registered"):
+        plan_mix("random", half)
+    assert get_domain("earthquakes-twin")  # its domain registered before its genre was refused
+    with pytest.raises(MixError, match="which a private run config loaded into this process"):
+        plan_mix("earthquakes-twin:classic")
+
+
+LAX = '''\
+"""A held-out genre whose sniff is lax: besides its own digests it claims every digest that mentions weather,
+which the runs of its own config (earthquakes alone) never show it."""
+from evalgen.genres.classic import Classic
+
+
+class Lax(Classic):
+    name = "lax"
+
+    def sniff(self, digest_text):
+        return "WEATHER" in digest_text.upper()
+
+
+GENRE = Lax()
+'''
+
+
+def test_the_generators_self_check_never_depends_on_what_the_process_loaded_before(registries, tmp_path):
+    """The generator's self-check sniffs each prompt's genre among the run's own genres (Plan.readers): the built-in
+    ones, then its config's plugins'. A held-out genre that an earlier config loaded into the process, here one whose
+    sniff also claims weather digests, neither changes a later run's self-check nor appears in it, as it did when the
+    check asked every registered genre (audit D1, residual)."""
+    def self_check(name: str) -> tuple[Path, dict]:
+        run = pipeline.generate(GenerateConfig(seed=812, instances=4, mix="weather:classic,weather:news"),
+                                tmp_path / name / "run", log=quiet)
+        return run, read_json(run / "manifest.json")["self_check"]
+
+    _, fresh = self_check("fresh")
+    plugin = tmp_path / "private" / "lax.py"
+    plugin.parent.mkdir()
+    plugin.write_text(LAX, encoding="utf-8")
+    plan_mix("earthquakes:classic", write_config(tmp_path / "lax.json", held_out_domains=(), held_out_genres=("lax",),
+                                                  plugins=(plugin,)))
+    run, after = self_check("after")
+    prompts = [rendering.prompt for inst in load_instances(run) for rendering in inst.renderings]
+    assert any(genres.detect_genre(extract_digest(prompt)).name == "lax" for prompt in prompts)  # asked of every genre
+    assert after == fresh and fresh["problems"] == [] and fresh["oracle_agreements"] == fresh["oracle_checks"]
 
 
 def test_a_configs_draws_never_depend_on_what_the_process_loaded_before(registries, tmp_path, monkeypatch):
