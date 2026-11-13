@@ -6,13 +6,13 @@ the procedure words of the trade ("over", "out", "copy", "roger", "wilco"). A re
 every field, numbers as digits: its ID, status and source, the time of the record, its group and
 position, each value with its unit (by symbol, or spoken in the unit's words) and qualifier, a remark
 naming the record it repeats, and a location note. Control reads reports back to their station word
-for word: a readback repeats a report and is never a new one. Notices are dispatch broadcasts to all
+for word: a readback repeats a report and is never a new one. Notices are broadcasts by control to all
 stations, each saying when it was issued. Chatter lines are announcements, and call-ups, radio checks
 and acknowledgements carry no data. The times in the margin, when a transcript has them, are when each
 message was sent, never the time of a record.
 
     RADIO TRANSCRIPT: READINGS NET ON CHANNEL 7
-    Session of 13 Apr 2026: traffic for the 24 hours up to 2026-04-13T00:00:00Z.
+    Session of 13 Apr 2026: reports for the 24 hours up to 2026-04-13T00:00:00Z.
     Times at the left are UTC transmission times.
 
     00:04:12 KILO 3: Control, Kilo 3, report follows: reading ID by-12345; status reviewed; operator
@@ -21,7 +21,7 @@ message was sent, never the time of a record.
              as by-54321; location Dogger Bank. Over.
     00:04:31 CONTROL: Kilo 3, Control, I read back: reading ID by-12345; ... Over.
     00:04:40 KILO 3: Control, Kilo 3, readback correct, out.
-    00:09:02 CONTROL: All stations, all stations, this is Control. Dispatch broadcast: RETRACTION
+    00:09:02 CONTROL: All stations, all stations, this is Control. Net broadcast: RETRACTION
              issued 2026-04-12T08:30:00Z: reading report by-12399 withdrawn (probe fault); disregard
              it. Control out.
 
@@ -133,10 +133,12 @@ NOTICE_PLACEMENTS = ("end", "interleaved")  # broadcasts after the reports, or a
 
 HEADERS = (  # the first line of a transcript, which sniff recognises
     "RADIO TRANSCRIPT: {TITLE} NET ON CHANNEL {channel}",
-    "Dispatch log of the {title} net on channel {channel}",
+    "Log of the {title} net on channel {channel}",
     "Transcript of radio traffic on the {title} reporting net (channel {channel})",
 )
-SESSION_LINE = "Session of {date}: traffic for the {window} up to {compiled}."
+# The session follows the window it reports on (_render), so its line says what the reports are about,
+# never that the traffic itself lies in the window: every transmission is sent after it.
+SESSION_LINE = "Session of {date}: reports for the {window} up to {compiled}."
 STAMP_LINE = "Times at the left are UTC transmission times."
 
 # The wording of procedure. A report's intro and a readback's intro tell the two apart.
@@ -148,7 +150,8 @@ CONFIRMATIONS = ("readback correct", "that is correct", "correct")
 ACKNOWLEDGEMENTS = ("copy", "roger", "received")
 CALL_UPS = ("traffic for you", "{noun} traffic to pass", "reports to pass")
 GO_AHEADS = ("go ahead", "send your traffic", "ready to copy")
-BROADCAST_INTROS = ("Dispatch broadcast", "Broadcast message", "General broadcast")
+# Words that name no station: a net run by Base or Control has no "Dispatch" to broadcast.
+BROADCAST_INTROS = ("Net broadcast", "Broadcast message", "General broadcast")
 BROADCAST_ACKS = ("copy", "wilco", "roger")
 ANNOUNCEMENT_INTROS = ("Information only", "For information", "Net announcement")
 SIGNALS = ("loud and clear", "weak but readable", "readable with static")
@@ -396,8 +399,7 @@ def _render(ctx: RenderContext, glossary: Glossary) -> str:
             exchanges.insert(rng.randrange(len(exchanges) + 1), exchange)
     elif broadcasts:
         rng.shuffle(broadcasts)
-        exchanges.append([(net.control, f"All stations, this is {net.control}. Stand by for dispatch broadcasts, "
-                                        "over.")])
+        exchanges.append([(net.control, f"All stations, this is {net.control}. Stand by for broadcasts, over.")])
         exchanges += broadcasts
     for line in ctx.chatter:
         exchanges.insert(rng.randrange(len(exchanges) + 1), net.announcement(line))

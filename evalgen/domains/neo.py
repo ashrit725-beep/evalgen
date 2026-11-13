@@ -23,12 +23,12 @@ its UTC time of day.
 
 An object's designation repeats across its approaches (2026 VK2 passes Earth, then the Moon ten hours
 later), so an approach ID is the designation without spaces, "-ca" and the number of the object's
-approach in the snapshot, in time order, all in lower case as every evalgen ID is: 2026vk2-ca1,
-2026vk2-ca2. The ID names nothing else about the approach (not its body, not its date), because a
-planted report gets a fresh ID from ``new_id``, which knows neither, and an ID must never contradict
-the line it is printed on. A fresh ID is a new designation shaped like those already in the digest: a
-re-report under it is a second designation of the same object, linked by its note, and a phantom is a
-designation that never was.
+approach in the snapshot, in time order, all in lower case (other domains may print their IDs in
+capitals; every ID is matched without regard to letter case): 2026vk2-ca1, 2026vk2-ca2. The ID names
+nothing else about the approach (not its body, not its date), because a planted report gets a fresh ID
+from ``new_id``, which knows neither, and an ID must never contradict the line it is printed on. A fresh
+ID is a new designation shaped like those already in the digest: a re-report under it is a second
+designation of the same object, linked by its note, and a phantom is a designation that never was.
 
 The live source is the CAD API (``CadFeed``): fetched once, frozen as ``raw_cad.json``, SHA-256 hashed
 and replayable with a snapshot file, with synthetic approaches as the fallback when it cannot be
@@ -154,10 +154,10 @@ TRAP_VOCAB = TrapVocab(
     correction_notices=("revised to", "recomputed as", "corrected to"),
 )
 
-# Lines that carry no data ({station}, {h1}, {h2} and the domain's words are filled in by
+# Lines that carry no data ({station}, {h1}, {h2}, {date} and the domain's words are filled in by
 # digest.make_chatter); none reads like a report or a notice, and none holds a number.
 CHATTER = (
-    "The {source_label} mirror {station} was offline from {h1} to {h2} UTC; nothing it sent then is included.",
+    "The {source_label} mirror {station} was offline from {h1} UTC on {date} until {h2} UTC.",
     "Miss distances are nominal values; the uncertainty of each approach is not reproduced here.",
     "No impact risk was flagged for any object in this digest.",
     "Editor's note: entries are reproduced exactly as each {source_label} filed them, units and time conventions "
@@ -174,7 +174,7 @@ RULES = (
     "tells that object's close approaches apart: 2026vk2-ca1 and 2026vk2-ca2 are two close approaches of the object "
     "2026 VK2 (one to Earth and one to the Moon, say), so they are two records, each counted on its own. A re-report "
     "may give a close approach under another designation of the same object, with a note naming the approach ID it "
-    "repeats: it is then the same close approach.",
+    "duplicates: it is then the same close approach.",
     "A miss distance is how far from the body the object passed, a relative velocity is the object's speed relative "
     "to that body, and an absolute magnitude (H) is a plain number.",
 )

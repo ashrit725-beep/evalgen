@@ -262,14 +262,16 @@ def render_digest(reports: list[Report], notices: list[Notice], chatter: list[st
 def make_chatter(rng: random.Random, compiled_at: int, networks: Sequence[str], lines: Sequence[str] = CHATTER,
                  words: Mapping[str, str] | None = None) -> list[str]:
     """One to three of `lines` (at least three), as harmless noise: no IDs, values or coordinates.
-    A line may name a station of one of the `networks` (the records' sources), two clock times and
-    the domain's `words` (its vocabulary, see Domain.words); every line costs the same draws."""
+    A line may name a station of one of the `networks` (the records' sources), two clock times ({h1},
+    {h2}), the UTC date of the first ({date}: "9 September 2026") and the domain's `words` (its
+    vocabulary, see Domain.words); every line costs the same draws (the 0.2.0 lines name no date)."""
     picks = rng.sample(range(len(lines)), rng.randint(1, 3))
     out = []
     for i in sorted(picks):
-        start = compiled_at - rng.randrange(2, 20) * 3600
-        h1 = datetime.fromtimestamp(start, tz=timezone.utc).strftime("%H:%M")
-        h2 = datetime.fromtimestamp(start + rng.randrange(20, 120) * 60, tz=timezone.utc).strftime("%H:%M")
+        start = datetime.fromtimestamp(compiled_at - rng.randrange(2, 20) * 3600, tz=timezone.utc)
+        h1 = start.strftime("%H:%M")
+        h2 = (start + timedelta(minutes=rng.randrange(20, 120))).strftime("%H:%M")
+        date = f"{start.day} {MONTHS_LONG[start.month - 1]} {start.year}"
         station = f"{rng.choice(networks).upper()}.{''.join(rng.choice('ABCDEFGHKLMNPRSTW') for _ in range(3))}"
-        out.append(lines[i].format(station=station, h1=h1, h2=h2, **(words or {})))
+        out.append(lines[i].format(station=station, h1=h1, h2=h2, date=date, **(words or {})))
     return out

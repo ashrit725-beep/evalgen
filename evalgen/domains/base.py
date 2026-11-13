@@ -389,13 +389,13 @@ def _renamed(names: Mapping[str, str], name: str, what: str) -> str:
 
 # Chatter of a domain that has none of its own: lines that carry no data, worded from its vocabulary
 # ({noun}, {plural}, {id_label}, {source_label}, {group_label}) and filled in by digest.make_chatter
-# ({station}, {h1}, {h2}). None of them reads like a report or a notice.
+# ({station}, {h1}, {h2}, {date}). None of them reads like a report or a notice, and none says what a digest
+# holds, which its reports could contradict.
 GENERIC_CHATTER = (
-    "The {source_label} {station} was offline from {h1} to {h2} UTC for maintenance; nothing it sent then is "
-    "included.",
+    "The {source_label} {station} was offline for maintenance from {h1} UTC on {date} until {h2} UTC.",
     "Editor's note: entries are reproduced exactly as each {source_label} filed them, time conventions included.",
     "Late {plural} may be listed in the next edition instead.",
-    "Reminder: each {source_label} reports in its own units; read the unit printed with every value.",
+    "Reminder: units vary from entry to entry; read the unit printed with every value.",
     "This digest is compiled automatically and has not been checked by an editor.",
 )
 
@@ -850,8 +850,9 @@ def standard_lexicon(domain: Domain) -> Lexicon:
                     f"Among the {{records}}, what is the highest {label}{in_unit}?{rounding}"),
             "min": (f"What is the lowest {label}{as_unit} among the {{records}}?{rounding}",
                     f"Among the {{records}}, what is the lowest {label}{in_unit}?{rounding}"),
-            "time_of_max": (f"At what time (UTC, HH:MM) was the highest {label} among the {{records}} recorded?",
-                            f"When, in UTC (HH:MM), was the {noun} with the highest {label} among the {{records}} "
+            # The records (filters included) come first, so that the verb never trails a long filter.
+            "time_of_max": (f"Among the {{records}}, at what time (UTC, HH:MM) was the highest {label} recorded?",
+                            f"Among the {{records}}, when (UTC, HH:MM) was the {noun} with the highest {label} "
                             "recorded?"),
         }
         filters.update((op_name(domain, kind, spec.key), wordings[kind]) for kind in spec.filters)
@@ -884,7 +885,8 @@ RULES_WIDTH = 100  # record_rules wraps each rule at this many columns
 # email thread forwards each one), so a forward must count. record_rules prints them as rules 6 and 7;
 # the earthquake domain adds them to the 0.2.0 rules in its non-legacy prompts.
 REPEAT_RULE = ("A quoted or read-back repeat of a report or notice printed elsewhere in the digest is not a new "
-               "report or notice. A forwarded or relayed report or notice is not a repeat: it counts, once.")
+               "report or notice. A forwarded or relayed report or notice is not a repeat: it counts, once, as the "
+               "report or notice it carries, and rule 1 still says which record that report is.")
 # What a notice is, in any kind of document, where a notice can look like any other message (a forwarded
 # email, a pinned chat message, a footnote, an amendment form, a broadcast), and wherever it is printed:
 # most genres print some notices before the report they name (a chat log's pinned board heads the log),
@@ -941,14 +943,14 @@ def record_rules(domain: Domain) -> str:
     a_final, a_draft = (indefinite(status) for status in domain.statuses)
     vocab = domain.trap_vocab
     position = (" Positions are latitude then longitude in decimal degrees; signed values are negative for south "
-                "and west. Distances are great-circle distances on a sphere of radius 6371 km."
-                if domain.has_location else "")
+                "and west. Distances are great-circle distances on a sphere of radius 6371 km, given in km or in "
+                "miles (1 mile = 1.609344 km)." if domain.has_location else "")
     rules = (
         f"Every {noun} has exactly one {id_label}: the ID printed on its {final} report. "
         f"{indefinite(noun).capitalize()} {noun} may appear in several reports: {a_draft} {draft} report from its "
         f"own {source}, or a re-report from another {source}, either under the same {id_label} or under its own "
-        f"reference with a note naming the {id_label} it repeats. Reports with the same {id_label}, or that name it "
-        f"in such a note, are the same {noun}. Count each {noun} once and refer to it by its {id_label}.",
+        f"reference with a note naming the {id_label} it duplicates. Reports with the same {id_label}, or that "
+        f"name it in such a note, are the same {noun}. Count each {noun} once and refer to it by its {id_label}.",
         f"If reports of the same {noun} disagree, use the values from its {final} report: {draft} values are "
         "superseded.",
         f"{NOTICE_RULE} A correction (a CORRECTION notice, a notice saying that a value was revised, or any notice "

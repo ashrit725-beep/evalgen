@@ -361,7 +361,7 @@ class _Ruled(_Frame):
         "id": "{Id_label}", "source": "Reporting {source_label}", "status": "Report status", "time": "Time of {noun}",
         "group": "{Group_label}", "position": "Position (lat, lon)", "value": "{Label}",
         "qualifier": "{Label}, {qualifier}", "xref": "Note", "place": "Location note", "sent": "Sent to desk",
-        "checked": "Checked by", "target": "Report amended ({id_label})", "original": "Original serial no.",
+        "checked": "Checked by", "target": "Report amended ({id_label})", "original": "Original form no.",
         "issued": "Date and time issued", "amended": "Field corrected", "old": "As first filed",
         "new": "Corrected value", "new_qualifier": "Corrected {qualifier}", "reason": "Reason given",
         "action": "Action",
@@ -451,7 +451,7 @@ class _Dotted(_Frame):
         "id": "{Id_label}", "status": "Status", "source": "Filed by ({source_label})", "group": "{Group_label}",
         "time": "Date/time of {noun}", "latitude": "Latitude", "longitude": "Longitude", "value": "{Label}",
         "qualifier": "{Label}, {qualifier}", "xref": "Duplicate note", "place": "Location note", "sent": "Forwarded",
-        "signature": "Signature", "target": "Amends {id_label}", "original": "Original ref. no.", "issued": "Issued",
+        "signature": "Signature", "target": "Amends {id_label}", "original": "Original form no.", "issued": "Issued",
         "amended": "Field amended", "old": "Value as first filed", "new": "Corrected value",
         "new_qualifier": "Corrected {qualifier}", "reason": "Reason", "action": "Action",
     }
@@ -551,6 +551,7 @@ class _Draft:
     item: RecordReport | Notice
     look: _Look
     number: str = ""
+    filed: int = 0  # when the form was filed: a report's sent time, an amendment's issue time (_number)
 
     @property
     def ref(self) -> str:
@@ -560,7 +561,7 @@ class _Draft:
 
 def _render(ctx: RenderContext, glossary: Glossary) -> str:
     """The forms of a context's reports, notices and chatter, as `ctx.style` draws them: drafted in
-    planting order, arranged, numbered down the batch and written out under the header."""
+    planting order, arranged, numbered in filing order and written out under the header."""
     rng, style = ctx.rng, ctx.style
     reports = _report_drafts(ctx, glossary)
     amendments = [_amendment_draft(notice, ctx, glossary) for notice in map(_generic_notice, ctx.notices)]
@@ -611,7 +612,7 @@ def _report_drafts(ctx: RenderContext, glossary: Glossary) -> list[_Draft]:
                      units=tuple(_draw_unit(rng, f, style["units"]) for f in glossary.fields),
                      note=rng.choice(vocab.duplicate_notes) if e.same_as else "",
                      sent=format_time(sent, _draw(rng, TIME_PRESETS[style["time"]]), offset), preparer=_preparer(rng))
-        drafts.append(_Draft("report", e, look))
+        drafts.append(_Draft("report", e, look, filed=sent))
     return drafts
 
 
@@ -625,7 +626,7 @@ def _amendment_draft(notice: Notice, ctx: RenderContext, glossary: Glossary) -> 
                  unit=None if field is None else _draw_unit(rng, glossary.fields[field], style["units"]),
                  phrase=rng.choice(ctx.domain.trap_vocab.retraction_notices) if notice.kind == "retraction" else "",
                  preparer=_preparer(rng))
-    return _Draft(notice.kind, notice, look)
+    return _Draft(notice.kind, notice, look, filed=notice.time)
 
 
 def _preparer(rng: random.Random) -> str:
@@ -633,15 +634,17 @@ def _preparer(rng: random.Random) -> str:
 
 
 def _number(body: Sequence[_Draft | str], rng: random.Random, compiled_at: int, glossary: Glossary) -> None:
-    """Give every form its serial number, rising down the batch in each frame's style ("—" for one that
-    could be taken for a record ID)."""
+    """Give every form its serial number in each frame's style ("—" for one that could be taken for a
+    record ID), rising in the order the forms were filed (_Draft.filed; forms filed at one time in the
+    order they are printed), not the order they are printed in: an amendment, issued after the report
+    it amends was sent, always has a higher number than the form it names as the original, wherever
+    the batch prints it."""
     year = datetime.fromtimestamp(compiled_at, tz=timezone.utc).year % 100
     serial = rng.randrange(1000, 9000)
-    for item in body:
-        if isinstance(item, _Draft):
-            serial += rng.randint(1, 3)
-            number = item.look.frame.number(serial, year)
-            item.number = number if _clear(number, glossary) else "—"
+    for item in sorted((item for item in body if isinstance(item, _Draft)), key=lambda draft: draft.filed):
+        serial += rng.randint(1, 3)
+        number = item.look.frame.number(serial, year)
+        item.number = number if _clear(number, glossary) else "—"
 
 
 def _header(ctx: RenderContext, glossary: Glossary) -> str:

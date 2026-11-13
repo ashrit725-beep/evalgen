@@ -1452,10 +1452,12 @@ def test_a_live_run_of_several_domains_replays_from_its_frozen_snapshots(tmp_pat
     assert [name for name in files if files[name] != again[name]] == []
     a, b = (read_json(run / "manifest.json") for run in (live, replay))
     assert b["config"] == {**a["config"], "snapshot_dir": str(live / "snapshot")}
-    assert b["replay"] == {"source_run": str(live.resolve()), "same_code": True}
-    for name, snapshot in a["snapshots"].items():  # the same records, from the same bytes; noted as a replay
-        assert {k: v for k, v in snapshot.items() if k not in ("note", "fetched_at")} == {
-            k: v for k, v in b["snapshots"][name].items() if k not in ("note", "fetched_at")}
+    assert b["replay"] == {"source_run": str(live.resolve()), "same_code": True, "same_seed": True}
+    for name, snapshot in a["snapshots"].items():  # the same records, from the same bytes, fetched when the live
+        # run fetched them (a replay keeps the time its frozen snapshot records); only the note says "replay"
+        assert {k: v for k, v in snapshot.items() if k != "note"} == {
+            k: v for k, v in b["snapshots"][name].items() if k != "note"}
+    assert all(a["snapshots"][name]["fetched_at"] for name in ("earthquakes", "weather", "neo"))
     volatile = {"run_id", "seed_commitment", "seed_nonce", "generated_at_utc", "config", "replay", "snapshots"}
     assert {k: v for k, v in a.items() if k not in volatile} == {k: v for k, v in b.items() if k not in volatile}
     # One frozen file replays one domain only; frozen snapshots must hold every domain of the mix.

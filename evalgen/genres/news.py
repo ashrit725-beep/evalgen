@@ -139,8 +139,8 @@ QUOTES = (
 ROLES = ("a spokesperson for the {source} {source_label}", "a duty officer with the {source} {source_label}",
          "who coordinates reporting for the {source} {source_label}")
 BACKGROUND = (
-    "Each {source_label} files its own reports, in its own units and time conventions, and newsrooms such as this "
-    "one compile them as they arrive.",
+    "Each {source_label} files its own reports, units and time conventions vary from one report to the next, and "
+    "newsrooms such as this one compile them as they arrive.",
     "Reports like these are shared through common feeds; this article reproduces each one as it was filed.",
     "Round-ups of {plural} appear on this page every {span}; earlier editions remain in the archive.",
 )

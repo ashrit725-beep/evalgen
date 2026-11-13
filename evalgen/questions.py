@@ -24,10 +24,12 @@ keyword that defaults to earthquakes, which draws, guards and words exactly as 0
 from __future__ import annotations
 
 import json
+import math
 import random
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
+from fractions import Fraction
 from typing import Any, Mapping, Sequence
 
 from .digest import MONTHS_LONG
@@ -153,7 +155,8 @@ def public_templates(domain: Domain = EARTHQUAKES) -> tuple[Template, ...]:
 
 def filter_ops(domain: Domain = EARTHQUAKES) -> tuple[str, ...]:
     """Every filter a twin may use, in the order twins sample them: each field's threshold filters in
-    its spec's order, then the distance, time and group filters (ops.FILTER_OPS for earthquakes)."""
+    its spec's order, then the distance, time and group filters (for earthquakes, the 0.2.0 order of
+    ops.FILTER_OPS, which the tests pin)."""
     names = [op_name(domain, kind, spec.key) for spec in domain.fields for kind in spec.filters]
     if domain.has_location:
         names.append(op_name(domain, "within_distance"))
@@ -178,7 +181,9 @@ def monotone_pairs(domain: Domain = EARTHQUAKES) -> frozenset[tuple[str, str]]:
     return frozenset(pairs)
 
 
-# The 0.2.0 module-level names, for earthquakes (the pipeline and the tests import them).
+# The 0.2.0 module-level names, for earthquakes, kept for the tests, which compare them with what is
+# derived for every domain (the pipeline derives each domain's pools with public_templates,
+# exclusive_pairs and monotone_pairs, and _compatible is always given the domain's own pairs).
 PUBLIC_TEMPLATES = public_templates(EARTHQUAKES)
 _EXCLUSIVE = exclusive_pairs(EARTHQUAKES)
 _MONOTONE = monotone_pairs(EARTHQUAKES)
@@ -387,10 +392,22 @@ def draw_terminal(op: str, records: Sequence[ResolvedRecord], rng: random.Random
 
 
 def guards_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *, domain: Domain = EARTHQUAKES,
-              time_margin: int = TIME_MARGIN_S) -> bool:
+              time_margin: int = TIME_MARGIN_S, strict: bool = False) -> bool:
     """Reject parameters that sit too close to any record, or answers that are not unique. Thresholds
     keep their field's margin, radii the domain's distance margin and time windows `time_margin`
-    seconds (the instance's window's, Context.time_margin)."""
+    seconds (the instance's window's, Context.time_margin).
+
+    `strict` (every run off the legacy path) also rejects a value answer that is not settled by its
+    record's exact value (strict_answer_ok). The 0.2.0 guards (the default, which the legacy path
+    keeps) check none of this."""
+    if not _guards_ok(chain, records, domain=domain, time_margin=time_margin):
+        return False
+    return not strict or strict_answer_ok(chain, records, domain=domain)
+
+
+def _guards_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *, domain: Domain,
+               time_margin: int) -> bool:
+    """The 0.2.0 guards, made generic (see guards_ok)."""
     units = domain.units
     for raw in chain:
         s = Step(raw, units)
@@ -430,6 +447,48 @@ def guards_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *, domai
     return True
 
 
+def strict_answer_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *,
+                     domain: Domain = EARTHQUAKES) -> bool:
+    """Whether a value answer is settled by its record's exact value (guards_ok, strict): for a max or a
+    min, the stored value of the answer's record, converted exactly into the asked unit (as a printed
+    value stands for the stored one), is not exactly halfway between two answers of the asked places,
+    and the key, which is computed in floating point, is that exact value rounded (_rounding_settled).
+    So the key never rests on how a tie is rounded, or on the binary rounding of a conversion."""
+    units = domain.units
+    term = Step(terminal_step(chain), units)
+    if term.kind not in ("max", "min"):
+        return True
+    rows = rows_after_filters(chain, records, units=units)
+    if not rows:
+        return True
+    best = (max if term.kind == "max" else min)(rows, key=lambda r: r.values[term.field])
+    _, unit = answer_spec(chain, domain)
+    return _rounding_settled(best.values[term.field], domain.field(term.field), unit,
+                             execute(chain, [best], units=units))
+
+
+def _exact(x: float) -> Fraction:
+    """A unit's scale or offset as the exact ratio it stands for: 5/9 for °F, 1397/3125000 km/s for a mile
+    per hour, not their binary roundings."""
+    return Fraction(x).limit_denominator(10 ** 12)
+
+
+def _rounding_settled(value: float, spec: FieldSpec, symbol: str | None, key: Any) -> bool:
+    """Whether a stored value's answer in the unit `symbol` is settled by its exact value: the stored value
+    converted exactly into that unit is not exactly halfway between two answers of its places (68.3 in a
+    unit of 4 is 17.075, which half up gives 17.08 and the binary 17.074999... gives 17.07), and the key
+    (computed in floating point) is that exact value rounded. A value asked in no unit is answered as
+    stored."""
+    if symbol is None:
+        return True
+    unit = find_unit(spec.units, symbol)
+    places = unit.places(spec.decimals)
+    scaled = (Fraction(repr(value)) - _exact(unit.offset)) / _exact(unit.scale) * 10 ** places
+    if scaled - math.floor(scaled) == Fraction(1, 2):
+        return False
+    return abs(float(math.floor(scaled + Fraction(1, 2)) / Fraction(10) ** places) - key) < 10.0 ** -(places + 3)
+
+
 def _interesting(chain: Sequence[dict], records: Sequence[ResolvedRecord], value: Any, rng: random.Random) -> bool:
     kind = Step(terminal_step(chain)).kind
     if kind == "count":
@@ -453,8 +512,9 @@ def fingerprint(chain: Sequence[dict]) -> str:
 
 def instantiate(template: Template, records: Sequence[ResolvedRecord], rng: random.Random, ctx: Context, *,
                 used_chains: set[str], taken_labels: set[str], attempts: int = 40,
-                domain: Domain = EARTHQUAKES) -> Question | None:
-    """Draw parameters for a template until every guard passes and the question is new to the run."""
+                domain: Domain = EARTHQUAKES, strict: bool = False) -> Question | None:
+    """Draw parameters for a template until every guard passes and the question is new to the run
+    (`strict`: with the guards of runs off the legacy path, see guards_ok)."""
     for _ in range(attempts):
         chain: list[dict] = [{"op": "dedupe"}]
         complete = True
@@ -469,7 +529,7 @@ def instantiate(template: Template, records: Sequence[ResolvedRecord], rng: rand
             continue
         chain.extend(tail)
         if fingerprint(chain) in used_chains or not guards_ok(chain, records, domain=domain,
-                                                              time_margin=ctx.time_margin):
+                                                              time_margin=ctx.time_margin, strict=strict):
             continue
         value = execute(chain, records, units=domain.units)
         if value is None or not _interesting(chain, records, value, rng):
@@ -486,7 +546,7 @@ def instantiate(template: Template, records: Sequence[ResolvedRecord], rng: rand
 def compose_questions(records: Sequence[ResolvedRecord], public: Sequence[Template], new: Sequence[Template],
                       rng: random.Random, ctx: Context, n_questions: int, used_chains: set[str],
                       usage: dict[str, int], *, domain: Domain = EARTHQUAKES,
-                      strict_twins: bool = False) -> list[Question]:
+                      strict_twins: bool = False, strict: bool = False) -> list[Question]:
     """3-5 questions per instance, balanced between the public and the new pool.
 
     `usage` counts how often each template has been used so far in the run. A template may only run
@@ -496,7 +556,11 @@ def compose_questions(records: Sequence[ResolvedRecord], public: Sequence[Templa
     With `strict_twins` (every run off the legacy path), a twin that has not been used yet counts as
     used 0 times, so the rule holds from a run's first question: a short run, or the share of a run
     about one domain, ends with every twin pair at most one question apart. The 0.2.0 rule (the
-    default, which the legacy path keeps) lets a template run ahead freely until its twin's first use."""
+    default, which the legacy path keeps) lets a template run ahead freely until its twin's first use.
+
+    With `strict` (every run off the legacy path, too), questions keep the guards of those runs: no value
+    answer that rests on how a tie is rounded (guards_ok). The default is the 0.2.0 composer, draw for
+    draw."""
     twin = {t.template_id: t.twin_of for t in new if t.twin_of}
     twin.update({public_id: new_id for new_id, public_id in list(twin.items())})
     unused = 0 if strict_twins else 1 << 30  # how often a twin that was never used counts as used
@@ -518,7 +582,7 @@ def compose_questions(records: Sequence[ResolvedRecord], public: Sequence[Templa
         rng.shuffle(candidates)
         for template in candidates[:6]:
             question = instantiate(template, records, rng, ctx, used_chains=used_chains, taken_labels=taken_labels,
-                                   domain=domain)
+                                   domain=domain, strict=strict)
             if question is not None:
                 question.qid = f"Q{len(questions) + 1}"
                 questions.append(question)

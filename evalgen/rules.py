@@ -51,10 +51,11 @@ Reading rules (identical for every digest):
 class Mishandle:
     """How a careless reader resolves the digest: which traps they misread, and how."""
 
-    keep_retracted: tuple[str, ...] = ()  # retraction ignored: the phantom counts as a quake
-    ignore_correction_for: tuple[str, ...] = ()  # correction ignored: wrong magnitude kept
-    split: tuple[tuple[str, str, str], ...] = ()  # (ref, network, status) re-report counted as its own quake
-    prefer_preliminary_for: tuple[str, ...] = ()  # preliminary values used instead of reviewed
+    keep_retracted: tuple[str, ...] = ()  # retraction ignored: the retracted phantom counts as a record
+    ignore_correction_for: tuple[str, ...] = ()  # correction ignored: the corrected field's wrong value kept
+    split: tuple[tuple[str, str, str], ...] = ()  # (ref, source, status): a re-report counted as its own record
+    # the unsettled report's values used instead of the settling one's (PRELIMINARY instead of REVIEWED)
+    prefer_preliminary_for: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, list]:
         return {

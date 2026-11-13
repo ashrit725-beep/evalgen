@@ -323,12 +323,17 @@ def held_out_metrics(rows: list[dict], index: Mapping[tuple, dict], instances: l
     domain public, neo's difficulty reads as a gap of the email genre. Within names, a domain never
     rendered in genres of both splits drops out of the genre gap, and a genre never given to originals
     of domains of both splits out of the source gap; where none is left, no stratum compares the two
-    sides and the adjusted gap is n/a rather than a flag on the wrong kind. (The template pool needs no
-    stratum: every instance asks as many public as new questions, give or take one, since an odd
-    number of questions draws the pool of the last one at random (rarely two, when no template of one
-    pool fits its records), and within each domain a twin pair never drifts more than one question
-    apart.) The intervals of both gaps treat the instance as the independent unit (split_gap). An
-    instance's split is the one it records; a genre's comes from `inventory`."""
+    sides and the adjusted gap is n/a rather than a flag on the wrong kind. (The template pool is not a
+    stratum. The pools are balanced within each domain over a run, since every instance asks as many
+    public as new questions, give or take one, and within each domain a twin pair never drifts more
+    than one question apart; but not within each difficulty stratum, where a domain's share of public
+    questions differs by chance and by which templates fit its records. So for a model with a large
+    template gap a run's adjusted source gap moves by a few points either way, with no bias over
+    designs: in 40 designs of 40 instances, with the simulated model's 30-point template gap, the
+    expected adjusted source gap ranged from -3.7 to +5.1 points (SD 2.1), against intervals of about
+    ±20. A pool stratum would cost more coverage than that.) The intervals of both gaps treat the
+    instance as the independent unit (split_gap). An instance's split is the one it records; a genre's
+    comes from `inventory`."""
     inventory = inventory or Inventory({}, {})
     by_id = {inst.instance_id: inst for inst in instances}
     questions = {(inst.instance_id, q.qid): q for inst in instances for q in inst.questions}
@@ -935,7 +940,8 @@ def render_markdown(data: dict, run_dir: Path) -> str:
     else:
         md += [
             f"- **Data source:** {run['source']}" + (f" ({run['snapshot_url']})" if run.get("snapshot_url") else "")
-            + f"; {run['pool_events']} events in the snapshot pool; window: {run['window_hours']} h ending {run['compiled_at']}.",
+            + f"; {run['pool_events']} {'events' if legacy else 'records'} in the snapshot pool; window: "
+            f"{run['window_hours']} h ending {run['compiled_at']}.",
             f"- **Snapshot SHA-256:** `{run['snapshot_sha256']}`"
             + (f"; raw feed SHA-256 `{run['raw_feed_sha256']}`" if run.get("raw_feed_sha256") else ""),
         ]

@@ -18,6 +18,8 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def to_km(value: float, unit: str) -> float:
+    """A length in km from km or miles (the 0.2.0 helper, kept for the tests; the code converts with
+    units.Unit)."""
     if unit == "km":
         return value
     if unit == "mi":
@@ -26,6 +28,8 @@ def to_km(value: float, unit: str) -> float:
 
 
 def from_km(value_km: float, unit: str) -> float:
+    """A length in km in km or miles (the 0.2.0 helper, kept for the tests; the code converts with
+    units.Unit)."""
     if unit == "km":
         return value_km
     if unit == "mi":

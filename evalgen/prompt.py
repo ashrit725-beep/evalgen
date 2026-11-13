@@ -97,7 +97,7 @@ KIND_SPECS = {
     "id": "one {id_label}, as a string",
     "number": "a number",
     "group": "one {group_label} exactly as written in the digest, or \"tie\"",
-    "clock": "a UTC time string \"HH:MM\" (24-hour clock)",
+    "clock": "a UTC time string \"HH:MM\" (24-hour clock; seconds are dropped, not rounded)",
     "probability": "a probability between 0 and 1",
 }
 NUMBER_IN_UNIT = "a number in {unit}, rounded as the question says"  # a number answer asked in a unit

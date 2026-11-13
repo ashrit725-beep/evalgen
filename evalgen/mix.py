@@ -765,7 +765,8 @@ def plan_mix(mix: str, private_config: str | Path | None = None) -> Plan:
 def single_choice(mix: str) -> tuple[Domain, Genre] | None:
     """The one (domain, genre) of every instance of a run with this mix (and no private config), or
     None for a legacy run. A mix that leaves a choice raises MixError: its instances are drawn one by
-    one (Plan.draw)."""
+    one (Plan.draw). Only the tests call it: a run plans its mix with plan_mix and draws each instance
+    with Plan.draw."""
     plan = plan_mix(mix)
     if plan.legacy:
         return None

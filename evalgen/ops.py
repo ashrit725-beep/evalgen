@@ -45,8 +45,10 @@ from .util import plain_number, utc_iso
 
 EPS = 1e-9
 
-# The 0.2.0 operation names, in their 0.2.0 order. FILTER_OPS is also the population that
-# questions.compose_new_templates samples twin templates from, so its order is part of the output.
+# The 0.2.0 operation names, in their 0.2.0 order. Nothing in the package reads them: twins sample
+# questions.filter_ops(domain), built from each FieldSpec's `filters` order, so it is the order of the
+# earthquake specs' filters (domains/earthquakes.py) that is part of the output. The tests pin
+# filter_ops(EARTHQUAKES) and the earthquake terminals to these tuples.
 FILTER_OPS = (
     "mag_at_least",
     "mag_below",

@@ -1,8 +1,11 @@
 """Plain data records that flow through one evaluation cycle.
 
 Event      one real earthquake: a row of the frozen snapshot (the ground truth)
-Report     one digest line describing an earthquake (what some network said about it)
-Notice     a CORRECTION or RETRACTION line in a digest
+Report     one report of an earthquake as a digest prints it (what some network said about it): a
+           line, a table row, a form, a radio message, ...
+Notice     a correction or retraction notice, in whatever form its genre prints it: a NOTICE, UPDATE
+           or CORRECTION line, a forwarded email, a pinned chat message, a footnote, an amendment
+           form, a dispatch broadcast
 Trap       a deliberately injected pitfall whose correct handling is known in advance
 Question   one composed question; its operation chain is its machine-readable meaning
 Rendering  one textual presentation of an instance (original or a metamorphic variant)
@@ -10,7 +13,10 @@ Instance   everything needed to ask, answer and grade one test item
 
 Event and Report also answer to the generic names that evalgen.domains uses for every record type
 (``values``, ``group``, ``source``). The fields added in 0.3.0 are optional and left out of the JSON
-while unset, so an earthquake instance in the classic genre serializes exactly as in 0.2.0.
+while unset, as they are on the legacy path, so a legacy instance (--mix legacy, the 0.2.0 run)
+serializes exactly as in 0.2.0. Off the legacy path every instance records its domain and split, and
+each rendering its genre: earthquakes in the classic genre too (--mix earthquakes:classic), whose
+prompts also print the glossary and the rules of every genre.
 """
 from __future__ import annotations
 
@@ -118,7 +124,9 @@ class Question:
     template_id: str
     pool: str  # "public" or "new"
     chain: list[dict[str, Any]]
-    answer_type: str  # count | event_id | magnitude | depth | distance | region | utc_time
+    # A registered answer type (scoring.get_answer_type): the 0.2.0 ones (count, event_id, magnitude, depth,
+    # distance, region, utc_time) or a domain's own (Domain.answer_types: weather_temperature, neo_approach_id, ...).
+    answer_type: str
     unit: str | None = None
     evidence: list[str] = field(default_factory=list)  # IDs of events that pass the filters
     # Code-computed difficulty features, used to compare the template pools like for like:

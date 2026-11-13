@@ -20,7 +20,8 @@ from evalgen.domains import DEFAULT_DOMAIN, get_domain
 from evalgen.domains.base import (REPEAT_RULE, Domain, FieldSpec, Glossary, Lexicon, Record, RecordReport, TrapVocab,
                                   numbered_rules, record_rules)
 from evalgen.domains.base import DISTANCE_WORDINGS, standard_lexicon
-from evalgen.domains.earthquakes import DOMAIN, EARTHQUAKES, GENRE_LEXICON, LEXICON, genre_lexicon
+from evalgen.domains.earthquakes import (DOMAIN, EARTHQUAKES, GENRE_LEXICON, LEXICON, OCCURRED_FILTERS,
+                                         OCCURRED_QUESTIONS, genre_lexicon)
 from evalgen.domains.weather import WEATHER
 from evalgen.geo import KM_PER_MILE, from_km
 from evalgen.models import EVENT_ID_PATTERN, Notice, Question, Trap
@@ -297,16 +298,24 @@ def test_off_the_legacy_path_no_radius_reads_as_the_end_of_a_range():
     assert LEXICON.filters["within_distance"] == ("within {value} of {place}", "no more than {value} from {place}")
     assert EARTHQUAKES.lexicon is LEXICON  # what legacy prompts are worded with
     assert EARTHQUAKES.prompt_lexicon() == GENRE_LEXICON == genre_lexicon(LEXICON)
-    assert GENRE_LEXICON.filters == {**LEXICON.filters, "within_distance": DISTANCE_WORDINGS}
+    assert GENRE_LEXICON.filters == {**LEXICON.filters, "within_distance": DISTANCE_WORDINGS, **OCCURRED_FILTERS}
     assert (GENRE_LEXICON.records, GENRE_LEXICON.all_records, GENRE_LEXICON.questions) == (
-        LEXICON.records, LEXICON.all_records, LEXICON.questions)
+        LEXICON.records, LEXICON.all_records, {**LEXICON.questions, **OCCURRED_QUESTIONS})
+    # An earthquake "occurred" at its time (rule 6): off the legacy path no time wording says it was "recorded",
+    # which a reader could take for the time a message was sent; as many wordings, so the draws stay the same.
+    for table, new in ((LEXICON.filters, OCCURRED_FILTERS), (LEXICON.questions, OCCURRED_QUESTIONS)):
+        for op, wordings in new.items():
+            assert len(wordings) == len(table[op]) and not any("recorded" in w for w in wordings)
+            assert any("recorded" in w for w in table[op])  # the 0.2.0 wording, which legacy prompts keep
     assert len(DISTANCE_WORDINGS) == len(LEXICON.filters["within_distance"])
     assert all(re.match(r"(?:within|at a distance of no more than) \{value\} (?:of|from) \{place\}$", w)
                for w in DISTANCE_WORDINGS)
     assert WEATHER.prompt_lexicon().filters["within_distance"] == DISTANCE_WORDINGS
     assert standard_lexicon(WEATHER).filters["within_distance"] == DISTANCE_WORDINGS  # any domain worded from its words
-    own = replace(LEXICON, filters={**LEXICON.filters, "within_distance": ("inside {value} of {place}",)})
-    assert genre_lexicon(own) is own  # a wording of a domain's own is kept
+    own = replace(LEXICON, filters={**LEXICON.filters, "within_distance": ("inside {value} of {place}",),
+                                    "time_between": ("dated {start} to {end}",)},
+                  questions={**LEXICON.questions, "time_of_largest": ("When did the strongest one strike?",)})
+    assert genre_lexicon(own) == own  # a wording of a domain's own is kept
 
     question = Question("Q1", "P02", "public", [
         {"op": "dedupe"}, {"op": "depth_at_least", "value": 16.0, "unit": "km"},

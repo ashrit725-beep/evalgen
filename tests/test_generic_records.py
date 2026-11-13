@@ -660,7 +660,7 @@ def test_chatter_speaks_the_domains_words(toys):
             for line in lines:
                 assert "{" not in line and not re.search(r"by-\d|\d\.\d", line), line
                 assert line in {template.format(station=_station(line), h1=_clock(line, 0), h2=_clock(line, 1),
-                                                **domain.words) for template in GENERIC_CHATTER}
+                                                date=_date(line), **domain.words) for template in GENERIC_CHATTER}
     assert toys.flat.chatter is GENERIC_CHATTER and EARTHQUAKES.chatter != GENERIC_CHATTER
 
 
@@ -672,6 +672,11 @@ def _station(line: str) -> str:
 def _clock(line: str, n: int) -> str:
     clocks = re.findall(r"\d{2}:\d{2}", line)
     return clocks[n] if len(clocks) > n else ""
+
+
+def _date(line: str) -> str:
+    match = re.search(r"\d{1,2} [A-Z][a-z]+ \d{4}", line)
+    return match.group(0) if match else ""
 
 
 def test_audit_rows_and_report_tallies_read_records(toys, tmp_path):

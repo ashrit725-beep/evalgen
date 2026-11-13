@@ -334,19 +334,21 @@ def _synthetic_snapshot(seedlog: SeedLog, pool_size: int, note: str | None = Non
     )
 
 
-def _replayed(path: Path, raw: bytes, window_hours: int) -> tuple[int, str, str]:
-    """(window_hours, url, note) for frozen feed bytes read from `path`. Replaying a run's own frozen
-    snapshot keeps its window and origin, from the snapshot.json beside it, and checks its hash."""
-    url, note = f"file:{path.name}", f"frozen feed file {path.name}"
+def _replayed(path: Path, raw: bytes, window_hours: int) -> tuple[int, str, str, str | None]:
+    """(window_hours, url, note, fetched_at) for frozen feed bytes read from `path`. Replaying a run's own
+    frozen snapshot keeps its window, its origin and when it was fetched, from the snapshot.json beside it,
+    and checks its hash; a bare frozen file says nothing of when it was fetched (None)."""
+    url, note, fetched_at = f"file:{path.name}", f"frozen feed file {path.name}", None
     sidecar = path.with_name("snapshot.json")
     if sidecar.exists():
         meta = read_json(sidecar)
         window_hours, url = meta.get("window_hours", window_hours), meta.get("url") or url
+        fetched_at = meta.get("fetched_at")
         if meta.get("raw_sha256") and meta["raw_sha256"] != sha256_hex(raw):
             note += " -- WARNING: bytes do not match the raw_sha256 recorded in snapshot.json"
         else:
             note = f"replay of frozen feed {path.name} (SHA-256 verified)"
-    return window_hours, url, note
+    return window_hours, url, note, fetched_at
 
 
 def build_snapshot(source: str, seedlog: SeedLog, *, feed: str = "day", pool_size: int = 360,
@@ -356,7 +358,8 @@ def build_snapshot(source: str, seedlog: SeedLog, *, feed: str = "day", pool_siz
     if snapshot_file:
         path = Path(snapshot_file)
         raw = path.read_bytes()
-        window, url, note = _replayed(path, raw, 1 if "hour" in path.name else 24)
+        # A legacy replay is stamped with the time it ran, as 0.2.0 stamped it.
+        window, url, note, _ = _replayed(path, raw, 1 if "hour" in path.name else 24)
         return _usgs_snapshot(raw, seedlog.master, url, window, note=note), raw
     if source == "usgs":
         try:
@@ -398,8 +401,9 @@ def build_domain_snapshot(domain: Domain, source: str, seedlog: SeedLog, *, pool
     live = domain.live
     if snapshot_file:
         raw, records, compiled_at, window = read_frozen_feed(domain, snapshot_file)
-        window, url, note = _replayed(Path(snapshot_file), raw, window)
-        return _live_domain_snapshot(domain, seedlog, raw, records, compiled_at, window, url, note), raw
+        window, url, note, fetched_at = _replayed(Path(snapshot_file), raw, window)
+        return _live_domain_snapshot(domain, seedlog, raw, records, compiled_at, window, url, note,
+                                     fetched_at=fetched_at), raw
     if source == "synthetic":
         return _synthetic_domain_snapshot(domain, seedlog, pool_size), None
     if source != LIVE and (live is None or source != live.source):
@@ -416,7 +420,7 @@ def build_domain_snapshot(domain: Domain, source: str, seedlog: SeedLog, *, pool
     except (requests.RequestException, *PARSE_ERRORS) as exc:  # out of reach, or bytes its parser cannot read
         note = f"{live.source} unavailable ({failure_text(exc)}); fell back to synthetic data"
         return _synthetic_domain_snapshot(domain, seedlog, pool_size, note=note), None
-    return _live_domain_snapshot(domain, seedlog, raw, records, compiled_at, window, url, None), raw
+    return _live_domain_snapshot(domain, seedlog, raw, records, compiled_at, window, url, None, fetched_at=_now()), raw
 
 
 PARSE_ERRORS = (ValueError, KeyError, TypeError, AttributeError, IndexError)  # bytes a live parser cannot read
@@ -500,14 +504,20 @@ def _synthetic_domain_snapshot(domain: Domain, seedlog: SeedLog, pool_size: int,
                     events=records, events_sha256=events_sha256(records), note=note, domain=domain.name)
 
 
+def _now() -> str:
+    """The current time, as a snapshot records when its live source was fetched."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _live_domain_snapshot(domain: Domain, seedlog: SeedLog, raw: bytes, records: Sequence[Any], compiled_at: int,
-                          window_hours: int, url: str, note: str | None) -> Snapshot:
+                          window_hours: int, url: str, note: str | None, *, fetched_at: str | None) -> Snapshot:
+    """A snapshot of a domain's live source. `fetched_at` is when its bytes were fetched: now for a fetch,
+    and for a replay what the frozen snapshot recorded (None for a bare frozen file), never the replay's
+    own time, so that a replay writes the files of the run it replays."""
     records = _checked(domain, records)
     return Snapshot(source=domain.live.source, seed=seedlog.master, compiled_at=compiled_at,
                     window_hours=window_hours, events=records, events_sha256=events_sha256(records),
-                    raw_sha256=sha256_hex(raw), url=url,
-                    fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), note=note,
-                    domain=domain.name)
+                    raw_sha256=sha256_hex(raw), url=url, fetched_at=fetched_at, note=note, domain=domain.name)
 
 
 def _checked(domain: Domain, records: Sequence[Any]) -> list[Any]:

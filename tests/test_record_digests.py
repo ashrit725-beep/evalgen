@@ -448,7 +448,8 @@ def test_non_legacy_prompts_word_every_answer_type_from_its_kind(toys):
                      "toy_reading_id": "one reading ID, as a string",
                      "toy_area": "one sea area exactly as written in the digest, or \"tie\""}
     assert [domain_answer_spec(t, False, domain) for t in ("count", "utc_time", "probability", "toy_temperature")] == [
-        "an integer", "a UTC time string \"HH:MM\" (24-hour clock)", "a probability between 0 and 1", "a number"]
+        "an integer", "a UTC time string \"HH:MM\" (24-hour clock; seconds are dropped, not rounded)",
+        "a probability between 0 and 1", "a number"]
     assert [domain_placeholder(t, domain) for t in ("toy_reading_id", "toy_area", "distance")] == [
         "\"<reading ID>\"", "\"<sea area or tie>\"", "<number>"]
     assert domain_unit_words(domain) == {"°C": "degrees Celsius", "°F": "degrees Fahrenheit", "m": "metres",

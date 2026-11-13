@@ -138,7 +138,7 @@ def test_the_rules_name_every_notice_phrase_and_add_what_close_approaches_need()
         assert phrase in flat, phrase
     assert all(len(line) <= 100 for line in rules.splitlines())
     for line in CHATTER:  # chatter carries no number, ID or value, and fills in nothing but the domain's words
-        text = line.format(station="JPL.KTR", h1="01:00", h2="02:30", **NEO.words)
+        text = line.format(station="JPL.KTR", h1="01:00", h2="02:30", date="9 September 2026", **NEO.words)
         assert not re.search(r"\d", re.sub(r"\{h[12]\}", "", line)) and "{" not in text
         assert not re.search(NEO.id_pattern, text.lower())
 

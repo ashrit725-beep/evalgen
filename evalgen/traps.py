@@ -600,8 +600,9 @@ def builders_for(domain: Domain) -> Builders:
 def inject_traps(events: list[Event], questions: list[Question], rng: random.Random, *, compiled_at: int,
                  window_hours: int, config: TrapConfig = TrapConfig(),
                  domain: Domain = EARTHQUAKES) -> tuple[list[Report], list[Notice], list[Trap]]:
-    """Build the digest's reports and notices: one reviewed report per event, plus the traps. Each trap
-    is the best of up to `config.candidates` placements (_rank), guarded off the legacy path."""
+    """Build the digest's reports and notices: one settling report per record (under the domain's first
+    status: REVIEWED for earthquakes), plus the traps. Each trap is the best of up to `config.candidates`
+    placements (_rank), guarded off the legacy path."""
     build = builders_for(domain)
     units = domain.units
     site = _Site(domain, events, questions, rng, compiled_at, window_start=compiled_at - window_hours * 3600,

@@ -168,7 +168,8 @@ CORRECTION_NOTICES = ("revised to", "amended to", "corrected to", "restated as",
 CHATTER = (
     "Editor's note: entries are reproduced exactly as each {source_label} filed them, units included.",
     "Late {plural} may be listed in the next edition instead.",
-    "Reminder: each {source_label} files in its own units; the glossary gives every conversion.",
+    "Reminder: units vary from entry to entry; read the unit printed with every value, and convert it as the "
+    "glossary says.",
     "This digest is compiled automatically and has not been checked by an editor.",
     "Ledger maintenance ran from {h1} to {h2} UTC; filing resumed afterwards.",
     "Gate traffic at several {group_label}s was heavier than usual.",

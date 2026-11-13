@@ -132,7 +132,8 @@ def test_every_notice_is_printed_once_where_the_rules_count_it():
                 bound = domain.bind(inst.surface)
                 rules = " ".join(bound.rules_text().split())
                 assert REPEAT_RULE in rules and "quoted, forwarded or read-back" not in rules
-                assert "A forwarded or relayed report or notice is not a repeat: it counts, once." in rules
+                assert ("A forwarded or relayed report or notice is not a repeat: it counts, once, as the report or "
+                        "notice it carries, and rule 1 still says which record that report is.") in rules
                 notices = sorted((n.kind, n.target) for n in inst.notices)
                 assert notices
                 for rendering in inst.renderings:

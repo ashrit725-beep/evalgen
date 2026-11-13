@@ -771,4 +771,5 @@ def test_chatter_lines_carry_no_data():
             assert "{" not in line and not re.search(r"\d\.\d|-\d{5}|°", line), line
             assert CLASSIC.parse(line, WEATHER.glossary(), WEATHER) == DigestData([], [])
     assert len(WEATHER.chatter) >= 3 and all("{" not in line.format(station="KJFK.ABC", h1="01:00", h2="02:00",
-                                                                     **words) for line in WEATHER.chatter)
+                                                                     date="9 September 2026", **words)
+                                             for line in WEATHER.chatter)

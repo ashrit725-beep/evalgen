@@ -20,7 +20,7 @@ Run directory layout:
     prompts/inst-*/v*.txt  the exact prompt texts sent to models
     responses/<model>/     raw replies         scores/<model>.json  graded rows
     audit/                 ~2% human spot-check sample
-    forecasts.json         pending / resolved forecasts (USGS mode)
+    forecasts.json         pending / resolved forecasts (earthquakes read from the USGS feed)
     report.md, report.json
 """
 from __future__ import annotations
@@ -87,8 +87,10 @@ class GenerateConfig:
     # private run config (held-out domains and genres, and the plugins that define them).
     mix: str = "legacy"
     private_config: str | None = None  # path of the private run config (JSON)
-    # The frozen snapshots of an earlier run off the legacy path (its snapshot folder), which replay every
-    # domain of the mix as that run read it: from its frozen live bytes, or synthetic (sources.frozen_feed).
+    # The frozen snapshots of an earlier run off the legacy path (its snapshot folder). A domain that run read
+    # live is replayed from its frozen bytes, whatever the seed; a domain it drew synthetic records for (by
+    # choice, or after a fallback) is drawn again from `seed`, so it matches that run only with that run's
+    # seed (sources.frozen_feed). A replay reads these snapshots whatever `source` says.
     snapshot_dir: str | None = None
 
     OPTIONAL_KEYS: ClassVar[tuple[str, ...]] = ("mix", "private_config", "snapshot_dir")  # recorded only when set
@@ -196,8 +198,9 @@ def compose_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Tem
     """An instance's records, questions and answer key. Off the legacy path, a domain with surface
     words draws them first (seed path "instance", i, "surface", which legacy runs never create) and
     the bound domain renames the sampled records (Domain.dress); everything after uses the bound
-    domain and the renamed records, and every twin pair stays in step from the run's first question
-    (compose_questions, strict_twins). The key is code over the snapshot's records."""
+    domain and the renamed records, every twin pair stays in step from the run's first question, and
+    questions keep the stricter guards of runs off the legacy path (compose_questions, strict_twins and
+    strict). The key is code over the snapshot's records."""
     surface = None
     if not legacy and domain.has_surface:
         surface = domain.draw_surface(seedlog.rng("instance", index, "surface"))
@@ -208,7 +211,7 @@ def compose_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Tem
     q_rng = seedlog.rng("instance", index, "questions")
     questions = compose_questions(events, public_templates(domain), new_templates, q_rng, ctx,
                                   q_rng.randint(cfg.questions_min, cfg.questions_max), used_chains, usage,
-                                  domain=domain, strict_twins=not legacy)
+                                  domain=domain, strict_twins=not legacy, strict=not legacy)
     answer_key = {q.qid: execute(q.chain, events, units=domain.units) for q in questions}
     return Composition(domain, surface, events, questions, answer_key)
 
@@ -350,28 +353,43 @@ def _instance_records(instances: Sequence[Instance], snapshots: Mapping[str, Sna
     return records
 
 
-def _replay_check(frozen: str | None, log: Log) -> dict | None:
+def _replay_check(frozen: str | None, log: Log, *, seed: int | None = None, drawn: Sequence[str] = ()) -> dict | None:
     """When replaying another run's frozen feed (a file of its snapshot folder) or its frozen snapshots
-    (the folder), note whether that run used the same code."""
+    (the folder), note whether that run used the same code. Off the legacy path (`seed`: the replay's),
+    also note whether it used the same seed: the domains that run drew synthetic records for (`drawn`)
+    are drawn again from this run's seed, so they are that run's records only with that run's seed, and
+    a replay with another seed says so (a legacy replay records what 0.2.0 recorded)."""
     if not frozen:
         return None
     path = Path(frozen).resolve()
     source_run = next((folder for folder in [path, *path.parents][:4]
                        if is_run_dir(folder) and (folder / "manifest.json").exists()), None)
     if source_run is None:
-        return {"source_run": None, "same_code": None}
-    same = read_json(source_run / "manifest.json").get("code_sha256") == code_fingerprint()
+        return {"source_run": None, "same_code": None, **({} if seed is None else {"same_seed": None})}
+    manifest = read_json(source_run / "manifest.json")
+    same = manifest.get("code_sha256") == code_fingerprint()
     if not same:
         log("[generate] warning: the source run was generated with different code, so a replay "
             "with the same seed will not reproduce its instances exactly")
-    return {"source_run": str(source_run), "same_code": same}
+    entry = {"source_run": str(source_run), "same_code": same}
+    if seed is not None:
+        entry["same_seed"] = manifest.get("seed") == seed
+        if not entry["same_seed"] and drawn:
+            log(f"[generate] warning: the source run was generated with another seed, so the domains it drew "
+                f"synthetic records for ({', '.join(drawn)}) are drawn again from this seed, not replayed: only "
+                "the domains it read live are its records")
+    return entry
 
 
 def run_name(cfg: GenerateConfig) -> str:
     """The default name of a run's directory: <source>-seed<seed>, and for any mix but legacy the mix
-    first ("random-synthetic-seed7"), so that it never takes the legacy run's place."""
-    name = f"{cfg.source}-seed{cfg.seed}"
-    return name if cfg.mix.strip() == LEGACY else f"{slugify(cfg.mix)}-{name}"
+    first ("random-synthetic-seed7"), so that it never takes the legacy run's place. A replay off the
+    legacy path (frozen snapshots, or a frozen feed file) reads its snapshots whatever the source says,
+    so it is named a replay ("random-replay-seed7"), never after the source given or the run it replays."""
+    if cfg.mix.strip() == LEGACY:
+        return f"{cfg.source}-seed{cfg.seed}"
+    source = "replay" if cfg.snapshot_dir or cfg.snapshot_file else cfg.source
+    return f"{slugify(cfg.mix)}-{source}-seed{cfg.seed}"
 
 
 def _check_sources(plan: Plan, cfg: GenerateConfig) -> dict[str, Path | None]:
@@ -535,7 +553,7 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
         if plan.legacy:  # the 0.2.0 snapshot and seed paths
             snapshot, raw = build_snapshot(cfg.source, seedlog, feed=cfg.feed, pool_size=cfg.pool_size,
                                            snapshot_file=cfg.snapshot_file)
-        elif cfg.snapshot_dir:  # replay each domain as the frozen run read it: its frozen bytes, or synthetic
+        elif cfg.snapshot_dir:  # a live domain from its frozen bytes; a synthetic one drawn again from the seed
             feed = frozen[domain.name]
             snapshot, raw = build_domain_snapshot(domain, "synthetic" if feed is None else LIVE, seedlog,
                                                   pool_size=cfg.pool_size,
@@ -552,10 +570,12 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
         about = "" if len(domains) == 1 else f" ({domain.name})"
         if snapshot.note:
             log(f"[generate] note{about}: {snapshot.note}")
-        log(f"[generate] snapshot{about}: {snapshot.source}, {len(snapshot.events)} events, "
+        log(f"[generate] snapshot{about}: {snapshot.source}, {len(snapshot.events)} "
+            f"{'events' if plan.legacy else 'records'}, "
             f"sha256 {snapshot.events_sha256[:16]}…")
 
-    replay = _replay_check(cfg.snapshot_file or cfg.snapshot_dir, log)
+    replay = _replay_check(cfg.snapshot_file or cfg.snapshot_dir, log, seed=None if plan.legacy else cfg.seed,
+                           drawn=[name for name, feed in frozen.items() if feed is None])
     if plan.legacy:
         new_templates = {EARTHQUAKES.name: compose_new_templates(seedlog.rng("templates", "new"), EARTHQUAKES)}
     else:
@@ -809,8 +829,9 @@ def resolve_run(run_dir: Path, *, now: int | None = None, fetch: Callable | None
     manifest = read_manifest(run_dir)
     path = run_dir / "forecasts.json"
     if not path.exists():
-        log("[resolve] this run has no forecast questions (only earthquake instances from the live USGS feed ask "
-            "one: --source usgs, or --source live with earthquakes in the mix)")
+        log("[resolve] this run has no forecast questions (only earthquake instances read from the USGS feed ask "
+            "one: --source usgs, or --source live with earthquakes in the mix, or a frozen USGS feed replayed with "
+            "--snapshot-file or --snapshot-dir)")
         return {}
     load_run_plugins(manifest, private_config, log=log)  # a plugin domain resolves its own forecasts
     forecasts = read_run_json(path)
@@ -834,7 +855,9 @@ def resolve_run(run_dir: Path, *, now: int | None = None, fetch: Callable | None
 def demo(seed: int = 42, instances: int = 20, *, source: str = "synthetic", mix: str = LEGACY,
          private_config: str | None = None, run_dir: Path | None = None, force: bool = False,
          log: Log = print) -> Path:
-    """Everything offline, no API keys: generate -> run (mock, oracle, naive) -> score -> report.
+    """No API keys: generate -> run (mock, oracle, naive) -> score -> report. Offline with
+    source="synthetic" (the default); "usgs" or "live" fetch each domain's live source once (the NWS once per
+    station), falling back to synthetic data when it cannot be read.
 
     `mix` and `private_config` are generate's (GenerateConfig). The default directory
     runs/demo-<source>-seed<seed> (with the mix first for any mix but legacy) is overwritten on every

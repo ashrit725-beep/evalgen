@@ -7,20 +7,21 @@ key of each field's qualifier, a "note" column for the notes that name the recor
 and a "place" column when some report names a place. A field's unit is named in its header or given
 with every value; a qualifier has a column of its own or follows its value in parentheses. A caption
 opens the table, comment lines (the instance's chatter among them) sit around and between its rows,
-and the notices follow it as numbered footnotes.
+and the notices follow it as numbered footnotes. The examples below show two of the column orders a
+style draws (COLUMN_ORDERS: id_first in the CSV, source_first in the markdown).
 
     csv       Table 2. Earthquakes reported in the 24 hours to 2026-02-25 06:00:00 UTC (edition 860-H).
               # One row per report, as received: preliminary rows and re-reports are kept.
-              event ID,network,status,time (UTC),region,latitude,longitude,magnitude,mag_type,depth (km),note
-              us644635vy,us,reviewed,2026-02-24 13:03:48,Tonga,-19.968,-174.191,5,mb,35.6,
-              pt44035055,pt,preliminary,2026-02-24 20:36:34,Nevada,38.27,-118.314,1.2,ml,7.7,Dup of nn93493261
+              event ID,time (UTC),network,status,region,latitude,longitude,magnitude,mag_type,depth (km),note
+              us644635vy,2026-02-24 13:03:48,us,reviewed,Tonga,-19.968,-174.191,5,mb,35.6,
+              pt44035055,2026-02-24 20:36:34,pt,preliminary,Nevada,38.27,-118.314,1.2,ml,7.7,Dup of nn93493261
               # Station CI.BSN was offline from 13:00 to 14:39 UTC for maintenance; its readings are not included.
 
               Notes:
               [1],"RETRACTION (2026-02-24T21:00:00Z): us7000xyz1 was not a real earthquake (quarry blast); ignore..."
-    markdown  | reading ID | operator | status   | time                      | sea area  | position          | ...
-              | ---------- | -------- | -------- | ------------------------- | --------- | ----------------- | ...
-              | by-12345   | ukmo     | reviewed | 2026-04-12T07:12:19+01:00 | North Sea | 56.512°N, 3.104°E | ...
+    markdown  | operator | reading ID | status   | time                      | sea area  | position          | ...
+              | -------- | ---------- | -------- | ------------------------- | --------- | ----------------- | ...
+              | ukmo     | by-12345   | reviewed | 2026-04-12T07:12:19+01:00 | North Sea | 56.512°N, 3.104°E | ...
 
               [^1]: Correction notice, issued 2026-04-12 09:00:00 UTC: water temperature for by-12345 revised
               from 11 °C to 12.3 °C (spar).

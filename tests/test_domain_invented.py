@@ -285,8 +285,8 @@ def test_ids_take_each_instances_prefix_and_stay_unique():
 def test_the_seed_pins_the_world_and_every_surface():
     """What one seed draws in this domain alone, pinned when the domain was written: later code may
     change how instances are composed, but never the world or the words a seed gives. (The surfaces
-    were pinned again, deliberately, when common English words joined the words no surface may coin;
-    the world is as first pinned.)"""
+    were pinned again, deliberately, when common English words joined the words no surface may coin,
+    and when the chatter's reminder about units was reworded; the world is as first pinned.)"""
     pinned = read_json(FIXTURES / "pinned.json")
     log = SeedLog(pinned["seed"])
     snapshot, raw = build_domain_snapshot(INVENTED, "synthetic", log, pool_size=pinned["pool_size"])

@@ -237,8 +237,8 @@ LEXICON = Lexicon(
                        "ID."),
         "max(temp)": ("What was the highest temperature, in {unit}, among the {records}? {rounding}",
                       "Among the {records}, how warm was the warmest one, in {unit}? {rounding}"),
-        "time_of_max(temp)": ("At what time (UTC, HH:MM) was the warmest of the {records} recorded?",
-                              "When, in UTC (HH:MM), was the highest temperature among the {records} observed?"),
+        "time_of_max(temp)": ("Among the {records}, at what time (UTC, HH:MM) was the warmest one recorded?",
+                              "Among the {records}, when (UTC, HH:MM) was the highest temperature observed?"),
         "max(wind)": ("What was the highest wind speed, in {unit}, among the {records}? {rounding}",
                       "Among the {records}, how strong was the strongest wind, in {unit}? {rounding}"),
         "min(wind)": ("What was the lowest wind speed, in {unit}, among the {records}? {rounding}",
@@ -270,12 +270,11 @@ TRAP_VOCAB = TrapVocab(
 
 # Lines without data ({station} is a sensor of one of the digest's feeds, see digest.make_chatter).
 CHATTER = (
-    "Sensor {station} was offline from {h1} to {h2} UTC for maintenance; nothing it sent then is included.",
+    "Sensor {station} was offline for maintenance from {h1} UTC on {date} until {h2} UTC.",
     "Wind speeds are sustained two-minute averages; gusts are not listed in this digest.",
     "Editor's note: entries are reproduced exactly as each {source_label} filed them, units and time conventions "
     "included.",
-    "Reminder: {plural} are listed in the units their {source_label} reports in; read the unit printed with every "
-    "value.",
+    "Reminder: units vary from entry to entry; read the unit printed with every value.",
     "Pressures are altimeter settings, reduced to sea level.",
     "This digest is compiled automatically and has not been checked by a forecaster.",
 )

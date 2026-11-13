@@ -116,16 +116,31 @@ LEXICON = Lexicon(
 )
 
 
+# The 0.2.0 wordings that say an earthquake was "recorded" at its time, where the rules say when it
+# "occurred" (rule 6), and that a reader could take for the time a message was sent; off the legacy path
+# each is worded as the rules word it, as many wordings for as many, so the draws stay the same.
+OCCURRED_FILTERS = {"time_between": ("that occurred between {start} and {end}", "that occurred from {start} up to {end}")}
+OCCURRED_QUESTIONS = {"time_of_largest": ("At what time (UTC, HH:MM) did the largest of the {records} occur?",
+                                          "When, in UTC (HH:MM), did the strongest of the {records} occur?")}
+
+
 def genre_lexicon(lexicon: Lexicon) -> Lexicon:
     """The wording of earthquake questions off the legacy path: `lexicon`, except that a radius is never
     worded "no more than {value} from {place}", which beside a depth threshold reads as a range of depths
     ("with a depth of 16 km or more and no more than 40 km from station US-28"). A lexicon that still
     words radii as 0.2.0 did takes DISTANCE_WORDINGS instead, which name the distance before the number
-    (as many wordings, so the draws stay the same); any other wording of its own is kept. Legacy prompts
-    keep the 0.2.0 wording."""
-    if lexicon.filters.get("within_distance") != LEXICON.filters["within_distance"]:
-        return lexicon
-    return replace(lexicon, filters={**lexicon.filters, "within_distance": DISTANCE_WORDINGS})
+    (as many wordings, so the draws stay the same), and one that still says an earthquake was "recorded"
+    at a time takes the wordings of OCCURRED_FILTERS and OCCURRED_QUESTIONS; any other wording of its own
+    is kept. Legacy prompts keep the 0.2.0 wording."""
+    filters, questions = dict(lexicon.filters), dict(lexicon.questions)
+    if filters.get("within_distance") == LEXICON.filters["within_distance"]:
+        filters["within_distance"] = DISTANCE_WORDINGS
+    for table, words, new in ((filters, LEXICON.filters, OCCURRED_FILTERS), (questions, LEXICON.questions,
+                                                                          OCCURRED_QUESTIONS)):
+        for op, wordings in new.items():
+            if table.get(op) == words[op]:
+                table[op] = wordings
+    return replace(lexicon, filters=filters, questions=questions)
 
 
 GENRE_LEXICON = genre_lexicon(LEXICON)

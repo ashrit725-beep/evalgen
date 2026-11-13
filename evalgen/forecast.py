@@ -1,4 +1,5 @@
-"""Delayed-resolution forecast questions (USGS mode only).
+"""Delayed-resolution forecast questions, asked only of earthquake instances read from the USGS feed
+(--source usgs, or --source live with earthquakes in the mix, or a frozen USGS feed replayed).
 
 A forecast cannot be memorised, scraped or fine-tuned for, because its answer does not exist yet:
 "Will an M4.5+ earthquake occur within R km of L in the 24 hours after this digest?" It is stored
