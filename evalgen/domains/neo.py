@@ -25,10 +25,12 @@ An object's designation repeats across its approaches (2026 VK2 passes Earth, th
 later), so an approach ID is the designation without spaces, "-ca" and the number of the object's
 approach in the snapshot, in time order, all in lower case (other domains may print their IDs in
 capitals; every ID is matched without regard to letter case): 2026vk2-ca1, 2026vk2-ca2. The ID names
-nothing else about the approach (not its body, not its date), because a planted report gets a fresh ID
-from ``new_id``, which knows neither, and an ID must never contradict the line it is printed on. A fresh
-ID is a new designation shaped like those already in the digest: a re-report under it is a second
-designation of the same object, linked by its note, and a phantom is a designation that never was.
+nothing else about the approach (not its body, not its date): a re-report may give an approach under
+another designation, with a note naming the approach it duplicates, and an ID must never contradict
+the line it is printed on. Off the legacy path a planted report takes the designation of an approach
+drawn with the digest but not kept (traps.py), or, when none is left, a fresh one shaped like those in
+the digest (``mimic_id``): a re-report under it is a second designation of the same object, linked by
+its note, and a phantom is an approach that was never made.
 
 The live source is the CAD API (``CadFeed``): fetched once, frozen as ``raw_cad.json``, SHA-256 hashed
 and replayable with a snapshot file, with synthetic approaches as the fallback when it cannot be
@@ -50,7 +52,7 @@ import requests
 
 from ..sources import USER_AGENT
 from ..units import Unit
-from .base import RULES_WIDTH, Domain, FieldSpec, Lexicon, Record, TrapVocab, record_rules
+from .base import RULES_WIDTH, Domain, FieldSpec, Lexicon, Record, TrapVocab, folded, record_rules, stored_places
 
 AU_KM = 149_597_870.7  # the astronomical unit, in km (IAU 2012, exact)
 LD_KM = 384_400.0  # the lunar distance, in km, as this domain defines it
@@ -142,10 +144,10 @@ LEXICON = Lexicon(
     },
 )
 
-# Catalogues of close approaches. JPL's lists every live record; synthetic records come from all three.
-# Mirrors re-report other catalogues' approaches: a re-reporter is never the record's own catalogue.
-SOURCES = ("jpl", "neocc", "neodys")
-SOURCE_WEIGHTS = (0.55, 0.3, 0.15)
+# Catalogues of close approaches. JPL's lists every live record; synthetic records come from all four, the
+# Minor Planet Center's included, so that every catalogue that re-reports approaches also lists its own.
+SOURCES = ("jpl", "neocc", "neodys", "mpc")
+SOURCE_WEIGHTS = (0.5, 0.25, 0.13, 0.12)
 TRAP_VOCAB = TrapVocab(
     rereporting_sources=("mpc", "neocc", "neodys"),
     duplicate_notes=("same approach as", "duplicate of", "mirror of"),
@@ -221,25 +223,33 @@ def _provisional(rng: random.Random, year: int, last_half: int) -> str:
     return f"{year}{rng.choice(HALF_MONTHS[:last_half + 1])}{rng.choice(ORDER_LETTERS)}{_cycle(rng)}"
 
 
-def _number(rng: random.Random, digits: int) -> str:
-    return str(rng.randrange(10 ** (digits - 1), 10 ** digits))
+NUMBERED = (3000, 650_000)  # the asteroid numbers synthetic objects carry (_draw_designation)
+
+
+def _number(rng: random.Random, digits: int, within: tuple[int, int] = (1, 1 << 62)) -> str:
+    """A number of `digits` digits, inside `within` (from, below) where the two ranges meet."""
+    low, high = max(10 ** (digits - 1), within[0]), min(10 ** digits, within[1])
+    if low >= high:
+        low, high = 10 ** (digits - 1), 10 ** digits
+    return str(rng.randrange(low, high))
 
 
 def _like(example: str, rng: random.Random) -> str:
-    """A packed designation of the same kind as `example` (upper case): a provisional one of its year,
-    found no later in it (a comet's with its type letter), a periodic comet's or an asteroid's number of
-    as many digits, or else its digits redrawn."""
+    """A packed designation of the same kind as `example` (upper case), drawn as such designations are:
+    a provisional one of its year and half-month, with its order letter and cycle drawn afresh (a comet's
+    with its type letter), a periodic comet's number of as many digits, an asteroid's number of as many
+    digits inside the range numbered objects come from, or else its digits redrawn."""
     comet = _COMET.fullmatch(example)
     if comet is not None:
         return comet["kind"] + _like(comet["rest"], rng)
     found = _PROVISIONAL.fullmatch(example)
     if found is not None:
-        return _provisional(rng, int(found["year"]), HALF_MONTHS.index(found["half"]))
+        return f"{found['year']}{found['half']}{rng.choice(ORDER_LETTERS)}{_cycle(rng)}"
     periodic = _PERIODIC.fullmatch(example)
     if periodic is not None:
         return _number(rng, len(periodic["number"])) + periodic["kind"]
     if example.isdigit():
-        return _number(rng, len(example))
+        return _number(rng, len(example), NUMBERED)
     return "".join(rng.choice("0123456789") if c.isdigit() else c for c in example)
 
 
@@ -313,6 +323,10 @@ def _clamped(value: float, least: float, most: float) -> float:
     return min(max(value, least), most)
 
 
+MOON_MIN_AU = 0.0003  # the closest synthetic approach to the Moon (about 45,000 km)
+FOUND_BEFORE_DAYS, FOUND_AFTER_DAYS = 21, 5  # when an object is found, around its approach (_draw_object)
+
+
 def _draw_year(rng: random.Random, h: float, current: int) -> int:
     """The year of a provisional designation: small objects are mostly found in the year they pass close."""
     if h >= 24.0 and rng.random() < 0.65:
@@ -326,12 +340,13 @@ def _year(ts: int) -> int:
 
 def _draw_designation(rng: random.Random, h: float, when: int, taken: set[str]) -> str:
     """A packed designation not in `taken` (and added to it): a number for most large objects, else a
-    provisional designation found by the half-month of `when` in its year."""
+    provisional designation found by the half-month of `when` in its year (an older one, in any of its
+    half-months). `when` is when the object was found, which a caller keeps before the compilation."""
     numbered_chance = 0.85 if h < 21.0 else 0.35 if h < 23.5 else 0.03
     current = _year(when)
     while True:
         if rng.random() < numbered_chance:
-            designation = str(rng.randrange(3000, 650_000))
+            designation = str(rng.randrange(*NUMBERED))
         else:
             year = _draw_year(rng, h, current)
             designation = _provisional(rng, year, half_month(when) if year == current else len(HALF_MONTHS) - 1)
@@ -353,14 +368,17 @@ def _draw_object(rng: random.Random, body: BodyModel, compiled_at: int, window_h
     if body.name == "Earth":
         h += (0.025 - dist_au) * H_PER_AU
     h = _clamped(h, h_least, h_most)
-    designation = _draw_designation(rng, h, compiled_at, taken)
+    # Small objects are found around their close approach (up to three weeks before it, or days after),
+    # never after the compilation: a designation never postdates the digest that lists it.
+    found = min(compiled_at - 60, time + rng.randint(-FOUND_BEFORE_DAYS * DAY_S, FOUND_AFTER_DAYS * DAY_S))
+    designation = _draw_designation(rng, h, found, taken)
     provisional = _PROVISIONAL.fullmatch(designation)
     recent = provisional is not None and int(provisional["year"]) >= _year(compiled_at) - 2
     h = round(h, 3 if recent else rng.choice((1, 2)))
     source = rng.choices(SOURCES, weights=SOURCE_WEIGHTS, k=1)[0]
     approaches = [Approach(designation, time, body.name, source, _values(dist_au, velocity, h))]
     if body.name == "Earth" and dist_au < MOON_PAIR_MAX_AU and rng.random() < MOON_PAIR_CHANCE:
-        moon_au = _clamped(dist_au + rng.uniform(-MOON_ORBIT_AU, MOON_ORBIT_AU), 0.0003, MOON_PAIR_MAX_AU - 0.0001)
+        moon_au = folded(dist_au + rng.uniform(-MOON_ORBIT_AU, MOON_ORBIT_AU), MOON_MIN_AU, MOON_PAIR_MAX_AU - 0.0001)
         moon_velocity = max(0.15, velocity + rng.uniform(-1.0, 1.0))
         moon_time = time + rng.randint(-MOON_PAIR_HOURS * 3600, MOON_PAIR_HOURS * 3600)
         if compiled_at - window_hours * 3600 < moon_time <= compiled_at - 60:
@@ -471,6 +489,37 @@ class Neo(Domain):
     statuses = ("confirmed", "preliminary")
     trap_vocab = TRAP_VOCAB
     chatter = CHATTER
+    # An object's close approaches are each other's near twins: a digest that lists an object passing
+    # Earth often lists it passing the Moon hours away (pipeline.sample_with_slots).
+    twin_seconds = MOON_PAIR_HOURS * 3600
+    twin_share = 0.5
+
+    def twin_key(self, record: Record) -> str:
+        """An approach's twins are the other approaches of its object: its designation."""
+        return designation_of(record.id)
+
+    def planted_value(self, spec: FieldSpec, value: float, like: float, peers: Sequence[float] = ()) -> float:
+        """An object's H is written to the places its own listing gives it, which go with its designation (a
+        recently found object's to 3, an older one's to 1 or 2: _draw_object), whatever the catalogue's other
+        objects have; the other fields as every domain's (Domain.planted_value)."""
+        if spec.key == ABSOLUTE_MAGNITUDE.key:
+            return super().planted_value(spec, value, like)
+        return super().planted_value(spec, value, like, peers)
+
+    def rereport_values(self, record: Record, slot: Record, rng: random.Random, *, same_id: bool) -> dict[str, float]:
+        """What a report filed in a slot's place gives for an approach (Domain.rereport_values): the slot's miss
+        distance and velocity, and, under the approach's own designation, the H of that object as another
+        catalogue lists it: the record's, off by 0.05 to 0.3 (catalogues fit H to their own observations), at
+        the places the record's designation gives it (_draw_object), so that a designation and its H never
+        disagree. Under the slot's own designation, a report keeps the slot's H with the rest."""
+        values = dict(slot.values)
+        if same_id:
+            h = record.values[ABSOLUTE_MAGNITUDE.key]
+            places = stored_places(h, ABSOLUTE_MAGNITUDE.decimals)
+            step = 10.0 ** -places
+            off = max(step, round(rng.uniform(0.05, 0.3) / step) * step)
+            values[ABSOLUTE_MAGNITUDE.key] = round(h + rng.choice((-1, 1)) * off, places) + 0.0
+        return values
 
     def sample_weight(self, record: Record) -> float:
         """Closer approaches make the digest more often: one that grazes the body is up to four times as

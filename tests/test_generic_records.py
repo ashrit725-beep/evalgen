@@ -162,7 +162,11 @@ def test_a_mix_puts_a_run_on_seed_paths_of_its_own(tmp_path):
     mine = {"snapshot/earthquakes/clock", "snapshot/earthquakes/synthetic", "templates/new/earthquakes"}
     assert own <= set(a["seeds"]) and not mine & set(a["seeds"])
     assert mine <= set(b["seeds"]) and not own & set(b["seeds"])
-    assert set(a["seeds"]) - own == set(b["seeds"]) - mine  # the instances' own paths, and no surface path
+    # The instances' own paths, and no surface path; off the legacy path each instance also draws its slots, the
+    # records its planted reports stand in for (pipeline.sample_with_slots), on a path of its own.
+    slots = {f"instance/{i}/slots" for i in range(3)}
+    assert slots <= set(b["seeds"]) and not slots & set(a["seeds"])
+    assert set(a["seeds"]) - own == set(b["seeds"]) - mine - slots
     assert b["snapshot"]["events_sha256"] != a["snapshot"]["events_sha256"]
     for inst in load_instances(legacy):
         assert (inst.domain, inst.surface) == (None, None) and {r.genre for r in inst.renderings} == {None}

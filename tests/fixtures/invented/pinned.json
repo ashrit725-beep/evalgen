@@ -1,38 +1,38 @@
 {
-  "about": "What seed 20261108 draws in the invented domain alone: its synthetic snapshot (360 records) and the surfaces of the first three instances of a run (seed path instance/i/surface). tests/test_domain_invented.py checks that the same seed still draws exactly these. The surfaces were pinned again when common English words of two and three letters joined the words no surface may coin (invented.COMMON_WORDS), and when the chatter's reminder about units was reworded (units vary from entry to entry, not by source); the snapshot is as first pinned.",
+  "about": "What seed 20261108 draws in the invented domain alone: its synthetic snapshot (360 records) and the surfaces of the first three instances of a run (seed path instance/i/surface). tests/test_domain_invented.py checks that the same seed still draws exactly these. The surfaces were pinned again when common English words of two and three letters joined the words no surface may coin (invented.COMMON_WORDS), and when the chatter's reminder about units was reworded (units vary from entry to entry, not by source); the snapshot and the surfaces were pinned again when clearing agencies (invented.RELAYS) and batches of lots (invented.BATCH_SHARE) joined the world.",
   "seed": 20261108,
   "pool_size": 360,
   "compiled_at": 1787378400,
-  "events_sha256": "9ba5d3c4f129932070d8922046a6e5b41788ab6309c37edfa5177dde0c242654",
+  "events_sha256": "f9aa714d0f2552d26af83c10f770f20a1aa606ef3dc3fad938dff319656a1f1b",
   "first_records": [
     {
-      "id": "iv-90958",
-      "time": 1787119343,
-      "group": "hazel",
-      "source": "elk",
+      "id": "iv-81452",
+      "time": 1787120053,
+      "group": "alder",
+      "source": "ash",
       "values": {
-        "f1": 216.8,
-        "f2": 45.6
+        "f1": 174.2,
+        "f2": 21.0
       }
     },
     {
-      "id": "iv-34108",
-      "time": 1787120294,
-      "group": "elm",
-      "source": "elk",
-      "values": {
-        "f1": 218.1,
-        "f2": 53.6
-      }
-    },
-    {
-      "id": "iv-37814",
-      "time": 1787121700,
-      "group": "birch",
+      "id": "iv-62443",
+      "time": 1787120490,
+      "group": "alder",
       "source": "bay",
       "values": {
-        "f1": 209.2,
-        "f2": 43.4
+        "f1": 195.6,
+        "f2": 29.6
+      }
+    },
+    {
+      "id": "iv-46390",
+      "time": 1787120537,
+      "group": "alder",
+      "source": "bay",
+      "values": {
+        "f1": 267.7,
+        "f2": 33.6
       }
     }
   ],
@@ -63,7 +63,9 @@
         "bay": "Glerlag",
         "cob": "Zalan",
         "dun": "Kesk",
-        "elk": "Dern"
+        "elk": "Dern",
+        "fen": "Brorm",
+        "gil": "Watind Haulage"
       },
       "units": {
         "f1": [
@@ -151,7 +153,9 @@
         "bay": "Glirk Lines",
         "cob": "Gondesk Transit",
         "dun": "Drurk",
-        "elk": "Warnot Forwarding"
+        "elk": "Warnot Forwarding",
+        "fen": "Kust Forwarding",
+        "gil": "Lud"
       },
       "units": {
         "f1": [
@@ -253,7 +257,9 @@
         "bay": "Suk",
         "cob": "Mekum Logistics",
         "dun": "Wil",
-        "elk": "Lend"
+        "elk": "Lend",
+        "fen": "Quikork",
+        "gil": "Wirn Haulage"
       },
       "units": {
         "f1": [

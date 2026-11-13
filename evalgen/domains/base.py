@@ -447,6 +447,12 @@ class Domain:
     # Set on the copy that bind returns: the surface it is bound to, and the domain it was bound from.
     surface: Surface | None = None
     unbound: Domain | None = None
+    # Near twins: real records as close to each other as a re-report can be to its record (a station's
+    # next observation, an aftershock). Off the legacy path a digest draws, for `twin_share` of its
+    # records, the record of the snapshot with the same twin_key nearest in time, when it lies within
+    # `twin_seconds` (pipeline.sample_with_slots). None: the domain's records have no near twins.
+    twin_seconds: int | None = None
+    twin_share: float = 0.0
 
     @property
     def has_location(self) -> bool:
@@ -695,6 +701,33 @@ class Domain:
         """How much likelier than others a record is to be drawn into a digest (1: all alike)."""
         return 1.0
 
+    def twin_key(self, record: Any) -> Any:
+        """What a record's near twins share (see twin_seconds): by default its group and its place, so
+        a station's observations are each other's twins. None: the record has no twin."""
+        return (record.group, record.place)
+
+    def planted_value(self, spec: FieldSpec, value: float, like: float, peers: Sequence[float] = ()) -> float:
+        """A value of `spec` that the trap builders write on a real record's report (a conflict's wrong
+        value) or draw for a record made up when no slot is left, `value`, written as a real report would
+        write it, never below zero unless the field is signed, and never -0.0. `like` is the real value it
+        stands for (the record's own), and `peers` the values of the same field that the same source files
+        in the digest. By default a source writes every value of a field to the same places, which its
+        values show: the most places of `like` and `peers` (one value alone can end in zeros by chance). A
+        domain whose precision belongs to the record (an object's H, a five-minute observation's whole
+        degrees) writes to `like`'s own places, and one whose real values lie on a coarser grid (whole knots,
+        hundredths of an inch) puts planted ones on it."""
+        places = max(stored_places(v, spec.decimals) for v in (like, *peers))
+        return round(value if spec.signed else max(0.0, value), places) + 0.0
+
+    def rereport_values(self, record: Any, slot: Any, rng: random.Random, *, same_id: bool) -> dict[str, float]:
+        """The values that a report filed in `slot`'s place (a record drawn with the digest but not kept)
+        gives for `record`, as a re-report or a second report of it, under the record's ID (`same_id`) or
+        under the slot's own with a note naming the record: by default the slot's own values, at their own
+        precision, so that the report is exactly as far from its record in value as a real record is from
+        its nearest neighbour, and nothing in its values tells it from a real record. A domain whose IDs
+        carry what a value must agree with (an object's designation and its H) overrides it."""
+        return dict(slot.values)
+
     def glossary(self, surface: Mapping[str, Any] | None = None) -> Glossary:
         """The data dictionary that non-legacy prompts print, in the words of `surface` (a drawn
         Surface's dict; None: the domain's own words, or those of the surface it is bound to): what the
@@ -758,6 +791,25 @@ class Domain:
         """A RecordReport or Notice that a genre read from a digest, as this domain's digests hold it:
         the inverse of ``to_generic``."""
         return item
+
+
+def stored_places(value: float, decimals: int) -> int:
+    """The decimal places a stored value is written to: the fewest, up to `decimals`, that hold it
+    (15.0 has 0, 15.4 has 1, 21.35 has 2)."""
+    for places in range(decimals):
+        if round(value, places) == value:
+            return places
+    return decimals
+
+
+def folded(value: float, least: float, most: float) -> float:
+    """`value` folded back into [least, most] at whichever end it passes, so that values drawn near an end
+    never pile up on it, as clamping would make them do (then clamped, should a fold pass the other end)."""
+    if value < least:
+        value = 2 * least - value
+    elif value > most:
+        value = 2 * most - value
+    return min(max(value, least), most)
 
 
 def _margin_problems(name: str, margin: float, units: Sequence[Unit], decimals: int) -> list[str]:

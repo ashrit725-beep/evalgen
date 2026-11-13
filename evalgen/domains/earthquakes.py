@@ -29,11 +29,12 @@ from typing import Sequence
 
 from ..digest import CHATTER
 from ..forecast import forecast_text, make_forecast, resolve_forecasts
+from ..geo import destination, haversine_km
 from ..models import EVENT_ID_PATTERN, Event, Notice, Report
 from ..ops import ALIASES
 from ..rules import READING_RULES, Mishandle, resolve
-from ..sources import (MIN_POOL_EVENTS, USER_AGENT, fetch_usgs, generate_synthetic, mimic_event_id, new_event_id,
-                       parse_usgs_geojson)
+from ..sources import (COORD_DECIMALS, MIN_POOL_EVENTS, USER_AGENT, fetch_usgs, generate_synthetic, mimic_event_id,
+                       new_event_id, parse_usgs_geojson, synthetic_mag_type)
 from ..units import LENGTH
 from .base import (DISTANCE_WORDINGS, NOTICE_RULE, REPEAT_RULE, Domain, FieldSpec, Forecaster, Lexicon, RecordReport,
                    Spatial, TrapVocab, message_time_rule, numbered_rules)
@@ -195,6 +196,59 @@ GENRE_READING_RULES = _genre_reading_rules()
 # USGS catalogue answers it later (see forecast.py).
 FORECASTER = Forecaster(source="usgs", make=make_forecast, text=forecast_text, resolve=resolve_forecasts)
 
+# The synthetic world off the legacy path (synthetic_world). Aftershocks: a share of the events follow a
+# larger one of their network within seconds to hours, a few km away. Relays: the networks that re-report
+# other networks' events file events of their own, as the USGS feed shows them doing (the tsunami warning
+# centres in Alaska and the Pacific, the NEIC for larger events anywhere): (network, regions, least
+# magnitude, share of those events it files).
+AFTERSHOCK_SHARE = 0.15
+RELAY_FILINGS = (
+    ("at", ("Southern Alaska",), 0.0, 0.2),
+    ("pt", ("Hawaii", "Tonga"), 0.0, 0.2),
+    ("us", ("Northern California", "Southern California", "Southern Alaska", "Hawaii", "Puerto Rico", "Nevada",
+            "Utah"), 3.0, 0.3),
+)
+COLLAPSED_S, COLLAPSED_KM = 3, 15.0  # solutions this close are one quake (sources.collapse_duplicate_solutions)
+
+
+def synthetic_world(rng: random.Random, n: int, compiled_at: int, window_hours: int) -> list[Event]:
+    """`n` synthetic events of the 0.2.0 world (sources.generate_synthetic) as runs off the legacy path
+    draw them: a share of them filed by a relay network instead (RELAY_FILINGS, with an ID and a magnitude
+    type of that network's), and AFTERSHOCK_SHARE of them aftershocks of the others: 8 seconds to hours
+    after a mainshock drawn by the 0.2.0 weights (1.5 ** magnitude), a few km from it, at about its depth,
+    0.5 to 2 magnitudes smaller, from its network. No two events are one quake's solutions (within 3 s
+    and 15 km of each other), as no two of a real feed's are."""
+    n_after = round(n * AFTERSHOCK_SHARE) if n >= 4 else 0
+    events = []
+    first = generate_synthetic(rng, n - n_after, compiled_at, window_hours)
+    taken = {e.id for e in first}  # a new ID never takes one that any event had
+    for e in first:
+        for network, regions, least, share in RELAY_FILINGS:
+            if e.region in regions and e.mag >= least and rng.random() < share:
+                e = replace(e, id=new_event_id(network, rng, taken), network=network,
+                            mag_type=synthetic_mag_type(rng, network, e.mag))
+                break
+        events.append(e)
+    mains = [e for e in events if e.mag >= 2.0] or events
+    weights = [1.5 ** e.mag for e in mains]
+    for _ in range(50 * n_after):
+        if len(events) >= n:
+            break
+        main = rng.choices(mains, weights=weights, k=1)[0]
+        when = main.time + 8 + int(15 * rng.paretovariate(0.7))  # often within a minute, now and then hours later
+        lat, lon = destination(main.lat, main.lon, abs(rng.gauss(0.0, 3.0)), rng.uniform(0.0, 360.0))
+        lat, lon = round(lat, COORD_DECIMALS), round(lon, COORD_DECIMALS)
+        mag = round(main.mag - rng.uniform(0.5, 2.0), 1)
+        if (when >= compiled_at or mag < (4.0 if main.network == "us" else 0.8)
+                or any(abs(e.time - when) <= COLLAPSED_S and haversine_km(e.lat, e.lon, lat, lon) <= COLLAPSED_KM
+                       for e in events)):
+            continue
+        events.append(Event(id=new_event_id(main.network, rng, taken), time=when, lat=lat, lon=lon,
+                            depth_km=round(max(0.0, main.depth_km + rng.gauss(0.0, 1.5)), 1), mag=mag,
+                            mag_type=synthetic_mag_type(rng, main.network, mag), region=main.region,
+                            network=main.network))
+    return sorted(events, key=lambda e: (e.time, e.id))
+
 
 class UsgsFeed:
     """The USGS day feed as this domain's live source (a LiveAdapter), for runs off the legacy path.
@@ -239,12 +293,24 @@ class Earthquakes(Domain):
     trap_vocab = TRAP_VOCAB
     chatter = CHATTER
 
+    # An aftershock is its mainshock's near twin: off the legacy path a digest often lists the event of its
+    # region nearest in time to one it lists, within a quarter of an hour (pipeline.sample_with_slots).
+    twin_seconds = 15 * 60
+    twin_share = 0.25
+
     def sample_weight(self, record: Event) -> float:
         """Larger quakes are likelier to be in a digest (the 0.2.0 weights: 1.5 ** magnitude)."""
         return 1.5 ** record.mag
 
+    def twin_key(self, record: Event) -> str:
+        """An earthquake's twins are the events of its region (the nearest in time: its aftershock)."""
+        return record.region
+
     def synthetic(self, rng: random.Random, n: int, compiled_at: int, window_hours: int) -> list[Event]:
-        return generate_synthetic(rng, n, compiled_at, window_hours)
+        """`n` synthetic events off the legacy path: the 0.2.0 world (sources.generate_synthetic), with
+        aftershocks, and with a share of the events filed by the networks that re-report others' events.
+        A legacy run draws its snapshot from sources.generate_synthetic itself, through build_snapshot."""
+        return synthetic_world(rng, n, compiled_at, window_hours)
 
     def new_id(self, source: str, rng: random.Random, taken: set[str]) -> str:
         return new_event_id(source, rng, taken)

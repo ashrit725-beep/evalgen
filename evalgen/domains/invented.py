@@ -83,7 +83,15 @@ DEPOTS = (
     Depot("gorse", 0.7, ("ash",), (95.0, 0.50), (30.0, 0.45)),
     Depot("hazel", 0.6, ("elk",), (280.0, 0.55), (52.0, 0.40)),
 )
-SOURCES = tuple(sorted({source for depot in DEPOTS for source in depot.sources}))
+# Clearing agencies: they file lots at every depot (RELAY_SHARE of all lots), and they are the agencies
+# that re-report other agencies' lots, so that every re-reporting agency also files lots of its own.
+RELAYS = ("fen", "gil")
+RELAY_SHARE = 0.15
+SOURCES = tuple(sorted({source for depot in DEPOTS for source in depot.sources} | set(RELAYS)))
+# A share of filings come in pairs: the agency files a second lot at the same depot within a minute and a
+# half, so that real records are sometimes as close to each other as a re-report is to its record.
+BATCH_SHARE = 0.12
+BATCH_SECONDS = (5, 90)
 CORRELATION = 0.3  # between the logarithms of a record's two quantities: heavier lots dwell a little longer
 # No quantity is smaller (the log-normal tails reach them rarely). At the floor, each field's relative
 # tolerance (0.5% of 10, 2% of 2.5) still covers half a stored step (0.05), the most by which a printed
@@ -120,7 +128,7 @@ SECONDARY = FieldSpec(
 )
 
 TRAP_VOCAB = TrapVocab(
-    rereporting_sources=("fen", "gil", "hob"),
+    rereporting_sources=(*RELAYS, "ash"),
     duplicate_notes=("same consignment as", "duplicate of"),
     retraction_reasons=("ledger echo", "scanner misread", "test manifest"),
     retraction_notices=("voided", "struck from the ledger"),
@@ -392,6 +400,9 @@ class Invented(Domain):
     chatter = CHATTER
     has_surface = True
     surface_group_labels = GROUP_LABELS  # the scorer strips any of them from a group answer
+    # Two lots one agency files at one depot within a minute and a half are each other's near twins.
+    twin_seconds = BATCH_SECONDS[1] + 30
+    twin_share = 0.4
 
     def __init__(self) -> None:
         self.lexicon = self.surface_lexicon()
@@ -400,22 +411,26 @@ class Invented(Domain):
 
     def synthetic(self, rng: random.Random, n: int, compiled_at: int, window_hours: int) -> list[Record]:
         """`n` records of the canonical world (its depots, agencies and IDs, whatever surface this
-        domain is bound to): a depot by its weight, one of its agencies, both quantities from the
-        depot's distributions, and a time in the window, busiest in the working hours."""
+        domain is bound to): a depot by its weight, one of its agencies (or a clearing agency), both
+        quantities from the depot's distributions, and a time in the window, busiest in the working
+        hours; and, a share of the time, a second lot of the same agency at the depot moments later."""
         weights = [depot.weight for depot in DEPOTS]
         taken: set[str] = set()
-        records = []
-        for _ in range(n):
+        records: list[Record] = []
+        while len(records) < n:
             depot = rng.choices(DEPOTS, weights=weights, k=1)[0]
-            source = rng.choice(depot.sources)
-            z1 = rng.gauss(0.0, 1.0)
-            z2 = CORRELATION * z1 + math.sqrt(1.0 - CORRELATION ** 2) * rng.gauss(0.0, 1.0)
-            values = {spec.key: round(max(FLOORS[spec.key], median * math.exp(sigma * z)), spec.decimals) + 0.0
-                      for spec, (median, sigma), z in ((PRIMARY, depot.f1, z1), (SECONDARY, depot.f2, z2))}
+            source = rng.choice(RELAYS) if rng.random() < RELAY_SHARE else rng.choice(depot.sources)
             when = _filing_time(rng, compiled_at, window_hours)
-            records.append(Record(id=_fresh_id(ID_PREFIX, rng, taken), time=when, lat=None, lon=None, group=depot.name,
-                                  source=source, values=values))
+            records.append(_lot(rng, depot, source, when, taken))
+            if len(records) < n and rng.random() < BATCH_SHARE:
+                later = when + rng.randint(*BATCH_SECONDS)
+                if later < compiled_at:
+                    records.append(_lot(rng, depot, source, later, taken))
         return sorted(records, key=lambda r: (r.time, r.id))
+
+    def twin_key(self, record: Record) -> tuple[str, str]:
+        """A lot's twins are the lots its agency files at its depot."""
+        return record.group, record.source
 
     def sample_weight(self, record: Record) -> float:
         """Heavier consignments make the digest more often: the weight grows as the root of f1."""
@@ -448,7 +463,9 @@ class Invented(Domain):
         id_prefix = coiner.prefix()
         groups = {depot.name: coiner.name(PLACE_WORDS, 0.35) for depot in DEPOTS}
         sources = {source: coiner.name(AGENCY_WORDS, 0.5) for source in SOURCES}
-        relays = (coiner.name(AGENCY_WORDS, 0.5), coiner.name(AGENCY_WORDS, 0.5), rng.choice(sorted(sources.values())))
+        # The clearing agencies re-report, and so does one of the depots' own agencies: each files lots too.
+        relays = (*(sources[relay] for relay in RELAYS),
+                  rng.choice(sorted(name for source, name in sources.items() if source not in RELAYS)))
         trap_vocab = TrapVocab(
             rereporting_sources=relays,
             duplicate_notes=tuple(note.format(noun=noun) for note in rng.sample(DUPLICATE_NOTES, 2)),
@@ -510,6 +527,16 @@ class Invented(Domain):
         wrapped = textwrap.fill(f"{number}. {rule}", width=RULES_WIDTH, subsequent_indent=" " * (len(str(number)) + 2),
                                 break_long_words=False, break_on_hyphens=False)
         return rules + wrapped + "\n"
+
+
+def _lot(rng: random.Random, depot: Depot, source: str, when: int, taken: set[str]) -> Record:
+    """One lot filed at `depot` by `source` at `when`: both quantities drawn from the depot's distributions."""
+    z1 = rng.gauss(0.0, 1.0)
+    z2 = CORRELATION * z1 + math.sqrt(1.0 - CORRELATION ** 2) * rng.gauss(0.0, 1.0)
+    values = {spec.key: round(max(FLOORS[spec.key], median * math.exp(sigma * z)), spec.decimals) + 0.0
+              for spec, (median, sigma), z in ((PRIMARY, depot.f1, z1), (SECONDARY, depot.f2, z2))}
+    return Record(id=_fresh_id(ID_PREFIX, rng, taken), time=when, lat=None, lon=None, group=depot.name, source=source,
+                  values=values)
 
 
 def _fresh_id(prefix: str, rng: random.Random, taken: set[str]) -> str:

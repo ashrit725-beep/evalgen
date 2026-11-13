@@ -205,7 +205,14 @@ def test_forecasts_are_resolved_by_the_forecaster_of_the_domain_that_asked_them(
     legacy = pipeline.generate(cfg, tmp_path / "legacy", log=quiet)
     planned = pipeline.generate(replace(cfg, mix="earthquakes:classic"), tmp_path / "planned", log=quiet)
     asked = read_json(legacy / "forecasts.json")
-    assert read_json(planned / "forecasts.json") == [dict(f, domain="earthquakes") for f in asked]
+    # Off the legacy path an instance draws its records with its slots (pipeline.sample_with_slots), so its
+    # forecast is made about other quakes; it asks the same question about the same window, for its domain.
+    same = ("instance_id", "qid", "answer_type", "status", "outcome")
+    planned_asked = read_json(planned / "forecasts.json")
+    assert [{k: f[k] for k in same} for f in planned_asked] == [{k: f[k] for k in same} for f in asked]
+    assert [(f["rule"]["start"], f["rule"]["end"]) for f in planned_asked] == [
+        (f["rule"]["start"], f["rule"]["end"]) for f in asked]
+    assert all(f["domain"] == "earthquakes" and "domain" not in g for f, g in zip(planned_asked, asked))
 
     resolved = []
 

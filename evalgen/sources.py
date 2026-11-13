@@ -179,6 +179,9 @@ def _synthetic_mag_type(rng: random.Random, network: str, mag: float) -> str:
     return LOCAL_MAG_TYPE.get(network, "ml")
 
 
+synthetic_mag_type = _synthetic_mag_type  # the magnitude type a network gives a synthetic event (also off the legacy path)
+
+
 def generate_synthetic(rng: random.Random, n_events: int, compiled_at: int, window_hours: int = 24) -> list[Event]:
     taken: set[str] = set()
     weights = [r.weight for r in SYNTH_REGIONS]

@@ -31,7 +31,7 @@ import shutil
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass, fields, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Mapping, Sequence
@@ -147,8 +147,63 @@ def sample_events(pool: Sequence[Any], rng: random.Random, n_min: int, n_max: in
     """The records for one digest: mostly from 3-4 focus groups, so questions have substance. The
     domain says what a record's group is and how heavily it weighs (Domain.sample_group and
     sample_weight; earthquakes: its region, and 1.5 ** magnitude, so larger quakes are likelier)."""
-    group, weight = domain.sample_group, domain.sample_weight
     n = min(len(pool), rng.randint(n_min, n_max))
+    return _focused_sample(pool, rng, n, domain)
+
+
+# Off the legacy path an instance draws this many records more than it keeps (see sample_with_slots): enough
+# that each trap's placements, tried among them, often find one whose careless readings change an answer.
+SLOTS = 30
+
+
+def sample_with_slots(pool: Sequence[Any], rng: random.Random, n_min: int, n_max: int, split: random.Random, *,
+                      domain: Domain, slots: int = SLOTS) -> tuple[list[Any], list[Any]]:
+    """The records of one digest off the legacy path, and its *slots*: records drawn with them that the
+    instance does not keep, in whose place its planted reports are filed (traps.inject_traps).
+
+    `rng` draws as sample_events does, for `slots` records more than the digest keeps; a domain with
+    near twins (Domain.twin_seconds) then adds, for a share of them, the record of the pool nearest in time
+    that has the same twin key (a station's next observation, an aftershock), so that real records are
+    sometimes as close to each other as a re-report is to its record. `split` then keeps a random choice
+    of the digest's size and leaves the rest as slots. The kept records and the slots are thus drawn
+    alike, and a planted report in a slot's place stands where a real record could have stood: its time,
+    position, place, source, group, values and their precision, and its ID, are those of a real record.
+    (A pool barely larger than a digest leaves few slots; traps then make up the rest, traps._virtual_slot.)"""
+    n = min(len(pool), rng.randint(n_min, n_max))
+    drawn = _focused_sample(pool, rng, min(len(pool), n + slots), domain)
+    drawn = _with_twins(drawn, pool, split, domain)
+    kept = {id(e) for e in split.sample(drawn, n)}
+    return [e for e in drawn if id(e) in kept], [e for e in drawn if id(e) not in kept]
+
+
+def _with_twins(drawn: list[Any], pool: Sequence[Any], rng: random.Random, domain: Domain) -> list[Any]:
+    """`drawn`, and for a share of its records (Domain.twin_share) the record of `pool` with the same twin
+    key nearest in time, within the domain's twin_seconds (ties: the earlier, then the smaller ID), when
+    it is not drawn already."""
+    if domain.twin_seconds is None or not drawn:
+        return drawn
+    taken = {e.id for e in drawn}
+    by_key: dict[Any, list[Any]] = {}
+    for e in pool:
+        key = domain.twin_key(e)
+        if key is not None:
+            by_key.setdefault(key, []).append(e)
+    out = list(drawn)
+    for e in drawn:
+        if rng.random() >= domain.twin_share:
+            continue
+        near = [x for x in by_key.get(domain.twin_key(e), ()) if x.id not in taken
+                and abs(x.time - e.time) <= domain.twin_seconds]
+        if near:
+            twin = min(near, key=lambda x: (abs(x.time - e.time), x.time, x.id))
+            taken.add(twin.id)
+            out.append(twin)
+    return sorted(out, key=lambda e: (e.time, e.id))
+
+
+def _focused_sample(pool: Sequence[Any], rng: random.Random, n: int, domain: Domain) -> list[Any]:
+    """`n` records of `pool`, mostly from 3-4 focus groups (see sample_events), in time order."""
+    group, weight = domain.sample_group, domain.sample_weight
     counts = Counter(group(e) for e in pool)
     eligible = sorted(r for r, c in counts.items() if c >= 4)
     focus = set(rng.sample(eligible, min(len(eligible), rng.randint(3, 4)))) if eligible else set()
@@ -190,6 +245,7 @@ class Composition:
     events: list[Any]
     questions: list[Question]
     answer_key: dict[str, Any]
+    slots: list[Any] = field(default_factory=list)  # records drawn but not kept (sample_with_slots)
 
 
 def compose_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Template], seedlog: SeedLog,
@@ -200,20 +256,26 @@ def compose_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Tem
     the bound domain renames the sampled records (Domain.dress); everything after uses the bound
     domain and the renamed records, every twin pair stays in step from the run's first question, and
     questions keep the stricter guards of runs off the legacy path (compose_questions, strict_twins and
-    strict). The key is code over the snapshot's records."""
+    strict). Off the legacy path the instance also draws its slots, the records its planted reports stand
+    in for (sample_with_slots, seed path "instance", i, "slots"). The key is code over the snapshot's
+    records."""
     surface = None
     if not legacy and domain.has_surface:
         surface = domain.draw_surface(seedlog.rng("instance", index, "surface"))
         domain = domain.bind(surface)
-    sample = sample_events(snapshot.events, seedlog.rng("instance", index, "events"), cfg.events_min,
-                           cfg.events_max, domain=domain)
+    if legacy:
+        sample, spare = sample_events(snapshot.events, seedlog.rng("instance", index, "events"), cfg.events_min,
+                                      cfg.events_max, domain=domain), []
+    else:
+        sample, spare = sample_with_slots(snapshot.events, seedlog.rng("instance", index, "events"), cfg.events_min,
+                                          cfg.events_max, seedlog.rng("instance", index, "slots"), domain=domain)
     events = [domain.dress(e) for e in sample]
     q_rng = seedlog.rng("instance", index, "questions")
     questions = compose_questions(events, public_templates(domain), new_templates, q_rng, ctx,
                                   q_rng.randint(cfg.questions_min, cfg.questions_max), used_chains, usage,
                                   domain=domain, strict_twins=not legacy, strict=not legacy)
     answer_key = {q.qid: execute(q.chain, events, units=domain.units) for q in questions}
-    return Composition(domain, surface, events, questions, answer_key)
+    return Composition(domain, surface, events, questions, answer_key, [domain.dress(e) for e in spare])
 
 
 def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Template], seedlog: SeedLog,
@@ -241,12 +303,13 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
     units = domain.units
     glossary = None if genre_plan is None else domain.glossary()
     lexicon = None if genre_plan is None else domain.prompt_lexicon()  # None: the 0.2.0 wording
-    # Off the legacy path a trap counts only careless readings that hold at the printed precision (traps).
+    # Off the legacy path a trap counts only careless readings that hold at the printed precision, and its
+    # planted report lies in as many of the questions' scopes as a real record does (traps.TrapConfig).
     trap_config = TrapConfig(id_style="sequence" if snapshot.source == "usgs" else "random",
-                             guarded=genre_plan is not None)
+                             guarded=genre_plan is not None, match_scope=genre_plan is not None)
     reports, notices, traps = inject_traps(events, questions, seedlog.rng("instance", index, "traps"),
                                            compiled_at=snapshot.compiled_at, window_hours=snapshot.window_hours,
-                                           config=trap_config, domain=domain)
+                                           config=trap_config, domain=domain, slots=composed.slots)
     for q in questions:
         unfiltered = [s for s in q.chain if role(s["op"]) != "filter"]
         q.features = {

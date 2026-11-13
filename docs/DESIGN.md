@@ -21,7 +21,7 @@ Without the new options, 0.3.0 writes the 0.2.0 run byte for byte.
 python3 -m pip install -r requirements.txt     # requests + pytest (Python 3.10+)
 python3 cli.py demo --seed 42 --instances 20  # fully offline, no API keys, ~1 second
 python3 cli.py demo --mix random               # 0.3.0: every domain and genre, offline, ~3 seconds
-python3 -m pytest -q                           # 760 tests, ~2 minutes
+python3 -m pytest -q                           # 777 tests, ~2 minutes
 ```
 
 The demo writes `runs/demo-synthetic-seed42/report.md` (and `report.json`); with `--mix random` it
@@ -46,9 +46,13 @@ Why fine-tuning on the benchmark buys nothing beyond the real skill:
    frozen and hashed, then rendered into text.
 3. **Traps with known handling.** Re-reports by other networks, retracted phantom reports and
    conflicting magnitudes are planted so that a careless reader gets specific, predictable wrong
-   answers. Planted lines copy the style of real ones: place notes that agree with their
-   coordinates, the network's magnitude precision, and IDs that fit the network's own ID sequence.
-   The way to catch a trap is to read the notices and apply the rules.
+   answers. Off the legacy path a planted report stands in for a record drawn with the digest but
+   not kept, so its time, place, source, values and ID are a real record's: only the signals the
+   rules name tell it apart (a shared ID or a note naming one, its status, the notices), and the way
+   to catch a trap is to read them and apply the rules (see Traps under 0.3.0). The legacy path
+   keeps the 0.2.0 placement, whose lines copy the style of real ones (place notes that agree with
+   their coordinates, the network's magnitude precision, IDs that fit the network's own ID
+   sequence) but not where real lines lie, which a reader can use instead (see Limitations).
 4. **Metamorphic consistency.** The same snapshot is re-rendered with different units, line order,
    formats and question wording. Correct answers cannot change, so any change in a model's answer
    is an inconsistency. This needs no ground truth and catches surface-pattern memorisation.
@@ -255,6 +259,8 @@ Off the legacy path (0.3.0) the cycle is the same, step for step, in every domai
   once, frozen and hashed.
 - Before step 3, each instance draws its domain and the genre of each rendering (seed path
   `instance/<i>/mix`) and, in a domain that draws them, its surface words (`instance/<i>/surface`).
+  It draws its records together with 30 more that it does not keep, its slots, in whose places its
+  traps are planted (`instance/<i>/slots`; see Traps).
 - Step 2 renders each rendering in its genre.
 - The prompt prints the domain's glossary between the reading rules and the digest.
 - The oracle of step 5 reads each prompt with the parser of the genre that recognises its digest.
@@ -391,6 +397,14 @@ Planted lines fit the feed they sit in:
 
 On today's live feed, a planted ID is no more often out of range or out of prefix than a held-out
 real one.
+
+Where these lines lie is another matter, which legacy runs keep byte for byte. A re-report lies 3 to
+40 s and 1 to 8 km from its quake and comes from one of the networks that re-report others' events
+(us, at, pt, ew), of which only us files events of its own; a second report sits at its quake's very
+time and place; a
+conflicting magnitude lies within 0.2 of an asked threshold. None of this is in the rules, and a
+reader can use it instead of them (see Limitations). Off the legacy path no trap is placed this way
+(see Traps under 0.3.0).
 
 ### 3. Questions (`evalgen/questions.py`, `evalgen/ops.py`)
 Operations: filters `mag_at_least`, `mag_below`, `depth_shallower_than`, `depth_at_least`,
@@ -545,9 +559,10 @@ A domain module exports `DOMAIN`, an instance of a `Domain` subclass. The regist
 | groups and sources | every record belongs to a group (a region, a body, a depot), which `in_group` and `compare_groups` ask about and digests focus on (3–4 per digest), and has a source that filed it (a network, a feed, a catalogue, an agency) |
 | `synthetic(rng, n, compiled_at, window_hours)` | the seeded generator, which never reads the clock |
 | `live` | an optional live source. `fetch` downloads it once, and the raw bytes are frozen in the run and SHA-256 hashed. `parse` reads them without the clock or the network, so a replay rebuilds the snapshot exactly. A source that cannot be reached, that answers with bytes its parser cannot read, or that gives too few usable records, falls back to synthetic data, with a note. The note names the failure without what changes from one moment to the next (a URL's query, such as the start time of an NWS request, and an object's address), so two offline runs of one seed write the same files |
-| IDs | `id_pattern` (the scorer also reads ID answers with it), `new_id` and `mimic_id`, so that planted reports carry IDs shaped like real ones |
+| IDs | `id_pattern` (the scorer also reads ID answers with it), `new_id` and `mimic_id`, so that a planted report that stands in for no record (the 0.2.0 placement, or when no slot is left) carries an ID shaped like real ones |
 | `statuses` | the status of the report that settles a record's values, then the one that does not ("reviewed", "preliminary") |
-| `trap_vocab` | re-reporting sources, duplicate notes, retraction reasons, and the phrases of retraction and correction notices |
+| `trap_vocab` | re-reporting sources (those of the 0.2.0 placement; off the legacy path a re-report may come from any source), duplicate notes, retraction reasons, and the phrases of retraction and correction notices |
+| near twins, planted values | `twin_seconds`, `twin_share` and `twin_key`: which real records lie as close together as a re-report and its record, and how often a digest draws them together; `planted_value` and `rereport_values`: how a value planted on a real record's report is written, and what a report filed in a slot's place gives for a record (see Traps) |
 | `chatter`, `lexicon` | lines without data, which never say what a digest holds (a status line says when a station was offline, with its date, not that its reports were left out, which the digest's own reports could contradict), and the wording of questions (`standard_lexicon` words any domain from its own words) |
 | `rules_text()`, `report_time()`, `glossary(surface)` | the reading rules (in which `report_time` says what a report's time is) and the glossary its prompts print |
 | `draw_surface(rng)`, `bind(surface)`, `surface_group_labels` | per-instance surface words, for a domain that draws them, and every group label they can draw: the scorer, which reads answers by the types registered when the domain was loaded, lets a group answer end in any of them ("Nerm Halt berth" is "Nerm Halt"), and `bind` refuses a surface that calls its groups anything else or names a group with one |
@@ -583,7 +598,58 @@ in the canonical unit to the field's decimals.
   correction notice or by the settling report beside an unsettled one (`conflicting_value`;
   earthquakes keep `conflicting_magnitude`).
 
-Values move by a share of their field's spread in the digest, so the traps scale to every field.
+Off the legacy path these traps are planted by one set of builders for every domain, earthquakes and
+plugin domains included, and a planted report stands in for a *slot*: a record drawn with the digest,
+exactly as its records are, but not kept (`pipeline.sample_with_slots`, seed path
+`instance/<i>/slots`). A phantom is a slot filed as it is. A re-report or a second report is a slot
+filed under the ID of the real record of its group nearest to it in time (at the same station, for a
+weather observation under its own ID) or under its own ID with a note naming that record, with the
+unsettled status and the slot's values (`Domain.rereport_values`: under the record's own ID a close
+approach keeps its object's H, as another catalogue fits it). A correction shows a slot's value on the
+record's settling report, written to that record's places (`Domain.planted_value`). So a planted
+report is as close to its record, in time, space and value, as a real record is to its nearest
+neighbour; its source files real records as often as any; and its values, their precision and range,
+and its ID are a real record's. Only the signals the rules name set it apart: a shared ID or a note
+naming one, the status, and the notices. Three more things make that hold:
+
+- *Near twins.* Real records are sometimes as close to each other as a re-report can be to its record:
+  an aftershock seconds after its mainshock, a station's next observation, an object's approaches to
+  Earth and the Moon, an agency's second lot at a depot within a minute and a half. A digest draws the
+  twin of a record it draws for a share of them (`Domain.twin_seconds`, `twin_share`, `twin_key`).
+- *Sources.* Every source that re-reports others' records also files records of its own (USGS's `us`,
+  `at` and `pt`, the NWS relay feeds, the Minor Planet Center, the invented clearing agencies), and a
+  re-report may come from any source, the record's own included.
+- *Scopes.* Placing traps where a careless reading changes an answer puts planted reports in more of
+  the questions' scopes (the questions all of whose filters they pass) than real records lie in. So
+  each trap draws a number of scopes from the digest's real records and prefers a placement that lies
+  in exactly as many (`TrapConfig.match_scope`). A trap that draws none (about one in seven, as many
+  as real records lie in no scope) is planted outside every scope, as plain noise, and is followed by
+  another trap of its kind, so that a digest keeps as many traps that change answers as before.
+
+When no slot is left, as can happen with a live pool little larger than a digest, a builder makes one
+beside a real record (`traps._virtual_slot`), with values drawn from its group's and folded into
+their range; none of the runs measured below needed one.
+
+*Measured.* A red team read every report of fresh runs from the prompt text alone (each built-in domain
+in each genre, 1,008 instances a sample; the toy plugin domain in classic and in the toy-telex genre,
+both held out by the example config, 252 instances; neo replayed from the recorded CAD response, 252
+instances) and tried readers that merge or drop reports by a feature the rules never mention, without
+reading a status, an ID, a note or a notice. Before this placement, the best of them (merge reports
+within 40 s and 8.5 km, keep the one not from a re-reporting source, or the commoner source's) closed
+39% of the gap between the naive reader and the oracle (36 to 41% in every domain, 36 to 43% in every
+genre), and 42% both for the held-out toy plugin and on the CAD replay. After it, the best closes 0.7%
+(at most 5.2% in any domain or genre), 0.4% for the toy plugin and 2.4% on the CAD replay, while the
+status rule alone still closes 40%. Of reports that share an ID, keeping the first printed, the
+earliest, the latest or the commoner source's closes 6% whichever it keeps, as a coin would, and keeping
+the settling one 17%: only the status says which is real (before, keeping the commoner source's closed
+17%, against 20% for the status). Of the 2,450
+cells (feature, kind of planted report, all reports or one domain) that measure a feature the rules
+never mention, 535 had an AUC outside [0.35, 0.65] with a 95% interval excluding 1/2; none has now, on
+two independent samples. The cells of single genres hold about 150 instances each, and about 3% of
+them cross the band by chance and by the weak effects of the Limitations (before, 20%); what an
+instance holds is drawn alike in every genre. `tests/test_trap_tells.py` pins this on a small sample of every domain in every
+genre and of the toy plugin.
+
 Off the legacy path, placement is also *guarded*. A careless reading counts only where the misread
 digest passes the key's own guards: margins that hold with the planted values, rank and nearest
 gaps, time margins. A placement whose every reading passes is preferred. A careless reader's wrong
@@ -695,18 +761,26 @@ instance stores its surface, so that scoring and the audit can read it back.
   0.2.0 ones. A legacy run reaches USGS through the 0.2.0 code (the hour or the day feed). Off the
   legacy path its live source is the day feed (`--source live`), and its USGS instances still ask
   the forecast question. Genres other than classic write and read its 0.2.0 reports and magnitude
-  corrections in the generic form of every other domain.
+  corrections in the generic form of every other domain. Off the legacy path its synthetic world
+  (`earthquakes.synthetic_world`) is the 0.2.0 world with aftershocks (15% of events, seconds to hours
+  after a larger event of their network, a few km away, never within 3 s and 15 km of another event:
+  no two are one quake's solutions), and with a share of the events filed by the networks that
+  re-report others' events, as the USGS feed shows them doing: the tsunami warning centres (at, pt)
+  in Alaska, Hawaii and Tonga, the NEIC (us) for larger events in the US regions.
 - **weather**: temperature, a signed field, plays the primary role (thresholds, the warmest
   observation, its rank and its time) and wind speed the secondary one. Pressure appears in the
   twins' filters.
   - Every conversion is exact as defined (1 kt = 1.852 km/h, 0 °C = 32 °F = 273.15 K,
     1 inHg = 33.86389 hPa). Every value is stored to a tenth, and answers in K and inHg keep two
     places.
-  - IDs are `<feed>-<5 digits>` (`KJFK-48213`, `MADIS-30571`). The digits are an opaque serial, so
-    a planted report's ID never encodes a time. The statuses are "verified" and "preliminary" (the
-    NWS quality-control codes V and Z).
+  - IDs are `<station>-<5 digits>` (`KJFK-48213`): an observation's ID starts with its station's
+    identifier, whichever feed files it. The digits are an opaque serial, so an ID never encodes a
+    time. The statuses are "verified" and "preliminary" (the NWS quality-control codes V and Z).
   - Synthetic observations follow each station's climate normals, a daily cycle and a weather
-    system per region.
+    system per region. They are timed as NWS stations take them, each at its station's own minute
+    of the hour or, a quarter of them, on a five-minute mark (a five-minute observation, in whole
+    degrees), and report winds in whole knots and pressures in hundredths of an inch of mercury,
+    stored in km/h and hPa. The relay feeds (MADIS, NOAAPORT, AWOSNET) file a fifth of them.
   - The live source asks api.weather.gov for the last 24 hours of each station's observations,
     with the User-Agent the API requires, and freezes every response as it was served, its HTTP
     status and the exact text of its body, in one JSON bundle (`raw_feed.json`, format
@@ -732,6 +806,14 @@ instance stores its surface, so that scoring and the audit can read it back.
   - An approach ID is the object's designation without spaces, then `-ca` and the number of its
     approach. `2026vk2-ca1` and `2026vk2-ca2` are one object passing Earth and then the Moon: two
     records.
+  - A synthetic object is found around its close approach (up to three weeks before it, or days
+    after), never after the compilation, and its provisional designation is of the half-month it was
+    found in, so a December approach in a digest compiled on 1 January carries the old year's
+    designation. A recently found object's H has three decimals, an older one's one or two, and a
+    numbered object's number lies between 3000 and 649,999. A Moon approach's distance is drawn
+    within its range (folded back at its least, 0.0003 au, never clamped there), so no distance is
+    shared by more approaches than chance gives. All four catalogues, the Minor Planet Center's
+    included, list approaches of their own.
   - The live source is every approach within 0.05 au of any body that CAD lists for the next 60
     days (`raw_cad.json`). CAD times are TDB; records keep UTC.
 - **invented** has no live source, by design: nothing outside evalgen describes its records.
@@ -742,8 +824,10 @@ instance stores its surface, so that scoring and the audit can read it back.
     is a real unit, a word the digests print around the data, a common English word of two or three
     letters (a symbol follows every value, so "a heft of 15.3 so" must not read as prose) or a word
     with an offensive part; unit symbols are checked like names. Some seeds therefore draw other
-    surfaces than they did before this check (`tests/fixtures/invented/pinned.json` was pinned again;
-    the synthetic world is unchanged).
+    surfaces than they did before this check (`tests/fixtures/invented/pinned.json` was pinned again).
+  - Two clearing agencies file lots at every depot (15% of lots), and they and one depot agency are
+    the agencies that re-report; 12% of filings are followed by a second lot of the same agency at the
+    same depot 5 to 90 s later. The world and the surfaces were pinned again for this.
   - Values come from fixed log-normal distributions per canonical depot, so margins and steps keep
     their meaning under every surface. Tolerances are relative, so they hold in every drawn unit,
     and the group type strips every group label a surface can draw, so a group answer may end in
@@ -1005,8 +1089,8 @@ covered the gap of 0 in 98% of 1,000 runs, and flagged at most 1%).
   whose hashes were taken from 0.2.0 before the refactor, pins all of them.
 - The legacy path calls the 0.2.0 functions with the same arguments and the same random streams.
   Every new random choice has a seed path of its own (`instance/<i>/mix`, `instance/<i>/surface`,
-  `snapshot/<domain>/…`, `templates/new/<domain>`), which only the new options create, so no legacy
-  draw moves.
+  `instance/<i>/slots`, `snapshot/<domain>/…`, `templates/new/<domain>`), which only the new options
+  create, so no legacy draw moves.
 - Legacy manifests, instances, scores and reports carry none of the new keys. A legacy report is
   pinned to its hash from before the new metrics existed (`tests/test_mix.py`), apart from what
   differs between any two runs or names the code: the seed commitment, the version and the code
@@ -1042,8 +1126,11 @@ So the 0.2.0 study in the README regenerates byte for byte under 0.3.0.
   rules changed. The last commits before the release changed what those prompts print (the
   glossary's ID line, the earthquake rules' heading and rule 9, every domain's rules on notices and
   times, the wording of radii, some news, chat and form wordings, weather's duplicate notes, and the
-  invented domain's surfaces) and the format of the frozen NWS bundle. Legacy runs from every one of
-  those versions do regenerate.
+  invented domain's surfaces) and the format of the frozen NWS bundle. The trap fixes then changed
+  where traps are planted and what each instance draws (its slots, on a seed path of its own), and the
+  synthetic worlds of every domain (aftershocks, relays that file records, station timing, neo
+  designations, invented batches), so runs off the legacy path from before them draw other instances.
+  Legacy runs from every one of those versions do regenerate.
 * Python 3.9 for 0.3.0 was checked by script, because pytest is not installed for the system
   Python 3.9 of the machine that built it. `tests/test_python39.py` scans the code for what 3.9
   cannot run. Under Python 3.9.6, the 0.2.0 regression run matches the hashes its test pins, and
@@ -1070,7 +1157,8 @@ evalgen/
   rules.py              the reading rules (English for prompts, code for the key) + trap mishandlings
   ops.py                operation chains (generic kinds, 0.2.0 aliases) and the answer-key executor
   questions.py          templates (public + twins), RNG parameter drawing, margin guards, wording
-  traps.py              trap planting (load-bearing, guarded off the legacy path), fallen answers, resolution invariant
+  traps.py              trap planting (load-bearing, guarded and in slots' places off the legacy path), fallen
+                        answers, resolution invariant
   digest.py             messy rendering: styles, units, time formats, layouts (the 0.2.0 classic digest)
   solver.py             text-only oracle and naive solvers (digest parser; genre detection off the legacy path)
   prompt.py answers.py  prompt construction (with the glossary off the legacy path); robust JSON reply parsing
@@ -1079,11 +1167,12 @@ evalgen/
   forecast.py           delayed-resolution questions and resolution (USGS FDSN)
   audit.py report.py    audit sample; report.md / report.json
   pipeline.py           one cycle end to end
-tests/                  760 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
+tests/                  777 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
                         digest parsing, reply parsing and scoring, USGS and forecasts, adapters, report,
                         gap intervals, head to head, reading-rules coverage, CLI and its errors, received
                         runs that try to reach outside their folder; each domain and genre, every domain in
-                        every genre (test_matrix.py), mixes and held-out sets, the 0.2.0 regression test;
+                        every genre (test_matrix.py), mixes and held-out sets, what tells planted reports
+                        apart (test_trap_tells.py), the 0.2.0 regression test;
                         test-only plugins (toy_domain.py, toy_genre.py); fixtures/ holds recorded NWS and
                         JPL responses and pinned invented instances
 runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several domains), instances/,
@@ -1119,8 +1208,15 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   Coordinates are stored at the printed precision, so a reader working from the digest gets every
   distance key exactly. Tests check that the rules name every notice wording the renderer can
   print, and that the oracle reproduces the distance keys exactly.
-* **Synthetic world.** Plausible but simplified: no aftershock sequences, and synthetic regions are
-  coarse.
+* **Synthetic world.** Plausible but simplified: synthetic regions are coarse, and the 0.2.0 world
+  has no aftershock sequences (off the legacy path a share of events are aftershocks, see
+  earthquakes under 0.3.0).
+* **The legacy traps can be told apart without the rules.** Legacy runs keep the 0.2.0 placement byte
+  for byte (see Digest and traps): its re-reports lie seconds and a few km from their quake, mostly
+  from networks that file no event of their own, so a reader who merges reports within 40 s, keeping
+  the commoner network's, closes about a fifth of the gap between the naive reader and the oracle in a
+  legacy digest (minute-rounded times blunt the window), without reading a status, a note or a
+  notice. Runs off the legacy path have no such tell (see Traps under 0.3.0).
 * **The mock is a simulation.** Its numbers show that the metrics work; they say nothing about any
   real model. Run `anthropic` / `openai` for real numbers.
 * **Live runs so far are Anthropic only.** Claude Opus 5.5 and Claude Haiku 5.5 have been run
@@ -1225,11 +1321,23 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
 * **Live sources: USGS, NWS and JPL only.** The invented domain has none, by design. The NWS and
   JPL CAD adapters have been exercised only against recorded API responses and fake transports,
   not yet against the live APIs.
-* **A possible tell in live weather digests.** Real NWS observations are stamped to the minute,
-  with winds in whole knots and pressures in hundredths of an inch of mercury. The generic trap
-  builders take no hint from the domain, so planted lines can carry seconds and continuous values,
-  and a reader could spot one by its form rather than by its note or notice. Synthetic data has no
-  such tell, and no answer key depends on it. Fixing it needs a domain hook in `traps.py`.
+* **What is left of the trap tells off the legacy path.** A planted report is a record drawn with the
+  digest (see Traps), so it is told apart only by what the rules name, and by two things that follow
+  from them or from placing traps where they change answers:
+  - A re-report under its record's own ID stands at that record's station (a weather ID names its
+    station), so it is never the only report at its station, as a real observation can be (an AUC
+    of about 0.6 for the number of reports at its place): the shared ID says as much.
+  - A trap is placed where its careless readings change an answer and pass the key's guards, so a
+    planted report is a little likelier than a real one to lie clear of an asked threshold or to rank
+    high in its group (AUCs up to about 0.6 in some domains). No reader that drops or merges reports by
+    such a feature does better than the naive one.
+* **Fewer placements change an answer.** A re-report used to copy its record's values give or take a
+  little, so a re-report of the largest record often changed the largest answer; a slot's values are
+  its own. A digest of a built-in synthetic domain keeps as many traps that change answers as before,
+  with the extra trap that follows one that draws no scope, but where scopes are narrow or slots are
+  few the number of traps that change a question's answer falls: from 0.82 a question to 0.76 for the
+  toy plugin domain, and from 0.83 to 0.68 for neo replayed from the 40 approaches of the recorded CAD
+  response, which leave 12 to 20 slots a digest (the built-in synthetic domains keep 0.75 to 0.83).
 * **Weather stations.** Beyond the five stations sampled from the API for the recorded fixture
   (KJFK, KORD, KDEN, KSEA, KLAX), the names and positions of the 24 stations are a hand-made table
   in the NWS style. In a live run an observation takes its position from the API whenever it gives
