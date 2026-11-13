@@ -453,6 +453,11 @@ class Domain:
     # `twin_seconds` (pipeline.sample_with_slots). None: the domain's records have no near twins.
     twin_seconds: int | None = None
     twin_share: float = 0.0
+    # Set by a domain whose record IDs name their record's place (a station's identifier at the head of an
+    # observation's ID): a report filed under a record's ID must then stand at its place, so a re-report of
+    # it can never be the only report at its place, as a real record can (traps._slot_pair). No built-in
+    # domain's IDs do, so that none of its re-reports is pinned to its record's place.
+    ids_name_place: bool = False
 
     @property
     def has_location(self) -> bool:
@@ -727,6 +732,16 @@ class Domain:
         its nearest neighbour, and nothing in its values tells it from a real record. A domain whose IDs
         carry what a value must agree with (an object's designation and its H) overrides it."""
         return dict(slot.values)
+
+    def id_place(self, record_id: str) -> tuple[Any, int] | None:
+        """Where an ID puts its record in a sequence that it numbers in time order: (the sequence, the
+        record's number in it), or None when the ID says nothing of the kind (the default). A close
+        approach's ID numbers the approaches of its object (2026vk2-ca1 before 2026vk2-ca2), which share the
+        object's H and lie in the order of their numbers. The trap builders file a report under a record's
+        own ID only for a record whose sequence holds no other record, slot or report of the digest
+        (traps._with_siblings), as one beside a sibling would have to repeat what the siblings share, or
+        contradict it."""
+        return None
 
     def glossary(self, surface: Mapping[str, Any] | None = None) -> Glossary:
         """The data dictionary that non-legacy prompts print, in the words of `surface` (a drawn

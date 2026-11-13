@@ -162,7 +162,7 @@ def test_the_glossary_quotes_any_word_and_refuses_what_it_cannot_print():
 @pytest.mark.parametrize("name", ["earthquakes", "weather", "neo", "invented"])
 def test_the_glossary_states_an_id_pattern_that_every_printed_id_matches(name):
     """A domain's ID pattern describes its IDs lower-cased, and digests print IDs as their sources file
-    them: a station's in capitals ("KJFK-48213"), an invented surface's in the letter case it drew
+    them: a weather observation's in capitals ("WX-482137"), an invented surface's in the letter case it drew
     ("KX/40512"). So the glossary says that the pattern ignores letter case, which makes it true of every
     ID a digest prints, planted ones included; and parse_glossary reads that line back exactly."""
     domain = get_domain(name)
@@ -197,7 +197,9 @@ def test_record_traps_are_planted_and_read_as_earthquake_traps_are(toys, name):
         assert all(isinstance(r, RecordReport) for r in inst.reports)
         kinds.update(t.kind for t in inst.traps)
         forms.update((t.kind, t.form) for t in inst.traps)
-        assert {t.kind for t in inst.traps} == {"duplicate", "retraction", "conflicting_value"}
+        # (a digest off the legacy path holds none to three retractions: traps.RETRACTION_WEIGHTS)
+        assert {"duplicate", "conflicting_value"} <= {t.kind for t in inst.traps} <= {"duplicate", "retraction",
+                                                                                   "conflicting_value"}
         data = DigestData(inst.reports, inst.notices)
         vocab = bound.trap_vocab
         for trap in inst.traps:
@@ -344,7 +346,11 @@ def test_classic_reads_back_every_report_and_notice_exactly_in_every_style(toys,
     assert set(seen_formats) == set(TIME_FORMATS)
 
 
-def test_place_notes_and_missing_qualifiers_read_back_and_named_sites_stay_put(toys):
+@pytest.mark.parametrize("ids_name_place", [False, True])
+def test_place_notes_and_missing_qualifiers_read_back_and_named_sites_stay_put(toys, ids_name_place):
+    """A re-report stands where a record that the digest does not keep stands (its slot); one filed under
+    its record's own ID stands at its record's named site only where the domain's IDs name it
+    (Domain.ids_name_place), so that it is not pinned there otherwise (traps._slot_pair)."""
     class Placed(toys.module.Toy):
         """Toy readings, two in three at a named buoy (a place note with a comma and parentheses), and
         one in five without the probe that took its temperature."""
@@ -354,8 +360,10 @@ def test_place_notes_and_missing_qualifiers_read_back_and_named_sites_stay_put(t
             return [replace(r, place=f"{r.group} buoy {i % 7}, (moored)" if i % 3 else None,
                             qualifiers={} if i % 5 == 0 else r.qualifiers) for i, r in enumerate(records)]
 
-    domain = domains.REGISTRY.register(Placed("toy-placed", located=True))
-    sites = 0
+    domain = Placed("toy-placed", located=True)
+    domain.ids_name_place = ids_name_place
+    domain = domains.REGISTRY.register(domain)
+    sites, moved = 0, 0
     for inst in instances_of(domain, seed=6, n=4):
         glossary = domain.glossary()
         reports, notices = printed(inst.reports, inst.notices)
@@ -370,13 +378,15 @@ def test_place_notes_and_missing_qualifiers_read_back_and_named_sites_stay_put(t
         settled = {r.ref: r for r in inst.reports if r.role == "primary"}
         snapshot = {(r.time, r.source, r.lat, r.lon, r.place) for r in build_domain_snapshot(
             domain, "synthetic", SeedLog(6))[0].events}
-        for r in inst.reports:  # a re-report under its record's ID stands at the record's named site, as a real
-            # record there does (a record the digest does not keep); one under an ID of its own, where its record is
+        for r in inst.reports:  # a re-report under its record's ID stands where a real record stands (a record
+            # the digest does not keep): at its record's named site, where the IDs name it
             anchor = settled.get(r.same_as or r.ref)
             if r.role == "duplicate" and anchor is not None and anchor.place is not None and r.same_as is None:
-                assert r.place == anchor.place and (r.time, r.source, r.lat, r.lon, r.place) in snapshot
+                assert (r.time, r.source, r.lat, r.lon, r.place) in snapshot
+                assert r.place == anchor.place or not ids_name_place
                 sites += 1
-    assert sites > 0
+                moved += r.place != anchor.place
+    assert sites > 0 and (moved == 0) == ids_name_place
 
 
 def _time_slots(line: str, fmt: str) -> list[str]:

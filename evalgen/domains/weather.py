@@ -16,10 +16,13 @@ and every value is stored to a tenth of its canonical unit, which every printed 
 (evalgen.units). Margins, threshold steps and rank gaps are scaled to each field's spread over a day
 of US observations: a few tenths of a degree, half a km/h, a few tenths of a hectopascal.
 
-IDs are "<station>-<5 digits>" ("KJFK-48213"): an observation's ID starts with its station's ICAO
-identifier, whichever feed files it. The digits are an opaque serial, not the observation's time: a
-re-report filed under its observation's ID gives a time of its own (traps.py), so an ID that encoded
-the time would contradict it.
+IDs are "WX-" and six digits ("WX-482137"): an opaque serial, which names neither the station nor the
+feed nor the time. A re-report filed under its observation's ID gives a time, a station and values of its
+own (traps.py: it stands in for an observation drawn with the digest but not kept), so an ID that named
+the time or the station would contradict the line it is printed on. An ID that named the station would
+also pin the re-report to its observation's station, so that it could never be the only report at its
+station, as a real observation often is (an AUC of about 0.37 for the number of other observations at its
+station, and 0.40 for the time to the nearest one, when IDs began with the station's identifier).
 
 Synthetic observations follow each station's climate (January and July means, diurnal range, mean
 wind) at the season and local solar hour of their time, plus a weather system per region that moves
@@ -183,25 +186,16 @@ STATION_BY_ID = {station.id: station for station in STATIONS}
 
 # ----------------------------------------------------------------------------------- IDs
 
-ID_PATTERN = r"[a-z][a-z0-9]{3,7}-\d{5}"  # "kjfk-48213", "madis-30571" (IDs are matched lower-cased)
-_PREFIX = re.compile(r"[A-Z][A-Z0-9]{3,7}")
-_ID = re.compile(r"(?P<prefix>[A-Za-z][A-Za-z0-9]{3,7})-\d{5}")
-SERIALS = (10000, 100000)  # an ID's five digits
+ID_PATTERN = r"wx-\d{6}"  # "wx-482137" (IDs are matched lower-cased; digests print "WX-482137")
+ID_PREFIX = "WX-"
+_ID = re.compile(r"wx-\d{6}", re.IGNORECASE)
+SERIALS = (100000, 1000000)  # an ID's six digits
 
 
-def id_prefix(source: str) -> str:
-    """How the IDs a feed files begin: its name in capitals, letters and digits only ("KJFK",
-    "NOAAPORT"). A name that gives no prefix of four to eight characters, starting with a letter, is
-    an error."""
-    prefix = re.sub(r"[^A-Za-z0-9]", "", source).upper()
-    if not _PREFIX.fullmatch(prefix):
-        raise ValueError(f"the feed {source!r} gives no ID prefix of 4 to 8 letters and digits")
-    return prefix
-
-
-def _fresh(prefix: str, rng: random.Random, taken: set[str]) -> str:
+def _fresh(rng: random.Random, taken: set[str]) -> str:
+    """A new ID, not in `taken` (and added to it)."""
     while True:
-        ref = f"{prefix}-{rng.randrange(*SERIALS)}"
+        ref = f"{ID_PREFIX}{rng.randrange(*SERIALS)}"
         if ref not in taken:
             taken.add(ref)
             return ref
@@ -387,7 +381,7 @@ class Weather(Domain):
         to the minute. Values are reported as observations report them: temperatures to a tenth of a degree
         (whole degrees in a five-minute observation), winds in whole knots and pressures in hundredths of an
         inch of mercury, stored in the canonical units. A share of the observations are filed by a relay
-        feed; every ID starts with the identifier of the station observed."""
+        feed. IDs are opaque serials (see the module docstring)."""
         span = window_hours * 3600
         systems = {region: _System.draw(rng) for region in REGIONS}
         offsets = {station.id: (rng.gauss(0.0, 1.0), rng.gauss(0.0, 0.8)) for station in STATIONS}
@@ -418,7 +412,7 @@ class Weather(Domain):
             relayed = rng.random() < RELAY_SHARE
             source = (rng.choices(TRAP_VOCAB.rereporting_sources, weights=RELAY_WEIGHTS, k=1)[0] if relayed
                       else station.id)
-            records.append(Record(id=_fresh(station.id, rng, taken), time=when, lat=station.lat, lon=station.lon,
+            records.append(Record(id=_fresh(rng, taken), time=when, lat=station.lat, lon=station.lon,
                                   group=station.region, source=source,
                                   values={"temp": _stored(temp), "wind": whole_knots(wind),
                                           "pressure": altimeter(pressure)},
@@ -437,16 +431,14 @@ class Weather(Domain):
         return super().planted_value(spec, value, like)
 
     def new_id(self, source: str, rng: random.Random, taken: set[str]) -> str:
-        """A fresh "<prefix>-<5 digits>" ID with the prefix of `source`'s name, added to `taken`. (An
-        observation's own ID starts with its station's identifier, whichever feed files it.)"""
-        return _fresh(id_prefix(source), rng, taken)
+        """A fresh ID, added to `taken`: every feed's IDs look alike, so `source` changes nothing."""
+        return _fresh(rng, taken)
 
     def mimic_id(self, example: str, rng: random.Random, taken: set[str]) -> str:
-        """A fresh ID with the prefix of `example`, added to `taken`."""
-        match = _ID.fullmatch(example)
-        if match is None:
+        """A fresh ID, shaped as every observation ID is (`example` must be one), added to `taken`."""
+        if _ID.fullmatch(example) is None:
             raise ValueError(f"{example!r} is not a weather observation ID")
-        return _fresh(match["prefix"], rng, taken)
+        return _fresh(rng, taken)
 
     def rules_text(self) -> str:
         """The reading rules of every record domain (record_rules) in this domain's words, and one more
@@ -676,8 +668,8 @@ def _hourly(readings: Iterable[_Reading]) -> list[_Reading]:
 
 
 def _identified(readings: Sequence[_Reading]) -> list[Record]:
-    """The readings as Records in time order, each with an ID that depends only on its station and time
-    (a hash, so replaying a bundle gives the same IDs, and a collision takes the next free serial)."""
+    """The readings as Records in time order, each with an opaque ID that depends only on its station and
+    time (a hash, so replaying a bundle gives the same IDs, and a collision takes the next free serial)."""
     taken: set[str] = set()
     records = []
     for reading in sorted(readings, key=lambda r: (r.time, r.station.id)):
@@ -685,9 +677,9 @@ def _identified(readings: Sequence[_Reading]) -> list[Record]:
         digest = hashlib.sha256(f"{station.id}|{reading.time}".encode("utf-8")).digest()
         low, high = SERIALS
         serial = int.from_bytes(digest[:8], "big") % (high - low)
-        while f"{station.id}-{low + serial}" in taken:
+        while f"{ID_PREFIX}{low + serial}" in taken:
             serial = (serial + 1) % (high - low)
-        ref = f"{station.id}-{low + serial}"
+        ref = f"{ID_PREFIX}{low + serial}"
         taken.add(ref)
         records.append(Record(id=ref, time=reading.time, lat=reading.lat, lon=reading.lon, group=station.region,
                               source=station.id, values=dict(reading.values), place=station.name))

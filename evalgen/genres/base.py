@@ -256,7 +256,7 @@ def read_value(field: GlossaryField, match: re.Match[str], name: str) -> float:
 
 def id_pattern(glossary: Glossary) -> str:
     """A regex for a record ID in digest text: the glossary's pattern, ignoring letter case (IDs are
-    printed as they are, "KJFK-48213"; the pattern describes them lower-cased, and the glossary says
+    printed as they are, "WX-482137"; the pattern describes them lower-cased, and the glossary says
     that it ignores letter case), never inside a longer word."""
     return rf"(?<![0-9A-Za-z])(?i:{glossary.id_pattern})(?![0-9A-Za-z])"
 
@@ -270,7 +270,7 @@ def alternation(words: Iterable[str]) -> str:
 
 GLOSSARY_TITLE = "Glossary: what the records in the digest are, and how their values are written."
 # How the glossary qualifies its ID pattern. A pattern describes IDs lower-cased, and digests print
-# IDs as their sources file them ("KJFK-48213", "KX/40512"), so the pattern is true of every printed
+# IDs as their sources file them ("WX-482137", "KX/40512"), so the pattern is true of every printed
 # ID only once letter case is ignored, as every reader of a digest (id_pattern, the scorer) matches it.
 ID_CASE = "ignoring letter case"
 _GLOSSARY = re.compile(r"<glossary>\n(?P<body>.*?)\n</glossary>", re.DOTALL)

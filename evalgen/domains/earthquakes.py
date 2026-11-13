@@ -36,8 +36,8 @@ from ..rules import READING_RULES, Mishandle, resolve
 from ..sources import (COORD_DECIMALS, MIN_POOL_EVENTS, USER_AGENT, fetch_usgs, generate_synthetic, mimic_event_id,
                        new_event_id, parse_usgs_geojson, synthetic_mag_type)
 from ..units import LENGTH
-from .base import (DISTANCE_WORDINGS, NOTICE_RULE, REPEAT_RULE, Domain, FieldSpec, Forecaster, Lexicon, RecordReport,
-                   Spatial, TrapVocab, message_time_rule, numbered_rules)
+from .base import (DISTANCE_WORDINGS, NOTICE_RULE, REPEAT_RULE, Domain, FieldSpec, Forecaster, Lexicon, Record,
+                   RecordReport, Spatial, TrapVocab, message_time_rule, numbered_rules)
 
 # Margin guards: no event may sit this close to a threshold, so that display rounding (0.1 km or mi,
 # 0.001 degrees, minute-precision times) can never change a correct answer. Magnitudes need no
@@ -302,9 +302,10 @@ class Earthquakes(Domain):
         """Larger quakes are likelier to be in a digest (the 0.2.0 weights: 1.5 ** magnitude)."""
         return 1.5 ** record.mag
 
-    def twin_key(self, record: Event) -> str:
-        """An earthquake's twins are the events of its region (the nearest in time: its aftershock)."""
-        return record.region
+    def twin_key(self, record: Event | Record) -> str:
+        """An earthquake's twins are the events of its region (the nearest in time: its aftershock): its
+        group, which an Event and the generic Record the trap builders read it as both give."""
+        return record.group
 
     def synthetic(self, rng: random.Random, n: int, compiled_at: int, window_hours: int) -> list[Event]:
         """`n` synthetic events off the legacy path: the 0.2.0 world (sources.generate_synthetic), with

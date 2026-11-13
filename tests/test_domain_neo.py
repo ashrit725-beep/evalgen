@@ -468,10 +468,14 @@ def test_the_traps_are_planted_settled_and_misread_as_designed(neo_runs):
                     record = by_id[trap.target]
                     assert dup.status == "preliminary" and dup.source in SOURCES
                     assert (dup.same_as is None) == (trap.form == "same_id") and dup.group == record.group
-                    if trap.form == "same_id":  # the object's own H, as another catalogue fits it, to as many places
+                    if trap.form == "same_id":  # the object's H as another catalogue fits it, to as many places,
+                        # of an object that makes no other approach in the digest (traps._with_siblings)
                         h, places = record.values["h"], stored_places(record.values["h"], 3)
                         assert stored_places(dup.values["h"], 3) <= places and 0.05 - 1e-9 <= abs(dup.values["h"] - h)
                         assert abs(dup.values["h"] - h) <= 0.3 + 10 ** -places
+                        stem = dup.ref.rpartition("-")[0]
+                        assert [r.ref for r in inst.reports if r.ref.rpartition("-")[0] == stem
+                                and r.ref != dup.ref] == []
                     else:  # under another designation, a real one, with its own H
                         assert dup.ref in by_id and dup.ref not in inst.event_ids
                         assert dup.values == by_id[dup.ref].values

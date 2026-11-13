@@ -30,7 +30,11 @@ another designation, with a note naming the approach it duplicates, and an ID mu
 the line it is printed on. Off the legacy path a planted report takes the designation of an approach
 drawn with the digest but not kept (traps.py), or, when none is left, a fresh one shaped like those in
 the digest (``mimic_id``): a re-report under it is a second designation of the same object, linked by
-its note, and a phantom is an approach that was never made.
+its note, and a phantom is an approach that was never made. A re-report or a second report under an
+approach's own ID is filed only for an approach whose object makes no other approach in the digest or its
+slots (``id_place``), as every approach of an object prints one H, which a report beside a sibling could
+neither repeat (two reports of a body with one H are a pair as plainly as a shared ID) nor change (a
+sibling's H tells it): it gives the object's H as another catalogue fits it (``rereport_values``).
 
 The live source is the CAD API (``CadFeed``): fetched once, frozen as ``raw_cad.json``, SHA-256 hashed
 and replayable with a snapshot file, with synthetic approaches as the fallback when it cannot be
@@ -511,7 +515,13 @@ class Neo(Domain):
         distance and velocity, and, under the approach's own designation, the H of that object as another
         catalogue lists it: the record's, off by 0.05 to 0.3 (catalogues fit H to their own observations), at
         the places the record's designation gives it (_draw_object), so that a designation and its H never
-        disagree. Under the slot's own designation, a report keeps the slot's H with the rest."""
+        disagree. Under the slot's own designation, a report keeps the slot's H with the rest, its own object's.
+
+        The trap builders file a report under an approach's own designation only where the object makes no
+        other approach in the digest or its slots (traps._with_siblings, by id_place): every approach of an
+        object prints one H, so beside another approach the report would have to give that H too, and so the
+        very H of its record, a copy that no two real reports of a body share (an AUC of 0.95), or give
+        another, which no real approach does (an AUC of 0 for its sibling's H, before the second round)."""
         values = dict(slot.values)
         if same_id:
             h = record.values[ABSOLUTE_MAGNITUDE.key]
@@ -520,6 +530,13 @@ class Neo(Domain):
             off = max(step, round(rng.uniform(0.05, 0.3) / step) * step)
             values[ABSOLUTE_MAGNITUDE.key] = round(h + rng.choice((-1, 1)) * off, places) + 0.0
         return values
+
+    def id_place(self, record_id: str) -> tuple[str, int] | None:
+        """An approach ID numbers the approaches of its object in time order (2026vk2-ca1 before 2026vk2-ca2):
+        (its designation, its number). The approaches of one designation are siblings: they share the
+        object's H."""
+        designation, _, number = record_id.casefold().rpartition("-ca")
+        return (designation, int(number)) if designation and number.isdigit() else None
 
     def sample_weight(self, record: Record) -> float:
         """Closer approaches make the digest more often: one that grazes the body is up to four times as

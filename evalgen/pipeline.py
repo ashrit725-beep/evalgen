@@ -60,7 +60,7 @@ from .scoring import is_correct, normalize, same_answer
 from .seeds import SeedLog, derive_seed, fresh_nonce, seed_commitment
 from .solver import extract_digest, solve
 from .sources import LIVE, Snapshot, build_domain_snapshot, build_snapshot, frozen_feed, read_frozen_feed, save_snapshot
-from .traps import TrapConfig, inject_traps
+from .traps import TrapConfig, draw_retractions, inject_traps
 from .util import read_json, read_manifest, sha256_hex, slugify, write_in, write_json
 
 RUNS_DIR = Path("runs")
@@ -157,7 +157,7 @@ SLOTS = 30
 
 
 def sample_with_slots(pool: Sequence[Any], rng: random.Random, n_min: int, n_max: int, split: random.Random, *,
-                      domain: Domain, slots: int = SLOTS) -> tuple[list[Any], list[Any]]:
+                      domain: Domain, slots: int = SLOTS, planted: int = 0) -> tuple[list[Any], list[Any]]:
     """The records of one digest off the legacy path, and its *slots*: records drawn with them that the
     instance does not keep, in whose place its planted reports are filed (traps.inject_traps).
 
@@ -168,8 +168,11 @@ def sample_with_slots(pool: Sequence[Any], rng: random.Random, n_min: int, n_max
     of the digest's size and leaves the rest as slots. The kept records and the slots are thus drawn
     alike, and a planted report in a slot's place stands where a real record could have stood: its time,
     position, place, source, group, values and their precision, and its ID, are those of a real record.
-    (A pool barely larger than a digest leaves few slots; traps then make up the rest, traps._virtual_slot.)"""
-    n = min(len(pool), rng.randint(n_min, n_max))
+    (A pool barely larger than a digest leaves few slots; traps then make up the rest, traps._virtual_slot.)
+    The digest keeps `planted` records less than it draws a size for: one for each phantom its traps will
+    file (traps.RETRACTION_WEIGHTS), so that its settled reports, records and phantoms, number alike however
+    many phantoms are among them."""
+    n = max(1, min(len(pool), rng.randint(n_min, n_max)) - planted)
     drawn = _focused_sample(pool, rng, min(len(pool), n + slots), domain)
     drawn = _with_twins(drawn, pool, split, domain)
     kept = {id(e) for e in split.sample(drawn, n)}
@@ -250,15 +253,15 @@ class Composition:
 
 def compose_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Template], seedlog: SeedLog,
                      cfg: GenerateConfig, ctx: Context, used_chains: set[str], usage: dict[str, int], *,
-                     domain: Domain = EARTHQUAKES, legacy: bool = True) -> Composition:
+                     domain: Domain = EARTHQUAKES, legacy: bool = True, retractions: int = 0) -> Composition:
     """An instance's records, questions and answer key. Off the legacy path, a domain with surface
     words draws them first (seed path "instance", i, "surface", which legacy runs never create) and
     the bound domain renames the sampled records (Domain.dress); everything after uses the bound
     domain and the renamed records, every twin pair stays in step from the run's first question, and
     questions keep the stricter guards of runs off the legacy path (compose_questions, strict_twins and
     strict). Off the legacy path the instance also draws its slots, the records its planted reports stand
-    in for (sample_with_slots, seed path "instance", i, "slots"). The key is code over the snapshot's
-    records."""
+    in for (sample_with_slots, seed path "instance", i, "slots"), and keeps one record less for each of the
+    `retractions` its digest will hold. The key is code over the snapshot's records."""
     surface = None
     if not legacy and domain.has_surface:
         surface = domain.draw_surface(seedlog.rng("instance", index, "surface"))
@@ -268,7 +271,8 @@ def compose_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Tem
                                       cfg.events_max, domain=domain), []
     else:
         sample, spare = sample_with_slots(snapshot.events, seedlog.rng("instance", index, "events"), cfg.events_min,
-                                          cfg.events_max, seedlog.rng("instance", index, "slots"), domain=domain)
+                                          cfg.events_max, seedlog.rng("instance", index, "slots"), domain=domain,
+                                          planted=retractions)
     events = [domain.dress(e) for e in sample]
     q_rng = seedlog.rng("instance", index, "questions")
     questions = compose_questions(events, public_templates(domain), new_templates, q_rng, ctx,
@@ -297,16 +301,20 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
         raise ValueError(f"only earthquakes have a legacy rendering: {domain.name} needs a genre plan")
     if genre_plan is not None and len(genre_plan) != cfg.variants + 1:
         raise ValueError(f"the genre plan names {len(genre_plan)} genres for {cfg.variants + 1} renderings")
+    off_legacy = genre_plan is not None
+    # Off the legacy path a digest holds none to three retractions, drawn before its records, which make room
+    # for them (traps.RETRACTION_WEIGHTS, seed path "instance", i, "retractions"); a legacy digest one.
+    retractions = draw_retractions(seedlog.rng("instance", index, "retractions")) if off_legacy else 1
     composed = compose_instance(index, snapshot, new_templates, seedlog, cfg, ctx, used_chains, usage,
-                                domain=domain, legacy=genre_plan is None)
+                                domain=domain, legacy=not off_legacy, retractions=retractions if off_legacy else 0)
     domain, events, questions, answer_key = composed.domain, composed.events, composed.questions, composed.answer_key
     units = domain.units
     glossary = None if genre_plan is None else domain.glossary()
     lexicon = None if genre_plan is None else domain.prompt_lexicon()  # None: the 0.2.0 wording
     # Off the legacy path a trap counts only careless readings that hold at the printed precision, and its
     # planted report lies in as many of the questions' scopes as a real record does (traps.TrapConfig).
-    trap_config = TrapConfig(id_style="sequence" if snapshot.source == "usgs" else "random",
-                             guarded=genre_plan is not None, match_scope=genre_plan is not None)
+    trap_config = TrapConfig(id_style="sequence" if snapshot.source == "usgs" else "random", retractions=retractions,
+                             guarded=off_legacy, match_scope=off_legacy)
     reports, notices, traps = inject_traps(events, questions, seedlog.rng("instance", index, "traps"),
                                            compiled_at=snapshot.compiled_at, window_hours=snapshot.window_hours,
                                            config=trap_config, domain=domain, slots=composed.slots)

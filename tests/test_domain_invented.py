@@ -439,10 +439,12 @@ def styles(seed: int):
 
 
 def test_classic_reads_back_every_report_and_notice_exactly(worlds):
+    noticed = 0  # (a digest without a retraction and with a second report for its conflict has no notice)
     for n, (inst, bound, _) in enumerate(worlds):
         glossary = bound.glossary()
         reports, notices = printed(inst.reports, inst.notices)
-        assert all(isinstance(r, RecordReport) for r in inst.reports) and notices
+        assert all(isinstance(r, RecordReport) for r in inst.reports)
+        noticed += bool(notices)
         for rendering in inst.renderings:  # every rendering of the run, as the oracle reads it
             data = CLASSIC.parse(rendering.digest, glossary, bound)
             assert same_items(data.reports, reports) and same_items(data.notices, notices), rendering.variant
@@ -454,6 +456,7 @@ def test_classic_reads_back_every_report_and_notice_exactly(worlds):
             assert same_items(data.reports, reports) and same_items(data.notices, notices), style
         for line in inst.chatter:  # lines without data change nothing
             assert CLASSIC.parse(line, glossary, bound) == DigestData([], []) and "{" not in line
+    assert noticed > len(worlds) // 2
 
 
 def test_the_guards_hold_and_no_question_is_asked_twice(worlds):
@@ -502,7 +505,9 @@ def test_traps_are_planted_and_their_careless_readings_give_their_wrong_answers(
     for inst, bound, records in worlds:
         data = DigestData(inst.reports, inst.notices)
         vocab = bound.trap_vocab
-        assert {t.kind for t in inst.traps} == {"duplicate", "retraction", "conflicting_value"}
+        # (a digest off the legacy path holds none to three retractions: traps.RETRACTION_WEIGHTS)
+        assert {"duplicate", "conflicting_value"} <= {t.kind for t in inst.traps} <= {"duplicate", "retraction",
+                                                                                   "conflicting_value"}
         for trap in inst.traps:
             forms[(trap.kind, trap.form)] += 1
             planted = [r for r in inst.reports if r.trap_id == trap.trap_id]

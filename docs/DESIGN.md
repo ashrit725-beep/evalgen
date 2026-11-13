@@ -21,7 +21,7 @@ Without the new options, 0.3.0 writes the 0.2.0 run byte for byte.
 python3 -m pip install -r requirements.txt     # requests + pytest (Python 3.10+)
 python3 cli.py demo --seed 42 --instances 20  # fully offline, no API keys, ~1 second
 python3 cli.py demo --mix random               # 0.3.0: every domain and genre, offline, ~3 seconds
-python3 -m pytest -q                           # 777 tests, ~2 minutes
+python3 -m pytest -q                           # 785 tests, ~2 minutes
 ```
 
 The demo writes `runs/demo-synthetic-seed42/report.md` (and `report.json`); with `--mix random` it
@@ -259,8 +259,9 @@ Off the legacy path (0.3.0) the cycle is the same, step for step, in every domai
   once, frozen and hashed.
 - Before step 3, each instance draws its domain and the genre of each rendering (seed path
   `instance/<i>/mix`) and, in a domain that draws them, its surface words (`instance/<i>/surface`).
-  It draws its records together with 30 more that it does not keep, its slots, in whose places its
-  traps are planted (`instance/<i>/slots`; see Traps).
+  It draws how many retractions its digest holds (none to three, `instance/<i>/retractions`), then its
+  records, one fewer for each retraction, together with 30 more that it does not keep, its slots, in
+  whose places its traps are planted (`instance/<i>/slots`; see Traps).
 - Step 2 renders each rendering in its genre.
 - The prompt prints the domain's glossary between the reading rules and the digest.
 - The oracle of step 5 reads each prompt with the parser of the genre that recognises its digest.
@@ -559,10 +560,10 @@ A domain module exports `DOMAIN`, an instance of a `Domain` subclass. The regist
 | groups and sources | every record belongs to a group (a region, a body, a depot), which `in_group` and `compare_groups` ask about and digests focus on (3–4 per digest), and has a source that filed it (a network, a feed, a catalogue, an agency) |
 | `synthetic(rng, n, compiled_at, window_hours)` | the seeded generator, which never reads the clock |
 | `live` | an optional live source. `fetch` downloads it once, and the raw bytes are frozen in the run and SHA-256 hashed. `parse` reads them without the clock or the network, so a replay rebuilds the snapshot exactly. A source that cannot be reached, that answers with bytes its parser cannot read, or that gives too few usable records, falls back to synthetic data, with a note. The note names the failure without what changes from one moment to the next (a URL's query, such as the start time of an NWS request, and an object's address), so two offline runs of one seed write the same files |
-| IDs | `id_pattern` (the scorer also reads ID answers with it), `new_id` and `mimic_id`, so that a planted report that stands in for no record (the 0.2.0 placement, or when no slot is left) carries an ID shaped like real ones |
+| IDs | `id_pattern` (the scorer also reads ID answers with it), `new_id` and `mimic_id`, so that a planted report that stands in for no record (the 0.2.0 placement, or when no slot is left) carries an ID shaped like real ones; `id_place`, for IDs that number their records in time order (a close approach's `-ca1`, `-ca2`), and `ids_name_place`, for IDs that name their record's place, so that a report filed under a record's ID never contradicts what the ID says (see Traps) |
 | `statuses` | the status of the report that settles a record's values, then the one that does not ("reviewed", "preliminary") |
 | `trap_vocab` | re-reporting sources (those of the 0.2.0 placement; off the legacy path a re-report may come from any source), duplicate notes, retraction reasons, and the phrases of retraction and correction notices |
-| near twins, planted values | `twin_seconds`, `twin_share` and `twin_key`: which real records lie as close together as a re-report and its record, and how often a digest draws them together; `planted_value` and `rereport_values`: how a value planted on a real record's report is written, and what a report filed in a slot's place gives for a record (see Traps) |
+| near twins, planted values | `twin_seconds`, `twin_share` and `twin_key`: which real records lie as close together as a re-report and its record, and how often a digest draws them together; `planted_value` and `rereport_values`: how a value planted on a real record's report is written, and what a report filed in a slot's place gives for a record (a close approach's own H, under its ID: see Traps) |
 | `chatter`, `lexicon` | lines without data, which never say what a digest holds (a status line says when a station was offline, with its date, not that its reports were left out, which the digest's own reports could contradict), and the wording of questions (`standard_lexicon` words any domain from its own words) |
 | `rules_text()`, `report_time()`, `glossary(surface)` | the reading rules (in which `report_time` says what a report's time is) and the glossary its prompts print |
 | `draw_surface(rng)`, `bind(surface)`, `surface_group_labels` | per-instance surface words, for a domain that draws them, and every group label they can draw: the scorer, which reads answers by the types registered when the domain was loaded, lets a group answer end in any of them ("Nerm Halt berth" is "Nerm Halt"), and `bind` refuses a surface that calls its groups anything else or names a group with one |
@@ -601,16 +602,17 @@ in the canonical unit to the field's decimals.
 Off the legacy path these traps are planted by one set of builders for every domain, earthquakes and
 plugin domains included, and a planted report stands in for a *slot*: a record drawn with the digest,
 exactly as its records are, but not kept (`pipeline.sample_with_slots`, seed path
-`instance/<i>/slots`). A phantom is a slot filed as it is. A re-report or a second report is a slot
-filed under the ID of the real record of its group nearest to it in time (at the same station, for a
-weather observation under its own ID) or under its own ID with a note naming that record, with the
-unsettled status and the slot's values (`Domain.rereport_values`: under the record's own ID a close
-approach keeps its object's H, as another catalogue fits it). A correction shows a slot's value on the
-record's settling report, written to that record's places (`Domain.planted_value`). So a planted
-report is as close to its record, in time, space and value, as a real record is to its nearest
-neighbour; its source files real records as often as any; and its values, their precision and range,
-and its ID are a real record's. Only the signals the rules name set it apart: a shared ID or a note
-naming one, the status, and the notices. Three more things make that hold:
+`instance/<i>/slots`). A phantom is a slot filed as it is. A re-report is a slot filed under its own
+ID with a note naming the real record of its group nearest to it in time, or under the ID of a real
+record of its group that is not one of the slot's own neighbours (not its nearest record, nor a twin of
+it: `traps._record_for`), with the unsettled status and the slot's values (`Domain.rereport_values`:
+under the record's own ID a close approach gives its object's H as another catalogue fits it). A second
+report is the same, under the record's ID. A correction shows a slot's value on the record's settling
+report, written to that record's places (`Domain.planted_value`). So a planted report has the
+neighbours, in time, space and value, that a real record has, even once the reports that share its ID
+are set aside; its source files real records as often as any; and its values, their precision and
+range, and its ID are a real record's. Only the signals the rules name set it apart: a shared ID or a
+note naming one, the status, and the notices. Five more things make that hold:
 
 - *Near twins.* Real records are sometimes as close to each other as a re-report can be to its record:
   an aftershock seconds after its mainshock, a station's next observation, an object's approaches to
@@ -619,12 +621,40 @@ naming one, the status, and the notices. Three more things make that hold:
 - *Sources.* Every source that re-reports others' records also files records of its own (USGS's `us`,
   `at` and `pt`, the NWS relay feeds, the Minor Planet Center, the invented clearing agencies), and a
   re-report may come from any source, the record's own included.
+- *IDs.* A report filed under a record's ID agrees with whatever the ID says. A weather observation's
+  ID is an opaque serial (`WX-482137`), so a re-report under it stands where its slot stands, at a
+  station of the observation's region. (When the ID began with the station's identifier, the re-report
+  had to stand at that station, and so was never the only report there, as a real observation often is;
+  `Domain.ids_name_place` declares IDs that name their record's place, and no built-in domain's do.)
+  An approach ID names its object and numbers its approaches in time order, and every approach of an
+  object prints the object's one H. Beside another approach of the object, a re-report under the ID
+  would have to give that H, its record's very H, a copy that no two real reports of a body share, or
+  another H, which no real approach gives. So a report is filed under an approach's own ID only where
+  its object makes no other approach in the digest or its slots (`Domain.id_place`), and gives the
+  object's H as another catalogue fits it.
 - *Scopes.* Placing traps where a careless reading changes an answer puts planted reports in more of
-  the questions' scopes (the questions all of whose filters they pass) than real records lie in. So
-  each trap draws a number of scopes from the digest's real records and prefers a placement that lies
-  in exactly as many (`TrapConfig.match_scope`). A trap that draws none (about one in seven, as many
-  as real records lie in no scope) is planted outside every scope, as plain noise, and is followed by
-  another trap of its kind, so that a digest keeps as many traps that change answers as before.
+  the questions' scopes (the questions all of whose filters they pass) than real records lie in, above
+  all in counting questions' scopes: a planted report changes a count whenever it lies in its scope,
+  and a largest or smallest value only when it holds it. So each trap draws the scopes of a real record
+  of the digest, how many of the counting questions' scopes and how many of the others' it lies in, and
+  prefers a placement whose readings hold and whose planted report lies in exactly as many counting
+  questions' scopes, and in as many of the others' give or take one, to any placement that changes more
+  answers (`TrapConfig.match_scope`). A planned re-report or conflict whose placement then changes no
+  answer is planted as plain noise and followed by one more of its kind, so that a digest keeps about as
+  many traps that change answers as before.
+- *Retractions.* A phantom is settled as it is, so the status rule counts every phantom in a question's
+  scope. With one retraction in every digest, the status rule's count was one too many more often than
+  it was right in many counting questions, and a reader who took one off it (an offset learned per
+  template) gained without reading a notice. A digest now holds none, one, two or three retractions, in
+  40, 30, 20 and 10% of digests (`traps.RETRACTION_WEIGHTS`, drawn before the records, seed path
+  `instance/<i>/retractions`), none the likeliest, so the status rule's count is the likeliest right
+  count. The digest keeps a record less for each retraction, so that its settled reports, records and
+  phantoms, number from 20 to 28 however many phantoms are among them, and a retraction is never
+  followed by another: a phantom lies in a digest of any size alike.
+
+A careless reader's joint misreadings (`Trap.fallen`) are enumerated, off the legacy path, per question
+and over only the traps that change the rows it reads, which gives exactly what every combination of
+every trap gives at a cost that no longer doubles with every trap a digest holds.
 
 When no slot is left, as can happen with a live pool little larger than a digest, a builder makes one
 beside a real record (`traps._virtual_slot`), with values drawn from its group's and folded into
@@ -649,6 +679,42 @@ two independent samples. The cells of single genres hold about 150 instances eac
 them cross the band by chance and by the weak effects of the Limitations (before, 20%); what an
 instance holds is drawn alike in every genre. `tests/test_trap_tells.py` pins this on a small sample of every domain in every
 genre and of the toy plugin.
+
+*Measured again.* A second red team found what that placement left, and the IDs, scopes and
+retractions above remove it. On two more independent samples of each kind (seeds 61001–61084 and
+62001–62084), measured before and after on the same seeds:
+
+- A close approach re-reported under its own ID gave its object an H that the object's other approach
+  did not print (an AUC of 0 for its sibling's H), and could lie out of the order of the approaches'
+  numbers (0.74 to 0.81). No report is filed under an approach's ID beside a sibling now, so neither
+  can differ.
+- Planted reports decided more questions than real ones: 0.59 to 0.66 for the number of questions whose
+  naive answer a report alone changes, and 0.58 to 0.64 for the counting questions' share of the scopes
+  it lies in. Both now lie between 0.45 and 0.59.
+- A reader who took an offset learned per template off the status rule's count closed 6.6% of the gap
+  beyond the status rule (5.6 to 8.2% in each domain, 3.6% on the CAD replay). It now gains nothing in
+  any domain or on the CAD replay, and an offset off the naive count closes 3.0% (before, 6.6%).
+- A logistic model of every unintended feature, fitted on one sample and scored on the other, told
+  removable reports from real ones with an AUC of 0.68 to 0.74 (0.62 for the toy plugin, 0.66 on the
+  CAD replay; 0.64 to 0.69 from the questions' features alone); now 0.57 to 0.62 (0.58, 0.62; 0.55 to
+  0.60). Dropping the reports it ranks likeliest planted closes at most 1.9% (before, 7.2% on the CAD
+  replay).
+- A weather re-report under its record's ID stood at the record's station (0.37 to 0.66 for the number
+  of reports at its station and the gap to the nearest there; merging a station's observations within
+  an hour closed up to 6.5%); now 0.46 to 0.56, and at most 2.5%, with intervals that include 0.
+
+The first round's readers now close at most 1.0% of the gap overall, 2.4% in any domain, 3.9% in any
+genre, 0.7% for the toy plugin and 1.0% on the CAD replay (6.9% in one of its genres, where 10.1% did
+before), and the status rule alone 54% (before, 41%: a digest with no retraction is now the likeliest).
+Of reports that share an ID, keeping the first printed or the one whose ID names its source does within
+1.2 points of a coin overall (3 to 4 points better in earthquakes: see Limitations), and keeping the
+settling one 17 to 21 points better. With the second red team's features, 17 and 15 of the 3,300 cells
+of all reports or one domain failed the target on the two samples, 12 of them on both, and 6 and 5 of
+the CAD replay's 605; none fails now on any sample, nor any of the toy plugin's. Of the 7,900 cells of
+single genres 21 and 31 fail (before, 66 and 62), one of them on both samples on the same side (see
+Limitations). On these runs the oracle scores 100% (36,072 questions), every careless reading a trap
+records is reproduced from the text (32,793), and every rendering reads back to its reports and notices
+(the 0.2.0 digest at the precision it prints).
 
 Off the legacy path, placement is also *guarded*. A careless reading counts only where the misread
 digest passes the key's own guards: margins that hold with the planted values, rank and nearest
@@ -719,7 +785,7 @@ rules and the digest, in `<glossary>` tags. It gives:
 Words are quoted as JSON strings. `render_glossary` refuses a glossary that would not read back
 exactly, and `parse_glossary` reads it from the prompt text. A glossary never names the domain's
 registry name, which a held-out plugin keeps private. The ID pattern describes IDs lower-cased, and
-digests print them as their sources file them (`KJFK-48213`, `KX/40512`), so the glossary says that
+digests print them as their sources file them (`WX-482137`, `KX/40512`), so the glossary says that
 the pattern ignores letter case. One instance of the invented domain printed (seed 7, mix
 `invented:classic`, `inst-000`):
 
@@ -773,9 +839,13 @@ instance stores its surface, so that scoring and the audit can read it back.
   - Every conversion is exact as defined (1 kt = 1.852 km/h, 0 °C = 32 °F = 273.15 K,
     1 inHg = 33.86389 hPa). Every value is stored to a tenth, and answers in K and inHg keep two
     places.
-  - IDs are `<station>-<5 digits>` (`KJFK-48213`): an observation's ID starts with its station's
-    identifier, whichever feed files it. The digits are an opaque serial, so an ID never encodes a
-    time. The statuses are "verified" and "preliminary" (the NWS quality-control codes V and Z).
+  - IDs are `WX-` and six digits (`WX-482137`), an opaque serial that names neither the station nor
+    the feed nor the time: a re-report filed under an observation's ID stands where its slot stands, at
+    a station of the observation's region, at a time of its own, which an ID that named them would
+    contradict. (When IDs began with the station's identifier, a re-report under one had to stand at
+    its observation's station, so it was never the only report there, as a real observation often is.)
+    A live observation's serial is a hash of its station and time, so a replay gives the same IDs. The
+    statuses are "verified" and "preliminary" (the NWS quality-control codes V and Z).
   - Synthetic observations follow each station's climate normals, a daily cycle and a weather
     system per region. They are timed as NWS stations take them, each at its station's own minute
     of the hour or, a quarter of them, on a five-minute mark (a five-minute observation, in whole
@@ -805,7 +875,9 @@ instance stores its surface, so that scoring and the audit can read it back.
     question asks for the UTC time of day.
   - An approach ID is the object's designation without spaces, then `-ca` and the number of its
     approach. `2026vk2-ca1` and `2026vk2-ca2` are one object passing Earth and then the Moon: two
-    records.
+    records, with one H, the object's. A report is filed under an approach's ID only where its object
+    makes no other approach in the digest, which it would have to agree with in H and in order, and it
+    gives the object's H as another catalogue fits it (see Traps).
   - A synthetic object is found around its close approach (up to three weeks before it, or days
     after), never after the compilation, and its provisional designation is of the half-month it was
     found in, so a December approach in a digest compiled on 1 January carries the old year's
@@ -1089,7 +1161,8 @@ covered the gap of 0 in 98% of 1,000 runs, and flagged at most 1%).
   whose hashes were taken from 0.2.0 before the refactor, pins all of them.
 - The legacy path calls the 0.2.0 functions with the same arguments and the same random streams.
   Every new random choice has a seed path of its own (`instance/<i>/mix`, `instance/<i>/surface`,
-  `instance/<i>/slots`, `snapshot/<domain>/…`, `templates/new/<domain>`), which only the new options
+  `instance/<i>/slots`, `instance/<i>/retractions`, `snapshot/<domain>/…`, `templates/new/<domain>`),
+  which only the new options
   create, so no legacy draw moves.
 - Legacy manifests, instances, scores and reports carry none of the new keys. A legacy report is
   pinned to its hash from before the new metrics existed (`tests/test_mix.py`), apart from what
@@ -1130,7 +1203,10 @@ So the 0.2.0 study in the README regenerates byte for byte under 0.3.0.
   where traps are planted and what each instance draws (its slots, on a seed path of its own), and the
   synthetic worlds of every domain (aftershocks, relays that file records, station timing, neo
   designations, invented batches), so runs off the legacy path from before them draw other instances.
-  Legacy runs from every one of those versions do regenerate.
+  Their second round changed them again: which record a re-report under its record's ID reports, the
+  scopes each trap draws and how many retractions a digest plans, the weather IDs (opaque serials) and
+  the H that a close approach's re-report gives. Legacy runs from every one of those versions do
+  regenerate.
 * Python 3.9 for 0.3.0 was checked by script, because pytest is not installed for the system
   Python 3.9 of the machine that built it. `tests/test_python39.py` scans the code for what 3.9
   cannot run. Under Python 3.9.6, the 0.2.0 regression run matches the hashes its test pins, and
@@ -1167,7 +1243,7 @@ evalgen/
   forecast.py           delayed-resolution questions and resolution (USGS FDSN)
   audit.py report.py    audit sample; report.md / report.json
   pipeline.py           one cycle end to end
-tests/                  777 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
+tests/                  785 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
                         digest parsing, reply parsing and scoring, USGS and forecasts, adapters, report,
                         gap intervals, head to head, reading-rules coverage, CLI and its errors, received
                         runs that try to reach outside their folder; each domain and genre, every domain in
@@ -1322,15 +1398,28 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   JPL CAD adapters have been exercised only against recorded API responses and fake transports,
   not yet against the live APIs.
 * **What is left of the trap tells off the legacy path.** A planted report is a record drawn with the
-  digest (see Traps), so it is told apart only by what the rules name, and by two things that follow
-  from them or from placing traps where they change answers:
-  - A re-report under its record's own ID stands at that record's station (a weather ID names its
-    station), so it is never the only report at its station, as a real observation can be (an AUC
-    of about 0.6 for the number of reports at its place): the shared ID says as much.
-  - A trap is placed where its careless readings change an answer and pass the key's guards, so a
-    planted report is a little likelier than a real one to lie clear of an asked threshold or to rank
-    high in its group (AUCs up to about 0.6 in some domains). No reader that drops or merges reports by
-    such a feature does better than the naive one.
+  digest (see Traps), so it is told apart only by what the rules name, and by what follows from them or
+  from placing traps where they change answers (AUCs within [0.35, 0.65] in every domain, on the
+  samples measured above):
+  - A report filed under a record's ID lies in that record's group, which then holds two reports at
+    least (an AUC of about 0.6 for the size of a second report's group on the CAD replay), and an
+    earthquake ID names the network that issued it, which a re-report from another network does not
+    share (0.39 to 0.41): of the reports that share an ID, keeping the one whose ID names its network
+    does 3 to 4 points better than a coin, and the status 16 to 19. The shared ID says as much.
+  - A trap is placed where its careless readings change an answer and pass the key's guards, and its
+    slot is chosen by the scopes its report lies in, so a planted report is a little likelier than a real
+    one to lie clear of an asked threshold or to rank high in its group (AUCs up to about 0.6: 0.53 to
+    0.60 for a close approach's second report's distance from the nearest asked distance threshold;
+    its cells of single genres, of 10 to 21 planted reports, reach 0.61 to 0.68 in the news genre on
+    every sample, and up to 0.78 in another genre on one, though no trap is placed by its genre). A
+    correction shows a slot's value, a little farther in value from its group's other reports than a
+    real one is (0.53 to 0.64). No reader that drops or merges reports by such a feature closes more
+    than 2.5% of the gap in any domain, and a model of all of them at most 1.9%.
+  - A form's sent time differs between digests, not within one: every form of a batch shares one limit
+    below the shortest time from a record to a notice about it (see Genres), and the more notices a
+    digest holds, the lower the limit tends to be, while every phantom comes with its retraction's.
+    Pooled over renderings, a phantom's form was sent sooner than a real one (an AUC of 0.42
+    [0.39, 0.45]); within its own rendering, all a reader can compare, alike (0.515).
 * **Fewer placements change an answer.** A re-report used to copy its record's values give or take a
   little, so a re-report of the largest record often changed the largest answer; a slot's values are
   its own. A digest of a built-in synthetic domain keeps as many traps that change answers as before,
@@ -1338,6 +1427,13 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   few the number of traps that change a question's answer falls: from 0.82 a question to 0.76 for the
   toy plugin domain, and from 0.83 to 0.68 for neo replayed from the 40 approaches of the recorded CAD
   response, which leave 12 to 20 slots a digest (the built-in synthetic domains keep 0.75 to 0.83).
+  Choosing a placement by its scopes before the answers it changes, and a digest that holds no
+  retraction in 40% of digests, take a little more: in the second round's samples the share of traps
+  that change an answer fell from 0.67–0.75 to 0.57–0.65 in the built-in synthetic domains (from 0.57
+  to 0.54 for the toy plugin, from 0.63 to 0.48 on the CAD replay), and the number of traps that change
+  a question's answer from 0.74–0.81 to 0.73–0.80 (0.75 to 0.73, 0.66 to 0.64).
+* **A digest may hold no retraction.** None, one, two or three (see Traps), so a run of a few
+  instances may plant none, and its report then has no retraction row.
 * **Weather stations.** Beyond the five stations sampled from the API for the recorded fixture
   (KJFK, KORD, KDEN, KSEA, KLAX), the names and positions of the 24 stations are a hand-made table
   in the NWS style. In a live run an observation takes its position from the API whenever it gives
