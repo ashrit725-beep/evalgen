@@ -170,8 +170,9 @@ def test_each_choice_shows_in_the_table(toys):
     assert "# " in table(csv_style, rows="by_source") and "Rows from" in table(markdown_style, rows="by_source")
     for mark, opening in (("bracket", "[^1]: "), ("number", "1. "), ("paren", "(1) "), ("word", "Note 1: ")):
         assert f"\n{opening}" in table(markdown_style, notes=mark)
-    assert {table(csv_style, caption=i).split("\n")[0][:6] for i in range(len(CAPTIONS))} == {"Table ", "Readin",
-                                                                                               "Export"}
+    # (A caption whose compilation time is written with a comma is a quoted CSV cell.)
+    assert {table(csv_style, caption=i).split("\n")[0].lstrip('"')[:6] for i in range(len(CAPTIONS))} == {
+        "Table ", "Readin", "Export"}
 
 
 def test_a_variant_avoids_every_choice_of_the_original(toys):

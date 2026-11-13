@@ -475,7 +475,7 @@ def test_the_naive_reader_falls_for_the_traps_of_form_runs_and_only_for_them(for
         conflict = "conflicting_magnitude" if mix.startswith("earthquakes") else "conflicting_value"
         assert list(naive["by_kind"]) == ["duplicate", "retraction", conflict]
         assert models["naive"]["accuracy"]["rate"] < 1.0 == models["oracle"]["accuracy"]["rate"]
-        assert 0 < models["mock"]["accuracy"]["rate"] < 1
+        assert 0 < models["mock"]["accuracy_all_renderings"]["rate"] < 1  # (13 originals can all come out right)
         instances = load_instances(run)
         trapped = {(inst.instance_id, qid) for inst in instances for t in inst.traps for qid in t.fallen}
         for row in read_json(run / "scores" / "naive.json")["rows"]:

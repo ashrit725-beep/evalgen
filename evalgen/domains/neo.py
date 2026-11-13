@@ -50,7 +50,7 @@ import requests
 
 from ..sources import USER_AGENT
 from ..units import Unit
-from .base import RULES_WIDTH, Domain, FieldSpec, Lexicon, Record, TrapVocab, record_rules
+from .base import RULES_WIDTH, Domain, FieldSpec, Lexicon, Record, TrapVocab, record_rules, stored_places
 
 AU_KM = 149_597_870.7  # the astronomical unit, in km (IAU 2012, exact)
 LD_KM = 384_400.0  # the lunar distance, in km, as this domain defines it
@@ -322,6 +322,7 @@ def _clamped(value: float, least: float, most: float) -> float:
 
 
 MOON_MIN_AU = 0.0003  # the closest synthetic approach to the Moon (about 45,000 km)
+FOUND_BEFORE_DAYS, FOUND_AFTER_DAYS = 21, 5  # when an object is found, around its approach (_draw_object)
 
 
 def _reflected(value: float, least: float, most: float) -> float:
@@ -347,7 +348,8 @@ def _year(ts: int) -> int:
 
 def _draw_designation(rng: random.Random, h: float, when: int, taken: set[str]) -> str:
     """A packed designation not in `taken` (and added to it): a number for most large objects, else a
-    provisional designation found by the half-month of `when` in its year."""
+    provisional designation found by the half-month of `when` in its year (an older one, in any of its
+    half-months). `when` is when the object was found, which a caller keeps before the compilation."""
     numbered_chance = 0.85 if h < 21.0 else 0.35 if h < 23.5 else 0.03
     current = _year(when)
     while True:
@@ -374,7 +376,10 @@ def _draw_object(rng: random.Random, body: BodyModel, compiled_at: int, window_h
     if body.name == "Earth":
         h += (0.025 - dist_au) * H_PER_AU
     h = _clamped(h, h_least, h_most)
-    designation = _draw_designation(rng, h, compiled_at, taken)
+    # Small objects are found around their close approach (up to three weeks before it, or days after),
+    # never after the compilation: a designation never postdates the digest that lists it.
+    found = min(compiled_at - 60, time + rng.randint(-FOUND_BEFORE_DAYS * DAY_S, FOUND_AFTER_DAYS * DAY_S))
+    designation = _draw_designation(rng, h, found, taken)
     provisional = _PROVISIONAL.fullmatch(designation)
     recent = provisional is not None and int(provisional["year"]) >= _year(compiled_at) - 2
     h = round(h, 3 if recent else rng.choice((1, 2)))
@@ -509,10 +514,20 @@ class Neo(Domain):
             return super().planted_value(spec, value, like)
         return super().planted_value(spec, value, like, peers)
 
-    def rereport_ref(self, record: Record, slot: Record, rng: random.Random, taken: set[str]) -> str:
-        """A catalogue re-reports an approach under another designation of its object (see the rules), shaped
-        like the object's own, whose kind goes with the precision of its H (_draw_object)."""
-        return self.mimic_id(record.id, rng, taken)
+    def rereport_values(self, record: Record, slot: Record, rng: random.Random, *, same_id: bool) -> dict[str, float]:
+        """What a report filed in a slot's place gives for an approach (Domain.rereport_values): the slot's miss
+        distance and velocity, and, under the approach's own designation, the H of that object as another
+        catalogue lists it: the record's, off by 0.05 to 0.3 (catalogues fit H to their own observations), at
+        the places the record's designation gives it (_draw_object), so that a designation and its H never
+        disagree. Under the slot's own designation, a report keeps the slot's H with the rest."""
+        values = dict(slot.values)
+        if same_id:
+            h = record.values[ABSOLUTE_MAGNITUDE.key]
+            places = stored_places(h, ABSOLUTE_MAGNITUDE.decimals)
+            step = 10.0 ** -places
+            off = max(step, round(rng.uniform(0.05, 0.3) / step) * step)
+            values[ABSOLUTE_MAGNITUDE.key] = round(h + rng.choice((-1, 1)) * off, places) + 0.0
+        return values
 
     def sample_weight(self, record: Record) -> float:
         """Closer approaches make the digest more often: one that grazes the body is up to four times as

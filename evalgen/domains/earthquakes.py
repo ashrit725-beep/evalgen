@@ -201,9 +201,9 @@ def synthetic_world(rng: random.Random, n: int, compiled_at: int, window_hours: 
     and 15 km of each other), as no two of a real feed's are."""
     n_after = round(n * AFTERSHOCK_SHARE) if n >= 4 else 0
     events = []
-    taken: set[str] = set()
-    for e in generate_synthetic(rng, n - n_after, compiled_at, window_hours):
-        taken.add(e.id)
+    first = generate_synthetic(rng, n - n_after, compiled_at, window_hours)
+    taken = {e.id for e in first}  # a new ID never takes one that any event had
+    for e in first:
         for network, regions, least, share in RELAY_FILINGS:
             if e.region in regions and e.mag >= least and rng.random() < share:
                 e = replace(e, id=new_event_id(network, rng, taken), network=network,

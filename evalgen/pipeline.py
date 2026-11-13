@@ -122,8 +122,9 @@ def sample_events(pool: Sequence[Any], rng: random.Random, n_min: int, n_max: in
     return _focused_sample(pool, rng, n, domain)
 
 
-# Off the legacy path an instance draws this many records more than it keeps (see sample_with_slots).
-SLOTS = 10
+# Off the legacy path an instance draws this many records more than it keeps (see sample_with_slots): enough
+# that each trap's placements, tried among them, often find one whose careless readings change an answer.
+SLOTS = 30
 
 
 def sample_with_slots(pool: Sequence[Any], rng: random.Random, n_min: int, n_max: int, split: random.Random, *,
@@ -137,7 +138,8 @@ def sample_with_slots(pool: Sequence[Any], rng: random.Random, n_min: int, n_max
     sometimes as close to each other as a re-report is to its record. `split` then keeps a random choice
     of the digest's size and leaves the rest as slots. The kept records and the slots are thus drawn
     alike, and a planted report in a slot's place stands where a real record could have stood: its time,
-    position, place, source, group, values and their precision, and its ID, are those of a real record."""
+    position, place, source, group, values and their precision, and its ID, are those of a real record.
+    (A pool barely larger than a digest leaves few slots; traps then make up the rest, traps._virtual_slot.)"""
     n = min(len(pool), rng.randint(n_min, n_max))
     drawn = _focused_sample(pool, rng, min(len(pool), n + slots), domain)
     drawn = _with_twins(drawn, pool, split, domain)

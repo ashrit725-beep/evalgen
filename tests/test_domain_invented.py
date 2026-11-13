@@ -26,9 +26,9 @@ from evalgen.adapters import Task, _perturb
 from evalgen.digest import LINE_PRESETS, NOTICE_PLACEMENTS
 from evalgen.domains import all_domains, get_domain
 from evalgen.domains.base import RULES_WIDTH, Record, RecordReport, Surface
-from evalgen.domains.invented import (CHATTER, COMMON_WORDS, DEPOTS, FLOORS, INVENTED, LARGER_SCALES, RESERVED,
-                                      SMALLER_SCALES, SOURCES, UNFIT_PARTS, WINDOW_HOURS, WORKING_HOURS, _Coiner,
-                                      _fit)
+from evalgen.domains.invented import (BATCH_SECONDS, BATCH_SHARE, CHATTER, COMMON_WORDS, DEPOTS, FLOORS, INVENTED,
+                                      LARGER_SCALES, RELAY_SHARE, RELAYS, RESERVED, SMALLER_SCALES, SOURCES, UNFIT_PARTS,
+                                      WINDOW_HOURS, WORKING_HOURS, _Coiner, _fit)
 from evalgen.genres import detect_genre
 from evalgen.genres.base import RenderContext, parse_glossary, render_glossary
 from evalgen.genres.classic import CLASSIC, RECORD_HEADERS, RECORD_LAYOUTS, RECORD_TIME_PRESETS, UNIT_PRESETS
@@ -143,8 +143,12 @@ def test_every_word_of_a_surface_is_its_own_and_none_is_reserved():
         units = [u for us in drawn.units.values() for u in us]
         words = ([drawn.noun, drawn.plural, drawn.id_label, drawn.source_label, drawn.group_label, *drawn.labels.values(),
                   *(u.symbol for u in units), *(u.words for u in units), drawn.id_prefix[:-1],
-                  *drawn.groups.values(), *drawn.sources.values(), *drawn.trap_vocab.rereporting_sources[:2]])
+                  *drawn.groups.values(), *drawn.sources.values()])
         assert len({w.casefold() for w in words}) == len(words), words  # no word means two things
+        # The agencies that re-report others' lots are the clearing agencies and one depot agency, and each of
+        # them files lots of its own, so that no name marks a re-report.
+        assert set(drawn.trap_vocab.rereporting_sources) <= set(drawn.sources.values())
+        assert drawn.trap_vocab.rereporting_sources[:2] == tuple(drawn.sources[relay] for relay in RELAYS)
         coined = ([u.symbol for u in units] + [u.words[:-1] for u in units]
                   + [name.split()[0].lower() for name in (*drawn.groups.values(), *drawn.sources.values())])
         for word in coined:
@@ -225,7 +229,9 @@ def test_the_synthetic_world_is_seeded_and_shaped_as_described():
     for depot in DEPOTS:
         mine = by_depot[depot.name]
         assert abs(len(mine) / len(records) - depot.weight / total) < 0.025  # drawn by weight
-        assert {r.source for r in mine} == set(depot.sources)  # filed by the depot's own agencies
+        assert {r.source for r in mine} == set(depot.sources) | set(RELAYS)  # its own agencies, and the clearing ones
+        relayed = sum(r.source in RELAYS for r in mine) / len(mine)
+        assert abs(relayed - RELAY_SHARE) < 0.06
         for key, (median, _) in (("f1", depot.f1), ("f2", depot.f2)):
             assert abs(statistics.median(r.values[key] for r in mine) / median - 1) < 0.15
     for key, floor in FLOORS.items():
@@ -236,6 +242,12 @@ def test_the_synthetic_world_is_seeded_and_shaped_as_described():
     assert 0.75 < working < 0.86  # 14 busy hours, and the 10 others at 0.35 of their rate
     light, heavy = sorted(records, key=lambda r: r.values["f1"])[::len(records) - 1]
     assert INVENTED.sample_weight(heavy) > 1 > INVENTED.sample_weight(light) > 0  # heavy lots make the digest
+    # A share of lots come in batches: the same agency files a second lot at the depot within a minute and a
+    # half, so that two real records are sometimes as close as a re-report can be to its record.
+    batched = sum(any(o is not r and (o.group, o.source) == (r.group, r.source)
+                      and 0 < o.time - r.time <= BATCH_SECONDS[1] for o in records[i + 1:i + 40])
+                  for i, r in enumerate(records))
+    assert 0.6 * BATCH_SHARE < batched / len(records) < 1.6 * BATCH_SHARE
 
 
 def _correlation(pairs) -> float:
@@ -267,8 +279,9 @@ def test_ids_take_each_instances_prefix_and_stay_unique():
 def test_the_seed_pins_the_world_and_every_surface():
     """What one seed draws in this domain alone, pinned when the domain was written: later code may
     change how instances are composed, but never the world or the words a seed gives. (The surfaces
-    were pinned again, deliberately, when common English words joined the words no surface may coin;
-    the world is as first pinned.)"""
+    were pinned again, deliberately, when common English words joined the words no surface may coin, and
+    the world and the surfaces when clearing agencies and batches of lots joined the world, so that the
+    agencies that re-report lots file lots too and real lots are sometimes as close as a re-report.)"""
     pinned = read_json(FIXTURES / "pinned.json")
     log = SeedLog(pinned["seed"])
     snapshot, raw = build_domain_snapshot(INVENTED, "synthetic", log, pool_size=pinned["pool_size"])
@@ -477,7 +490,8 @@ def test_traps_are_planted_and_their_careless_readings_give_their_wrong_answers(
             readings = [Mishandle.from_dict(m) for m in trap.mishandles]
             if trap.kind == "duplicate":
                 (dup,) = planted
-                assert dup.status == "provisional" and dup.source in vocab.rereporting_sources
+                # Filed by the agency of a lot drawn with the digest but not kept: an agency that files lots.
+                assert dup.status == "provisional" and dup.source in bound.surface.sources.values()
                 assert (dup.same_as is None) == (trap.form == "same_id")
                 assert readings == [Mishandle(split=((dup.ref, dup.source, "provisional"),))]
             elif trap.kind == "retraction":

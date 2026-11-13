@@ -203,10 +203,12 @@ def test_record_traps_are_planted_and_read_as_earthquake_traps_are(toys, name):
         for trap in inst.traps:
             planted = [r for r in inst.reports if r.trap_id == trap.trap_id]
             readings = [Mishandle.from_dict(m) for m in trap.mishandles]
-            if trap.kind == "duplicate":
+            if trap.kind == "duplicate":  # a record the digest does not keep, filed as a re-report
                 (dup,) = planted
-                assert dup.status == "preliminary" and dup.source in vocab.rereporting_sources
+                assert dup.status == "preliminary" and dup.source in {r.source for r in by_id.values()}
                 assert (dup.same_as is None) == (trap.form == "same_id")
+                if dup.same_as is not None:  # under an ID of its own, a real record's
+                    assert dup.ref in by_id and dup.ref not in inst.event_ids
                 assert readings == [Mishandle(split=((dup.ref, dup.source, "preliminary"),))]
             elif trap.kind == "retraction":
                 (notice,) = [n for n in inst.notices if n.trap_id == trap.trap_id]
@@ -364,12 +366,14 @@ def test_place_notes_and_missing_qualifiers_read_back_and_named_sites_stay_put(t
         for rendering in inst.renderings:
             assert solve(rendering.prompt, question_specs(inst), domain=domain.name) == inst.answer_key
         settled = {r.ref: r for r in inst.reports if r.role == "primary"}
-        for r in inst.reports:  # a re-report of a record at a named site gives the site's own position
-            if r.role == "duplicate" and settled.get(r.same_as or r.ref, r).place is not None:
-                anchor = settled.get(r.same_as or r.ref)
-                if anchor is not None:
-                    assert (r.lat, r.lon, r.place) == (anchor.lat, anchor.lon, anchor.place)
-                    sites += 1
+        snapshot = {(r.time, r.source, r.lat, r.lon, r.place) for r in build_domain_snapshot(
+            domain, "synthetic", SeedLog(6))[0].events}
+        for r in inst.reports:  # a re-report under its record's ID stands at the record's named site, as a real
+            # record there does (a record the digest does not keep); one under an ID of its own, where its record is
+            anchor = settled.get(r.same_as or r.ref)
+            if r.role == "duplicate" and anchor is not None and anchor.place is not None and r.same_as is None:
+                assert r.place == anchor.place and (r.time, r.source, r.lat, r.lon, r.place) in snapshot
+                sites += 1
     assert sites > 0
 
 

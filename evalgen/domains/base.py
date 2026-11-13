@@ -669,24 +669,26 @@ class Domain:
         return (record.group, record.place)
 
     def planted_value(self, spec: FieldSpec, value: float, like: float, peers: Sequence[float] = ()) -> float:
-        """A value of `spec` that the trap builders plant, `value`, written as a real report would write it,
-        never below zero unless the field is signed, and never -0.0. `like` is the real value it copies or
-        stands for (a re-report's record's), and `peers` the values of the same field that the same source
-        files in the digest. By default a source writes every value of a field to the same places, which
-        its values show: the most places of `like` and `peers` (one value alone can end in zeros by chance).
-        A domain whose precision belongs to the record (an object's H, a five-minute observation's whole
+        """A value of `spec` that the trap builders write on a real record's report (a conflict's wrong
+        value) or draw for a record made up when no slot is left, `value`, written as a real report would
+        write it, never below zero unless the field is signed, and never -0.0. `like` is the real value it
+        stands for (the record's own), and `peers` the values of the same field that the same source files
+        in the digest. By default a source writes every value of a field to the same places, which its
+        values show: the most places of `like` and `peers` (one value alone can end in zeros by chance). A
+        domain whose precision belongs to the record (an object's H, a five-minute observation's whole
         degrees) writes to `like`'s own places, and one whose real values lie on a coarser grid (whole knots,
         hundredths of an inch) puts planted ones on it."""
         places = max(stored_places(v, spec.decimals) for v in (like, *peers))
         return round(value if spec.signed else max(0.0, value), places) + 0.0
 
-    def rereport_ref(self, record: Any, slot: Any, rng: random.Random, taken: set[str]) -> str:
-        """The reference of its own under which a source re-reports `record` in `slot`'s place (a record
-        drawn with the digest but not kept, filed by that source): by default the slot's own ID, which no
-        other line of the digest carries, so that a re-report's reference is a real ID of that source. A
-        domain whose IDs tell something about the record (an object's designation) mimics the record's
-        ID instead."""
-        return slot.id
+    def rereport_values(self, record: Any, slot: Any, rng: random.Random, *, same_id: bool) -> dict[str, float]:
+        """The values that a report filed in `slot`'s place (a record drawn with the digest but not kept)
+        gives for `record`, as a re-report or a second report of it, under the record's ID (`same_id`) or
+        under the slot's own with a note naming the record: by default the slot's own values, at their own
+        precision, so that the report is exactly as far from its record in value as a real record is from
+        its nearest neighbour, and nothing in its values tells it from a real record. A domain whose IDs
+        carry what a value must agree with (an object's designation and its H) overrides it."""
+        return dict(slot.values)
 
     def glossary(self, surface: Mapping[str, Any] | None = None) -> Glossary:
         """The data dictionary that non-legacy prompts print, in the words of `surface` (a drawn

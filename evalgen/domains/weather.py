@@ -404,8 +404,8 @@ class Weather(Domain):
             drawn = compiled_at - rng.randrange(60, span)
             five_minute = rng.random() < FIVE_MINUTE_SHARE
             when = drawn - drawn % 300 if five_minute else drawn - drawn % 3600 + minutes[station.id] * 60
-            if not compiled_at - span <= when < compiled_at or (station.id, when) in seen:
-                continue
+            if not compiled_at - span < when <= compiled_at - 60 or (station.id, when) in seen:
+                continue  # inside the window, a minute before the compilation at the latest, as ever
             seen.add((station.id, when))
             progress = (when - (compiled_at - span)) / span - 0.5  # -0.5 at the window's start, 0.5 at its end
             system, (temp_offset, pressure_offset) = systems[station.region], offsets[station.id]
@@ -430,20 +430,19 @@ class Weather(Domain):
         return sorted(records, key=lambda r: (r.time, r.id))
 
     def planted_value(self, spec: FieldSpec, value: float, like: float, peers: Sequence[float] = ()) -> float:
-        """A planted value as an observation reports it: a wind in whole knots and a pressure in hundredths of
-        an inch of mercury, as every observation does (live or synthetic), and a temperature to the places
-        of the one it copies or stands for (a five-minute observation gives whole degrees, a routine one
-        tenths), whatever the station's other observations give."""
-        if spec.key == WIND.key:
+        """A planted value as an observation reports it (Domain.planted_value): a wind in whole knots and a
+        pressure in hundredths of an inch of mercury when the observation it stands for gives them so (every
+        synthetic one does), and a temperature to the places of that observation (a five-minute observation
+        gives whole degrees, a routine one tenths), whatever the station's other observations give."""
+        if spec.key == WIND.key and like == whole_knots(like):
             return whole_knots(value)
-        if spec.key == PRESSURE.key:
+        if spec.key == PRESSURE.key and like == altimeter(like):
             return altimeter(value)
         return super().planted_value(spec, value, like)
 
     def new_id(self, source: str, rng: random.Random, taken: set[str]) -> str:
-        """A fresh "<prefix>-<5 digits>" ID with the prefix of `source`'s name, added to `taken`. An
-        observation's ID starts with its station's identifier, whichever feed files it, so the trap
-        builders give a re-report an ID shaped like its record's (mimic_id)."""
+        """A fresh "<prefix>-<5 digits>" ID with the prefix of `source`'s name, added to `taken`. (An
+        observation's own ID starts with its station's identifier, whichever feed files it.)"""
         return _fresh(id_prefix(source), rng, taken)
 
     def mimic_id(self, example: str, rng: random.Random, taken: set[str]) -> str:
