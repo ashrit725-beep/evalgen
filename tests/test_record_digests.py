@@ -298,7 +298,7 @@ def test_validation_names_words_a_digest_could_not_tell_apart(toys):
 
 # ---------------------------------------------------------------------- the classic genre
 
-STYLE_MARKERS = {"bulletin": re.compile(r"^\[.+\] .+ \| "), "prose": re.compile(r"^.+? — .+ lists "),
+STYLE_MARKERS = {"bulletin": re.compile(r"^\[.+\] .+ \| "), "prose": re.compile(r"^.+? — .+ was recorded .+ Listed by "),
                  "wire": re.compile(r"^.+? WIRE \["), "log": re.compile(r" ref=.+ src=")}
 NOTICE_LINE = re.compile(r"^(?P<keyword>NOTICE|RETRACTION|UPDATE|CORRECTION|Revised) \[")
 

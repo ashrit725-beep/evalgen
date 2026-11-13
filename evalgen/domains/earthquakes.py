@@ -57,7 +57,9 @@ MAGNITUDE = FieldSpec(
     answer_type="magnitude", tolerance=(0.05, 0.0), margin=(0.0, 0.0), rank_gap=MAG_GAP,
     quantiles=(0.25, 0.85), threshold_step=0.1,
     filters=("at_least", "below"), terminals=("argmax", "rank", "max", "time_of_max"),
-    qualifier="mag_type", correctable=True,
+    # The glossary names the qualifier in words too: the 0.2.0 digest prints it as "(md)", "MD 3.2" or
+    # "type=md", never under its key, which the other genres print ("mag_type=md").
+    qualifier="mag_type", qualifier_label="magnitude type", correctable=True,
 )
 DEPTH = FieldSpec(
     key="depth", label="depth", canonical_unit="km", units=LENGTH, decimals=1,
@@ -69,10 +71,13 @@ DEPTH = FieldSpec(
     tolerance_scales=False,  # 0.2.0 scores 0.3 km and 0.3 miles alike
 )
 
+# A question's point is a seismic station. The 0.2.0 label names the network of the quake the point is
+# drawn near, which is almost always the network of the answer (of the nearest quake); legacy runs keep
+# it, and every other run names the station by its number alone.
 SPATIAL = Spatial(
     radii=RADII, margin=(DISTANCE_MARGIN_KM, DISTANCE_MARGIN_REL),
     nearest_gap=(NEAREST_GAP_KM, NEAREST_GAP_REL), nearest_max_km=NEAREST_MAX_KM,
-    point_offset_km=(5.0, 60.0), point_label="station {source}-{number}",
+    point_offset_km=(5.0, 60.0), point_label="station {number}", legacy_point_label="station {source}-{number}",
 )
 
 LEXICON = Lexicon(
@@ -113,6 +118,7 @@ LEXICON = Lexicon(
         "time_of_largest": ("At what time (UTC, HH:MM) did the largest of the {records} occur?",
                             "When, in UTC (HH:MM), was the strongest of the {records} recorded?"),
     },
+    legacy=True,  # "1 miles", and the regions of a comparison unquoted, as 0.2.0 words them
 )
 
 
@@ -131,7 +137,8 @@ def genre_lexicon(lexicon: Lexicon) -> Lexicon:
     words radii as 0.2.0 did takes DISTANCE_WORDINGS instead, which name the distance before the number
     (as many wordings, so the draws stay the same), and one that still says an earthquake was "recorded"
     at a time takes the wordings of OCCURRED_FILTERS and OCCURRED_QUESTIONS; any other wording of its own
-    is kept. Legacy prompts keep the 0.2.0 wording."""
+    is kept. A quantity of 1 takes the singular ("1 mile") and the regions of a comparison are quoted
+    (Lexicon.legacy). Legacy prompts keep the 0.2.0 wording."""
     filters, questions = dict(lexicon.filters), dict(lexicon.questions)
     if filters.get("within_distance") == LEXICON.filters["within_distance"]:
         filters["within_distance"] = DISTANCE_WORDINGS
@@ -140,7 +147,7 @@ def genre_lexicon(lexicon: Lexicon) -> Lexicon:
         for op, wordings in new.items():
             if table.get(op) == words[op]:
                 table[op] = wordings
-    return replace(lexicon, filters=filters, questions=questions)
+    return replace(lexicon, filters=filters, questions=questions, legacy=False)
 
 
 GENRE_LEXICON = genre_lexicon(LEXICON)

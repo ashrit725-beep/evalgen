@@ -41,8 +41,9 @@ its own. Every rendering is checked to read back to exactly its reports and noti
 
 Earthquakes keep their 0.2.0 record types: their reports are models.Report, which hold their values
 and magnitude type as attributes, and their corrections revise the magnitude (new_mag, old_mag,
-mag_type). This genre writes and reads them as it does the RecordReports of every other domain, in the
-words of the earthquake glossary (``_QuakeRecords``).
+mag_type). This genre writes them in the generic form of every domain (Domain.to_generic) and reads
+them back through Domain.from_generic (genres.base.generic_items and domain_items), in the words of the
+earthquake glossary.
 """
 from __future__ import annotations
 
@@ -57,13 +58,13 @@ from typing import Any, Iterator, Mapping, Sequence
 from ..digest import MONTHS_LONG
 from ..domains.base import Domain, Glossary, GlossaryField, RecordReport, TrapVocab
 from ..domains.earthquakes import Earthquakes
-from ..geo import utc_offset_hours
-from ..models import Notice, Report
+from ..models import Notice
 from ..ops import DigestData
 from ..units import Unit
-from .base import (COORDS_PATTERN, TIME_FORMATS, TIME_PATTERN, UTC_TIME_FORMATS, Genre, RenderContext, alternation,
-                   check_round_trip, format_coords, format_time, format_value, id_pattern, parse_coords, parse_time,
-                   read_value, value_pattern)
+from .base import (COORDS_PATTERN, GROUP_PREPOSITION, GROUP_PREPOSITION_CAPITALISED, TIME_FORMATS, TIME_PATTERN,
+                   UTC_TIME_FORMATS, Genre, RenderContext, alternation, check_round_trip, domain_items, format_coords,
+                   format_time, format_value, generic_items, id_pattern, parse_coords, parse_time, read_value,
+                   value_pattern)
 
 # ---------------------------------------------------------------------------------- templates
 # A template is literal text with {slots}. A part in [brackets] is about the records' position: it is
@@ -72,18 +73,19 @@ from .base import (COORDS_PATTERN, TIME_FORMATS, TIME_PATTERN, UTC_TIME_FORMATS,
 # or free words (a source, a group) bounded on both sides by typed slots or long literal text.
 #
 # A report's time is always the time its record was recorded ("recorded at"), never the time a source
-# filed or sent the report, as the reading rules define it.
+# filed or sent the report, as the reading rules define it. A record is placed in its group with its
+# domain's preposition, {in} ("in North Sea", "near Moon": Domain.group_preposition).
 
 REPORT_FORMS = {
-    "attributed": ("The {source} {source_label} reported {noun} {ref} ({status}), recorded at {when} in {group}"
+    "attributed": ("The {source} {source_label} reported {noun} {ref} ({status}), recorded at {when} {in} {group}"
                    "[, at {where}], with {values}."),
-    "record_first": ("{Noun} {ref}, filed as {status} by the {source} {source_label}, was recorded at {when} in "
+    "record_first": ("{Noun} {ref}, filed as {status} by the {source} {source_label}, was recorded at {when} {in} "
                      "{group}[, at {where}]. It gave {values}."),
-    "time_first": ("At {when}, the {source} {source_label} recorded {noun} {ref} in {group}[, at {where}], listing "
+    "time_first": ("At {when}, the {source} {source_label} recorded {noun} {ref} {in} {group}[, at {where}], listing "
                    "{values}; the report is marked {status}."),
     "figures_first": ("{Values}: those were the figures for {noun} {ref}, filed as {status} by the {source} "
-                      "{source_label} and recorded at {when} in {group}[, at {where}]."),
-    "place_first": ("In {group}[, at {where}], {noun} {ref} was recorded at {when} by the {source} {source_label}: "
+                      "{source_label} and recorded at {when} {in} {group}[, at {where}]."),
+    "place_first": ("{In} {group}[, at {where}], {noun} {ref} was recorded at {when} by the {source} {source_label}: "
                     "{values}. Status: {status}."),
 }
 # A re-report's note ("{frame} {note} {ID}.") and a place note ("{frame} {place}.") end its paragraph.
@@ -144,7 +146,9 @@ BACKGROUND = (
     "Reports like these are shared through common feeds; this article reproduces each one as it was filed.",
     "Round-ups of {plural} appear on this page every {span}; earlier editions remain in the archive.",
 )
-SUBHEADS = ("Reports from {group}", "Across {group}", "{group}: the latest")  # over each group's paragraphs
+# Over each group's paragraphs, by the domain's group preposition: a body is no place reports come from.
+SUBHEADS = {"in": ("Reports from {group}", "Across {group}", "{group}: the latest"),
+            "near": ("Reports near {group}", "Near {group}", "{group}: the latest")}
 SIGNOFFS = ("Reporting by {reporter}; editing by {editor}.", "({agency} reporting by {reporter}; editing by {editor})")
 
 # ------------------------------------------------------------------------------ the look
@@ -208,7 +212,7 @@ class News(Genre):
         """The article, in the words of the context's glossary (the domain's own when it has none),
         checked to be recognised as news and to read back to exactly its reports and notices."""
         glossary = ctx.glossary or ctx.domain.glossary()
-        text = _write(ctx, glossary, _records(ctx.domain))
+        text = _write(ctx, glossary)
         if not self.sniff(text):
             raise ValueError("the news genre does not recognise its own rendering (does a word of the domain or its "
                              "surface hold a line break?)")
@@ -223,84 +227,19 @@ class News(Genre):
                 and _BYLINE_LINE.fullmatch(lines[1]) is not None)
 
     def parse(self, digest_text: str, glossary: Glossary | None, domain: Domain) -> DigestData:
-        """Every report and notice of the article, read through the prompt's glossary; earthquakes,
-        whose words are fixed, also without one."""
-        records = _records(domain)
+        """Every report and notice of the article, read through the prompt's glossary (earthquakes,
+        whose words are fixed, also without one), as the domain's digests hold them."""
         if glossary is None:
-            if records is RECORDS:
+            if not isinstance(domain, Earthquakes):
                 raise ValueError(f"a digest of {domain.name} records is read through the glossary its prompt prints, "
                                  "and this prompt prints none")
             glossary = domain.glossary()
-        return _read(digest_text, glossary, records)
+        data = _read(digest_text, glossary)
+        return DigestData(domain_items(domain, data.reports), domain_items(domain, data.notices))
 
 
 NEWS = News()
 GENRE = NEWS  # what the registry looks up (see evalgen.genres)
-
-# ------------------------------------------------------------------------- record types
-
-
-class _Records:
-    """How a domain's reports and notices are held: RecordReports, whose qualifiers are a dict, and
-    corrections that name the field they revise (every domain but earthquakes)."""
-
-    def qualifier(self, report: Any, field: GlossaryField) -> str | None:
-        """The qualifier a report gives with a field's value (None: the field has none, or the report
-        gives none)."""
-        return None if field.qualifier is None else report.qualifiers.get(field.qualifier)
-
-    def revision(self, notice: Notice) -> tuple[str | None, float | None, float | None, str | None]:
-        """What a correction revises: (field key, new value, old value, new qualifier)."""
-        return notice.field, notice.new_value, notice.old_value, notice.qualifier
-
-    def report(self, *, ref: str, source: str, status: str, time: int, lat: float | None, lon: float | None,
-               group: str, values: dict[str, float], qualifiers: dict[str, str], place: str | None,
-               same_as: str | None) -> Any:
-        """The report a paragraph states, from its fields in their generic names."""
-        return RecordReport(ref=ref, source=source, status=status, time=time, lat=lat, lon=lon, group=group,
-                            values=values, qualifiers=qualifiers, place=place, same_as=same_as)
-
-    def correction(self, target: str, time: int, key: str, new: float, old: float,
-                   qualifier: str | None) -> Notice | None:
-        """The correction a notice states (None: one that this record type cannot hold)."""
-        return Notice(kind="correction", target=target, time=time, field=key, new_value=new, old_value=old,
-                      qualifier=qualifier)
-
-
-class _QuakeRecords(_Records):
-    """The 0.2.0 earthquake types. A Report holds its values and its magnitude type as attributes (its
-    generic ``values`` are {"mag": mag, "depth": depth_km}), and a correction revises the magnitude:
-    new_mag, old_mag and mag_type."""
-
-    REVISED = "mag"  # the field every 0.2.0 correction revises
-
-    def qualifier(self, report: Any, field: GlossaryField) -> str | None:
-        return None if field.qualifier is None else getattr(report, field.qualifier)
-
-    def revision(self, notice: Notice) -> tuple[str | None, float | None, float | None, str | None]:
-        return self.REVISED, notice.new_mag, notice.old_mag, notice.mag_type
-
-    def report(self, *, ref: str, source: str, status: str, time: int, lat: float | None, lon: float | None,
-               group: str, values: dict[str, float], qualifiers: dict[str, str], place: str | None,
-               same_as: str | None) -> Any:
-        return Report(ref=ref, network=source, status=status, time=time, lat=lat, lon=lon, depth_km=values["depth"],
-                      mag=values["mag"], mag_type=qualifiers.get("mag_type"), region=group, place=place,
-                      same_as=same_as)
-
-    def correction(self, target: str, time: int, key: str, new: float, old: float,
-                   qualifier: str | None) -> Notice | None:
-        if key != self.REVISED:  # a 0.2.0 notice holds no other revision
-            return None
-        return Notice(kind="correction", target=target, time=time, new_mag=new, old_mag=old, mag_type=qualifier)
-
-
-RECORDS, QUAKE_RECORDS = _Records(), _QuakeRecords()
-
-
-def _records(domain: Domain) -> _Records:
-    """Earthquake domains keep the 0.2.0 record types; every other domain's records are generic."""
-    return QUAKE_RECORDS if isinstance(domain, Earthquakes) else RECORDS
-
 
 # ----------------------------------------------------------------------------- templates
 
@@ -389,18 +328,20 @@ def _draw_unit(rng: random.Random, field: GlossaryField, preset: str) -> Unit | 
     return rng.choices(field.units, weights=weights, k=1)[0]
 
 
-def _write(ctx: RenderContext, glossary: Glossary, records: _Records) -> str:
+def _write(ctx: RenderContext, glossary: Glossary) -> str:
     """The article of one rendering, drawn in this order: each report's paragraph, the order of the
     paragraphs, each notice's paragraph, the people, the quotes and the background, where they and the
     chatter go, where the notices go, and last the byline, the dateline and lede, and the sign-off.
-    Paragraphs are separated by blank lines; the headline (the style's) and the byline open the article."""
+    Paragraphs are separated by blank lines; the headline (the style's) and the byline open the article.
+    Reports and notices are written in their generic form (genres.base.generic_items)."""
     rng, style = ctx.rng, ctx.style
     vocab = ctx.domain.trap_vocab
-    sources = sorted({r.source for r in ctx.reports})
+    reports = generic_items(ctx.domain, ctx.reports)
+    sources = sorted({r.source for r in reports})
     zones = {} if glossary.located else {source: rng.randint(*ZONES) for source in sources}
-    paragraphs = [(r, _report_paragraph(r, rng, style, glossary, zones, vocab, records)) for r in ctx.reports]
-    body = _arranged(paragraphs, rng, style["order"])
-    notices = [_notice_paragraph(n, rng, glossary, vocab, style["units"], records) for n in ctx.notices]
+    paragraphs = [(r, _report_paragraph(r, rng, style, glossary, zones, vocab, ctx.domain)) for r in reports]
+    body = _arranged(paragraphs, rng, style["order"], SUBHEADS[ctx.domain.group_preposition])
+    notices = [_notice_paragraph(n, rng, glossary, vocab, style["units"]) for n in generic_items(ctx.domain, ctx.notices)]
 
     words = {"noun": glossary.noun, "plural": glossary.plural, "Plural": _cap(glossary.plural),
              "source_label": glossary.source_label, "span": _span(ctx.window_hours)}
@@ -436,12 +377,15 @@ def _write(ctx: RenderContext, glossary: Glossary, records: _Records) -> str:
     return "\n\n".join([head, *top, lede, *body, signoff, *end])
 
 
-def _report_paragraph(r: Any, rng: random.Random, style: Mapping[str, Any], glossary: Glossary,
-                      zones: Mapping[str, int], vocab: TrapVocab, records: _Records) -> str:
-    """One report as a paragraph: a sentence form, a time, a position, the values with their units and
-    qualifiers, then its note naming the record it repeats and its place note, when it has them."""
+def _report_paragraph(r: RecordReport, rng: random.Random, style: Mapping[str, Any], glossary: Glossary,
+                      zones: Mapping[str, int], vocab: TrapVocab, domain: Domain) -> str:
+    """One report as a paragraph: a sentence form, a time (in the local time of its position, as its
+    domain gives it, or of its source when records have none), a position, the values with their units
+    and qualifiers, then its note naming the record it repeats and its place note, when it has them. The
+    record is placed in its group with the domain's preposition (Domain.group_preposition)."""
     form = REPORT_FORMS[_draw(rng, PARAGRAPH_PRESETS[style["paragraphs"]])]
-    offset = utc_offset_hours(r.lon) if glossary.located else zones[r.source]
+    offset = domain.utc_offset(r) if glossary.located else zones[r.source]
+    preposition = domain.group_preposition
     when = format_time(r.time, _draw(rng, TIME_PRESETS[style["time"]]), offset)
     where = (format_coords(r.lat, r.lon, _draw(rng, COORD_PRESETS[style["coords"]]), glossary.coord_decimals)
              if glossary.located else "")
@@ -449,12 +393,13 @@ def _report_paragraph(r: Any, rng: random.Random, style: Mapping[str, Any], glos
     values = []
     for f in glossary.fields:
         number = format_value(f, r.values[f.key], _draw_unit(rng, f, style["units"]))
-        qualifier = records.qualifier(r, f)
+        qualifier = None if f.qualifier is None else r.qualifiers.get(f.qualifier)
         values.append(f"{_value_head(f, spelled)} {number}" + ("" if qualifier is None else f" ({qualifier})"))
     listed = _listed(values)
     text = _fill(form, {"source": r.source, "source_label": glossary.source_label, "noun": glossary.noun,
                         "Noun": _cap(glossary.noun), "ref": r.ref, "status": r.status, "when": when, "group": r.group,
-                        "where": where, "values": listed, "Values": _cap(listed)}, glossary.located)
+                        "where": where, "values": listed, "Values": _cap(listed), "in": preposition,
+                        "In": _cap(preposition)}, glossary.located)
     if r.same_as is not None:
         frame = _fill(rng.choice(NOTE_FRAMES), {"source_label": glossary.source_label})
         text += f" {frame} {rng.choice(vocab.duplicate_notes)} {r.same_as}."
@@ -463,9 +408,10 @@ def _report_paragraph(r: Any, rng: random.Random, style: Mapping[str, Any], glos
     return text
 
 
-def _arranged(paragraphs: Sequence[tuple[Any, str]], rng: random.Random, order: str) -> list[str]:
-    """The report paragraphs in the article's order: by time, by group under a subhead each (groups in a
-    drawn order), or shuffled."""
+def _arranged(paragraphs: Sequence[tuple[Any, str]], rng: random.Random, order: str,
+              subheads: Sequence[str] = SUBHEADS["in"]) -> list[str]:
+    """The report paragraphs in the article's order: by time, by group under a subhead each (one of
+    `subheads`; groups in a drawn order), or shuffled."""
     if order == "by_time":
         return [text for _, text in sorted(paragraphs, key=lambda pair: (pair[0].time, pair[0].ref, pair[0].source))]
     if order == "by_group":
@@ -473,7 +419,7 @@ def _arranged(paragraphs: Sequence[tuple[Any, str]], rng: random.Random, order: 
         rng.shuffle(groups)
         body = []
         for group in groups:
-            body.append(rng.choice(SUBHEADS).format(group=group))
+            body.append(rng.choice(subheads).format(group=group))
             texts = [text for r, text in paragraphs if r.group == group]
             rng.shuffle(texts)
             body.extend(texts)
@@ -485,8 +431,7 @@ def _arranged(paragraphs: Sequence[tuple[Any, str]], rng: random.Random, order: 
     return [text for _, text in shuffled]
 
 
-def _notice_paragraph(n: Notice, rng: random.Random, glossary: Glossary, vocab: TrapVocab, units: str,
-                      records: _Records) -> str:
+def _notice_paragraph(n: Notice, rng: random.Random, glossary: Glossary, vocab: TrapVocab, units: str) -> str:
     """A notice in one of three wordings of its kind, issued at a UTC time. A retraction gives its
     reason, and one wording quotes a phrase of the domain's trap vocabulary; a correction gives both
     values in one drawn unit, and the new value's qualifier."""
@@ -497,7 +442,7 @@ def _notice_paragraph(n: Notice, rng: random.Random, glossary: Glossary, vocab: 
         return _fill(template, {"when": when, "ref": n.target, "noun": glossary.noun,
                                 "reason": "" if n.reason is None else f" ({n.reason})",
                                 "phrase": json.dumps(phrase, ensure_ascii=False)})
-    key, new, old, qualifier = records.revision(n)
+    key, new, old, qualifier = n.field, n.new_value, n.old_value, n.qualifier
     field = next((f for f in glossary.fields if f.key == key), None)
     if n.kind != "correction" or field is None or new is None or old is None:
         raise ValueError(f"a {n.kind} notice of {n.target} that names no field of the glossary, or no new and old "
@@ -549,6 +494,7 @@ def _grammar(glossary: Glossary) -> _Grammar:
     reports = []
     for spelled in (False, True):
         slots = {**words, "source": "(?P<source>.+?)", "ref": ref, "when": when, "group": "(?P<group>.+?)",
+                 "in": GROUP_PREPOSITION, "In": GROUP_PREPOSITION_CAPITALISED,
                  "status": f"(?P<status>{alternation(glossary.statuses)})", "where": f"(?P<coords>{COORDS_PATTERN})",
                  "values": _values_pattern(glossary.fields, spelled),
                  "Values": _values_pattern(glossary.fields, spelled, capital=True)}
@@ -566,26 +512,27 @@ def _grammar(glossary: Glossary) -> _Grammar:
                     corrections=tuple(corrections))
 
 
-def _read(text: str, glossary: Glossary, records: _Records) -> DigestData:
-    """Every report and notice of an article; paragraphs that are neither change nothing."""
+def _read(text: str, glossary: Glossary) -> DigestData:
+    """Every report and notice of an article, in their generic form; paragraphs that are neither change
+    nothing."""
     grammar = _grammar(glossary)
-    reports: list[Any] = []
+    reports: list[RecordReport] = []
     notices: list[Notice] = []
     for raw in text.split("\n"):
         line = raw.strip()
         if not line:
             continue
-        notice = _read_notice(line, grammar, records)
+        notice = _read_notice(line, grammar)
         if notice is not None:
             notices.append(notice)
             continue
-        report = _read_report(line, grammar, glossary, records)
+        report = _read_report(line, grammar, glossary)
         if report is not None:
             reports.append(report)
     return DigestData(reports, notices)
 
 
-def _read_notice(line: str, grammar: _Grammar, records: _Records) -> Notice | None:
+def _read_notice(line: str, grammar: _Grammar) -> Notice | None:
     """The notice a paragraph states, or None when it states none (or a time that is none)."""
     for pattern in grammar.retractions:
         match = pattern.fullmatch(line)
@@ -599,12 +546,13 @@ def _read_notice(line: str, grammar: _Grammar, records: _Records) -> Notice | No
             when = parse_time(match["time"])
             if when is None:
                 return None
-            return records.correction(match["ref"], when, field.key, read_value(field, match, "new"),
-                                      read_value(field, match, "old"), match.groupdict().get("qualifier"))
+            return Notice(kind="correction", target=match["ref"], time=when, field=field.key,
+                          new_value=read_value(field, match, "new"), old_value=read_value(field, match, "old"),
+                          qualifier=match.groupdict().get("qualifier"))
     return None
 
 
-def _read_report(line: str, grammar: _Grammar, glossary: Glossary, records: _Records) -> Any:
+def _read_report(line: str, grammar: _Grammar, glossary: Glossary) -> RecordReport | None:
     """The report a paragraph states, or None when it states none (or a time or position that is none)."""
     for pattern in grammar.reports:
         match = pattern.fullmatch(line)
@@ -617,7 +565,7 @@ def _read_report(line: str, grammar: _Grammar, glossary: Glossary, records: _Rec
         values = {f.key: read_value(f, match, f"v{i}") for i, f in enumerate(glossary.fields)}
         qualifiers = {f.qualifier: match[f"q{i}"] for i, f in enumerate(glossary.fields)
                       if f.qualifier is not None and match[f"q{i}"] is not None}
-        return records.report(ref=match["ref"], source=match["source"], status=match["status"], time=when,
-                              lat=position[0], lon=position[1], group=match["group"], values=values,
-                              qualifiers=qualifiers, place=match["place"], same_as=match["same"])
+        return RecordReport(ref=match["ref"], source=match["source"], status=match["status"], time=when,
+                            lat=position[0], lon=position[1], group=match["group"], values=values,
+                            qualifiers=qualifiers, place=match["place"], same_as=match["same"])
     return None

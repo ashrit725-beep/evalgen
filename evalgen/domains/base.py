@@ -33,6 +33,7 @@ from dataclasses import asdict, dataclass, field, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence
 
+from ..geo import utc_offset_hours
 from ..scoring import AnswerType, answer_type_conflict
 from ..units import LENGTH, ExactValues, Unit
 
@@ -77,6 +78,10 @@ class FieldSpec(ExactValues):
     filters: tuple[str, ...]  # "at_least", "below"
     terminals: tuple[str, ...]  # "argmax", "rank", "max", "min", "time_of_max"
     qualifier: str | None = None  # qualifier stored with the value and revised with it: "mag_type"
+    # The qualifier in a reader's words, which the glossary prints beside its key: "magnitude type" (None:
+    # the key says it). A digest that prints the qualifier without its key ("4.1 (md)", the 0.2.0 "type=md")
+    # is then read through these words.
+    qualifier_label: str | None = None
     signed: bool = False  # values can be negative (a depth above sea level)
     correctable: bool = False  # correction notices can revise it
     jitter: float = 0.0  # thresholds move up to this far (canonical units) from the drawn quantile
@@ -111,9 +116,14 @@ class Spatial:
     nearest_gap: tuple[float, float]  # (km, rel): the runner-up lies max(km, rel × nearest) further away
     nearest_max_km: float  # the nearest record lies at most this far from the question's point
     point_offset_km: tuple[float, float]  # a question's point lies this far from a random record
-    point_label: str  # names a question's point: "station {source}-{number}"
+    # Names a question's point: "station {number}". It names no source: the record the point is drawn
+    # near is almost always the nearest one, so a label naming its source would point at the answer.
+    point_label: str
     decimals: int = 1
     coord_decimals: int = 3
+    # The 0.2.0 label, which legacy runs keep: "station {source}-{number}", with the source (in capitals)
+    # of the record the point is drawn near. None: every run uses `point_label`.
+    legacy_point_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -131,16 +141,24 @@ class Lexicon:
     all_records: str  # "earthquakes in the digest"
     filters: Mapping[str, tuple[str, ...]]
     questions: Mapping[str, tuple[str, ...]]
+    # The 0.2.0 wording, which legacy prompts keep: a unit's plural words after every number ("1 miles"),
+    # and the two groups of a comparison as they are. Every other lexicon words a quantity of 1 in the
+    # singular ("1 mile", Unit.one) and quotes the two groups ('"Honshu, Japan" or "Southern Alaska"'), so
+    # that a group whose name holds a comma reads as one choice.
+    legacy: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {"records": self.records, "all_records": self.all_records,
-                "filters": {op: list(wordings) for op, wordings in self.filters.items()},
-                "questions": {op: list(wordings) for op, wordings in self.questions.items()}}
+        d: dict[str, Any] = {"records": self.records, "all_records": self.all_records,
+                             "filters": {op: list(wordings) for op, wordings in self.filters.items()},
+                             "questions": {op: list(wordings) for op, wordings in self.questions.items()}}
+        if self.legacy:
+            d["legacy"] = True
+        return d
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> Lexicon:
         return cls(d["records"], d["all_records"], {op: tuple(w) for op, w in d["filters"].items()},
-                   {op: tuple(w) for op, w in d["questions"].items()})
+                   {op: tuple(w) for op, w in d["questions"].items()}, legacy=bool(d.get("legacy", False)))
 
 
 class RecordLike(Protocol):
@@ -217,6 +235,7 @@ class GlossaryField(ExactValues):
     units: tuple[Unit, ...]  # the units its values may be printed in
     decimals: int  # places of stored values, in the canonical unit
     qualifier: str | None = None  # the key of the qualifier printed with its values: "probe"
+    qualifier_label: str | None = None  # the qualifier in a reader's words: "magnitude type" (None: none given)
 
 
 @dataclass(frozen=True)
@@ -299,6 +318,10 @@ class TrapVocab:
 
 
 VOCABULARY = ("noun", "plural", "id_label", "source_label", "group_label")  # a domain's words for its records
+# How prose genres place a record in its group (Domain.group_preposition): "recorded in Midwest" for a
+# group that is a place, "recorded near Moon" for the body a close approach passes. Parsers read any of
+# these, so that a genre learns the words of a digest from its glossary and its own templates alone.
+GROUP_PREPOSITIONS = ("in", "near")
 
 
 @dataclass(frozen=True)
@@ -415,6 +438,9 @@ class Domain:
     id_label: str  # "event ID"
     source_label: str  # who reports records: "network"
     group_label: str  # what records are grouped by: "region"
+    # How prose places a record in its group, one of GROUP_PREPOSITIONS: "in" a region or a depot, "near"
+    # a body that is no place a record is in.
+    group_preposition: str = "in"
 
     fields: tuple[FieldSpec, ...]
     roles: Mapping[str, str]  # field keys in the 0.2.0 roles: {"primary": "mag", "secondary": "depth"}
@@ -522,6 +548,12 @@ class Domain:
                 problems.append(f"the unit {unit.symbol} is worded both {wordings[unit.symbol]!r} and {unit.words!r}")
         if len(self.statuses) != 2 or len(set(self.statuses)) != 2 or not all(self.statuses):
             problems.append(f"its statuses {self.statuses!r} are not two different words")
+        if self.group_preposition not in GROUP_PREPOSITIONS:
+            problems.append(f"its group preposition {self.group_preposition!r} is none of {GROUP_PREPOSITIONS}, which "
+                            "the genres' parsers read")
+        if self.spatial is not None and "{source}" in self.spatial.point_label:
+            problems.append(f"its point label {self.spatial.point_label!r} names the source of the record a question's "
+                            "point is drawn near, which is almost always the answer's")
         problems += [f"its trap vocabulary has no {name.replace('_', ' ')}"
                      for name, words in asdict(self.trap_vocab).items() if not words]
         return problems
@@ -695,6 +727,14 @@ class Domain:
         """How much likelier than others a record is to be drawn into a digest (1: all alike)."""
         return 1.0
 
+    def utc_offset(self, record: Any) -> int:
+        """The UTC offset, in whole hours, of the local time that digests write a located record's time in
+        ("6:02:03 PM local time (UTC-04:00)"), always with the offset stated. By default it is the whole
+        hour nearest the solar time of the record's longitude (geo.utc_offset_hours), which is no real
+        time zone; a domain whose records lie at real places with zones of their own (the weather
+        stations) gives the offset that is in force there at the record's time."""
+        return utc_offset_hours(record.lon)
+
     def glossary(self, surface: Mapping[str, Any] | None = None) -> Glossary:
         """The data dictionary that non-legacy prompts print, in the words of `surface` (a drawn
         Surface's dict; None: the domain's own words, or those of the surface it is bound to): what the
@@ -703,7 +743,7 @@ class Domain:
         and qualifier."""
         domain = self.bind(surface)
         numeric = tuple(GlossaryField(s.key, s.label, s.canonical_unit, tuple(u.for_readers() for u in s.units),
-                                      s.decimals, s.qualifier) for s in domain.fields)
+                                      s.decimals, s.qualifier, s.qualifier_label) for s in domain.fields)
         coord_decimals = None if domain.spatial is None else domain.spatial.coord_decimals
         return Glossary(domain.noun, domain.plural, domain.id_label, domain.id_pattern, domain.source_label,
                         domain.group_label, tuple(domain.statuses), coord_decimals, numeric)

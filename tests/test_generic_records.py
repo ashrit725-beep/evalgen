@@ -440,7 +440,8 @@ def test_questions_compose_guard_and_read_on_any_schema(toys, name):
                 for raw in q.chain:
                     step = Step(raw, bound.units)
                     if step.kind in ("at_least", "below") and not alt_units:  # stated exactly as the chain has it
-                        assert f"{fmt_num(step['value'])} {step.unit(step['unit']).words}" in text, text
+                        number = fmt_num(step["value"])
+                        assert f"{number} {step.unit(step['unit']).words_for(number)}" in text, text
                     if step.kind == "in_group":
                         assert step["group"] in text
     assert len(fingerprints) == len(set(fingerprints))  # no question is asked twice in a run

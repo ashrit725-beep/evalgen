@@ -22,10 +22,10 @@ from evalgen.domains.base import Domain, FieldSpec, Record, Spatial, Surface, Tr
 from evalgen.geo import destination
 from evalgen.units import Unit
 
-CELSIUS = Unit("°C", "degrees Celsius")
-FAHRENHEIT = Unit("°F", "degrees Fahrenheit", 5 / 9, -160 / 9, step=1.0)
-METRE = Unit("m", "metres")
-FOOT = Unit("ft", "feet", 0.3048, step=0.5)
+CELSIUS = Unit("°C", "degrees Celsius", one="degree Celsius")
+FAHRENHEIT = Unit("°F", "degrees Fahrenheit", 5 / 9, -160 / 9, step=1.0, one="degree Fahrenheit")
+METRE = Unit("m", "metres", one="metre")
+FOOT = Unit("ft", "feet", 0.3048, step=0.5, one="foot")
 
 TEMPERATURE = FieldSpec(
     key="temp", label="water temperature", canonical_unit="°C", units=(CELSIUS, FAHRENHEIT), decimals=1,
@@ -47,7 +47,7 @@ FLAT_TEMPERATURE = replace(TEMPERATURE, terminals=("argmax", "max", "time_of_max
 SPATIAL = Spatial(
     radii={"km": (30, 50, 75, 100, 150, 200, 250, 300), "mi": (20, 30, 50, 75, 100, 150, 200)},
     margin=(3.0, 0.06), nearest_gap=(3.0, 0.08), nearest_max_km=500.0, point_offset_km=(5.0, 60.0),
-    point_label="buoy {source}-{number}",
+    point_label="buoy {number}",
 )
 
 

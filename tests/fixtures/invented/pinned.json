@@ -1,5 +1,5 @@
 {
-  "about": "What seed 20261108 draws in the invented domain alone: its synthetic snapshot (360 records) and the surfaces of the first three instances of a run (seed path instance/i/surface). tests/test_domain_invented.py checks that the same seed still draws exactly these. The surfaces were pinned again when common English words of two and three letters joined the words no surface may coin (invented.COMMON_WORDS), and when the chatter's reminder about units was reworded (units vary from entry to entry, not by source); the snapshot is as first pinned.",
+  "about": "What seed 20261108 draws in the invented domain alone: its synthetic snapshot (360 records) and the surfaces of the first three instances of a run (seed path instance/i/surface). tests/test_domain_invented.py checks that the same seed still draws exactly these. The surfaces were pinned again when common English words of two and three letters joined the words no surface may coin (invented.COMMON_WORDS), when the chatter's reminder about units was reworded (units vary from entry to entry, not by source), and when each unit gained its words for one of it (Unit.one, which questions write after a 1); the snapshot is as first pinned.",
   "seed": 20261108,
   "pool_size": 360,
   "compiled_at": 1787378400,
@@ -69,27 +69,31 @@
         "f1": [
           {
             "symbol": "kr",
-            "words": "krems"
+            "words": "krems",
+            "one": "krem"
           },
           {
             "symbol": "rm",
             "words": "rirms",
             "scale": 40.0,
             "decimals": 3,
-            "step": 0.1
+            "step": 0.1,
+            "one": "rirm"
           }
         ],
         "f2": [
           {
             "symbol": "gl",
-            "words": "glurms"
+            "words": "glurms",
+            "one": "glurm"
           },
           {
             "symbol": "da",
             "words": "dalls",
             "scale": 0.1,
             "decimals": 0,
-            "step": 10.0
+            "step": 10.0,
+            "one": "dall"
           }
         ]
       },
@@ -157,41 +161,47 @@
         "f1": [
           {
             "symbol": "zk",
-            "words": "zirks"
+            "words": "zirks",
+            "one": "zirk"
           },
           {
             "symbol": "sn",
             "words": "surns",
             "scale": 0.2,
             "decimals": 1,
-            "step": 25.0
+            "step": 25.0,
+            "one": "surn"
           },
           {
             "symbol": "sd",
             "words": "sunds",
             "scale": 25.0,
             "decimals": 3,
-            "step": 0.2
+            "step": 0.2,
+            "one": "sund"
           }
         ],
         "f2": [
           {
             "symbol": "hl",
-            "words": "halls"
+            "words": "halls",
+            "one": "hall"
           },
           {
             "symbol": "qk",
             "words": "quesks",
             "scale": 0.5,
             "decimals": 1,
-            "step": 2.0
+            "step": 2.0,
+            "one": "quesk"
           },
           {
             "symbol": "kk",
             "words": "krarks",
             "scale": 16.0,
             "decimals": 3,
-            "step": 0.05
+            "step": 0.05,
+            "one": "krark"
           }
         ]
       },
@@ -259,34 +269,39 @@
         "f1": [
           {
             "symbol": "sn",
-            "words": "snets"
+            "words": "snets",
+            "one": "snet"
           },
           {
             "symbol": "vk",
             "words": "vosks",
             "scale": 0.125,
             "decimals": 1,
-            "step": 50.0
+            "step": 50.0,
+            "one": "vosk"
           },
           {
             "symbol": "vu",
             "words": "vusts",
             "scale": 16.0,
             "decimals": 3,
-            "step": 0.25
+            "step": 0.25,
+            "one": "vust"
           }
         ],
         "f2": [
           {
             "symbol": "pg",
-            "words": "plogs"
+            "words": "plogs",
+            "one": "plog"
           },
           {
             "symbol": "ke",
             "words": "kerns",
             "scale": 0.25,
             "decimals": 1,
-            "step": 5.0
+            "step": 5.0,
+            "one": "kern"
           }
         ]
       },

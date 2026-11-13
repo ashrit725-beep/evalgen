@@ -54,6 +54,12 @@ class Unit:
     decimals: int | None = None  # places of answers and restated thresholds in this unit (None: the field's)
     tolerance: tuple[float, float] | None = None  # (abs, rel) of answers in this unit (None: the field's)
     step: float | None = None  # thresholds asked in this unit are rounded to it (None: the field's threshold_step)
+    one: str | None = None  # the words after a number of exactly 1: "mile", "degree Celsius" (None: `words`)
+
+    def words_for(self, number: str) -> str:
+        """The words after `number` as a question writes it: `one` after 1 or -1 ("1 degree Celsius"),
+        else `words` ("1.5 degrees Celsius", "0 knots")."""
+        return self.one if self.one is not None and number.lstrip("-") == "1" else self.words
 
     def to_canonical(self, value: float) -> float:
         return value * self.scale + self.offset
@@ -83,7 +89,7 @@ class Unit:
 
 
 KM = Unit("km", "km")
-MI = Unit("mi", "miles", KM_PER_MILE)
+MI = Unit("mi", "miles", KM_PER_MILE, one="mile")
 LENGTH = (KM, MI)  # depths, radii and distances: stored in km, printed in km or miles
 
 

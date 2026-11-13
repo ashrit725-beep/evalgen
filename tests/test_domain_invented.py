@@ -198,10 +198,10 @@ def test_no_unit_symbol_or_coined_word_is_a_common_english_word():
 
     coiner = scripted("sket")
     coiner.take("sk")  # "st" is a real unit, "sk" is taken, and "set" is a word: the symbol is "ske"
-    assert coiner.unit() == ("ske", "skets")
+    assert coiner.unit() == ("ske", "skets", "sket")
     coiner = scripted("flag")
     coiner.take("fg", "fl")  # a fit name, whose next candidate symbol, "f" + "ag", is not
-    assert coiner.unit() == ("fla", "flags")
+    assert coiner.unit() == ("fla", "flags", "flag")
 
 
 def test_drawn_units_convert_exactly_and_keep_every_guard():
@@ -463,7 +463,8 @@ def test_the_guards_hold_and_no_question_is_asked_twice(worlds):
                     margin = max(spec.margin[0], spec.margin[1] * abs(threshold))
                     assert all(abs(r.values[spec.key] - threshold) >= margin for r in records), raw
                     text = inst.renderings[0].question_text[q.qid]
-                    assert f"{fmt_num(step['value'])} {unit.words}" in text  # stated exactly as the chain has it
+                    number = fmt_num(step["value"])
+                    assert f"{number} {unit.words_for(number)}" in text  # stated exactly as the chain has it
                 elif step.kind == "time_between":
                     assert step["start"] % ctx.time_step == 0 == step["end"] % ctx.time_step
                     assert all(abs(r.time - edge) >= ctx.time_margin for r in records
@@ -571,8 +572,9 @@ def test_metamorphic_variants_restate_thresholds_in_other_units_without_changing
                     other = units[(units.index(unit) + 1) % len(units)]
                     value = other.from_canonical(unit.to_canonical(step["value"]))
                     shown = f"{value:.{other.places(bound.field(step.field).decimals)}f}"
-                    if f"{shown} {other.words}" not in text:
-                        assert f"{fmt_num(step['value'])} {unit.words}" in text  # stated as the original states it
+                    if f"{shown} {other.words_for(shown)}" not in text:
+                        number = fmt_num(step["value"])
+                        assert f"{number} {unit.words_for(number)}" in text  # stated as the original states it
                         continue
                     restated += 1  # the same threshold in the next unit: the same records pass, the same key
                     chain = [*q.chain[:i], {**raw, "value": float(shown), "unit": other.symbol}, *q.chain[i + 1:]]

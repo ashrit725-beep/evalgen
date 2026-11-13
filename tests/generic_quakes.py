@@ -24,7 +24,8 @@ def _rekeyed(table):
 class GenericQuakes(Earthquakes):
     name = "generic-quakes"
     op_names = MappingProxyType({})
-    lexicon = Lexicon(LEXICON.records, LEXICON.all_records, _rekeyed(LEXICON.filters), _rekeyed(LEXICON.questions))
+    lexicon = Lexicon(LEXICON.records, LEXICON.all_records, _rekeyed(LEXICON.filters), _rekeyed(LEXICON.questions),
+                      legacy=LEXICON.legacy)
 
 
 GENERIC_QUAKES = GenericQuakes()

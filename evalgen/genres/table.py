@@ -31,8 +31,8 @@ so the parser reads each report and notice back exactly through the glossary alo
 rendering is checked to do so (genres.base.check_round_trip). Notices are worded with the keywords
 that every domain's reading rules name (RETRACTION, CORRECTION, revised) and with the domain's own
 phrases. Earthquake digests carry the 0.2.0 record types (models.Report, and corrections that give a
-new magnitude), which are written through their generic names and read back as 0.2.0 objects (see "the
-0.2.0 records" below).
+new magnitude), which are written in their generic form (Domain.to_generic) and read back as 0.2.0
+objects through Domain.from_generic (genres.base.generic_items and domain_items), as in every genre.
 """
 from __future__ import annotations
 
@@ -45,14 +45,12 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from ..domains.base import Domain, Glossary, GlossaryField, RecordReport, TrapVocab
-from ..domains.earthquakes import DEPTH, MAGNITUDE, Earthquakes
-from ..geo import utc_offset_hours
-from ..models import Notice, Report
+from ..models import Notice
 from ..ops import DigestData
 from ..units import Unit, decode, encode
 from .base import (NUMBER, TIME_FORMATS, TIME_PATTERN, UTC_TIME_FORMATS, Genre, RenderContext, alternation,
-                   check_round_trip, format_coords, format_time, format_value, id_pattern, parse_coords, parse_time,
-                   read_value, value_pattern)
+                   check_round_trip, domain_items, format_coords, format_time, format_value, generic_items,
+                   id_pattern, parse_coords, parse_time, read_value, value_pattern)
 from .classic import UNIT_PRESETS, ZONES
 
 # ------------------------------------------------------------------------------ the genre
@@ -118,18 +116,16 @@ class Table(Genre):
 
     def parse(self, digest_text: str, glossary: Glossary | None, domain: Domain) -> DigestData:
         """Every report and notice of a table, read through the prompt's glossary (a prompt that prints
-        none is read through the domain's own words, unless they are drawn per instance); an
-        earthquake table is read back to 0.2.0 Reports and Notices."""
+        none is read through the domain's own words, unless they are drawn per instance), as the
+        domain's digests hold them: an earthquake table is read back to 0.2.0 Reports and Notices
+        (Domain.from_generic, genres.base.domain_items)."""
         if glossary is None:
             if domain.has_surface and domain.surface is None:
                 raise ValueError(f"the {domain.name} records of a table are read through the glossary its prompt "
                                  "prints, and this prompt prints none")
             glossary = domain.glossary()
         reports, notices = _read(digest_text, glossary)
-        if _legacy(domain):
-            return DigestData([r for r in map(_legacy_report, reports) if r is not None],
-                              [_legacy_notice(n) for n in notices])
-        return DigestData(list(reports), list(notices))
+        return DigestData(domain_items(domain, reports), domain_items(domain, notices))
 
 
 TABLE = Table()
@@ -321,19 +317,20 @@ class _Document:
 
 
 def _render(ctx: RenderContext, glossary: Glossary) -> str:
-    """The table of `ctx.reports` and its footnotes, as `ctx.style` draws them."""
+    """The table of `ctx.reports` and its footnotes, as `ctx.style` draws them, written from their
+    generic form (genres.base.generic_items)."""
     rng, style, vocab = ctx.rng, ctx.style, ctx.domain.trap_vocab
-    reports = [_generic_report(r, glossary) for r in ctx.reports]
+    reports = generic_items(ctx.domain, ctx.reports)
     brackets = UNIT_PLACES[style["units"]]
     units = {f.key: None if brackets is None else _draw_unit(rng, f, style["unit_mix"]) for f in glossary.fields}
     columns = _columns(glossary, style, units, any(r.place is not None for r in reports))
     labels = [_header(column, glossary, style["case"], brackets) for column in columns]
     _check_headers(columns, labels, glossary, style["case"])
-    when = _time_writer(rng, style, glossary, reports)
+    when = _time_writer(rng, style, glossary, reports, ctx.domain)
     rows = [(r, [_cell(r, column, rng, style, glossary, vocab, when) for column in columns]) for r in reports]
     sections = _sections(rows, style["rows"], rng)
 
-    notices = list(ctx.notices)
+    notices = generic_items(ctx.domain, ctx.notices)
     rng.shuffle(notices)
     notes = [_notice_text(n, rng, glossary, vocab, style["unit_mix"]) for n in notices]
     caption = CAPTIONS[style["caption"]].format(
@@ -406,9 +403,11 @@ _BARE_UTC = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 
 
 def _time_writer(rng: random.Random, style: Mapping[str, Any], glossary: Glossary,
-                 reports: Sequence[RecordReport]) -> Callable[[RecordReport], str]:
-    """How the time column writes a report's time, as the style's TIME_STYLES entry says. Local times
-    are those of the report's position, or of its source (one zone each) for records without one."""
+                 reports: Sequence[RecordReport], domain: Domain) -> Callable[[RecordReport], str]:
+    """How the time column writes a report's time, as the style's TIME_STYLES entry says, its offset
+    always stated. Local times are those the domain gives a report's position (Domain.utc_offset: the
+    zone in force at a weather station, else the nominal offset of the longitude, which is no real time
+    zone), or those of its source (one zone each) for records without one."""
     if style["time"] == "utc_column":
         return lambda r: _bare_utc(r.time)
     formats = TIME_STYLES[style["time"]]
@@ -417,7 +416,7 @@ def _time_writer(rng: random.Random, style: Mapping[str, Any], glossary: Glossar
         return lambda r: format_time(r.time, utc_format)
     if glossary.located:
         def offset(r: RecordReport) -> int:
-            return utc_offset_hours(r.lon)
+            return domain.utc_offset(r)
     else:
         zones = {source: rng.randint(*ZONES) for source in sorted({r.source for r in reports})}
 
@@ -463,7 +462,7 @@ def _notice_text(n: Notice, rng: random.Random, glossary: Glossary, vocab: TrapV
             f"{n.target} was not a real {glossary.noun}{reason}; ignore that report.",
             f"report {n.target} {phrase}{reason}. Disregard it.",
             f"{n.target} {phrase}{reason}.")[form]
-    key, new, old, qualifier = _correction_parts(n)
+    key, new, old, qualifier = n.field, n.new_value, n.old_value, n.qualifier
     field = next((f for f in glossary.fields if f.key == key), None)
     if n.kind != "correction" or field is None or new is None or old is None:
         raise ValueError(f"a {n.kind} notice of {n.target} that names no field of the glossary, or no new and old "
@@ -804,53 +803,3 @@ def _grammar(glossary: Glossary) -> _Grammar:
     return _Grammar(glossary=glossary, record_id=re.compile(record_id),
                     note=re.compile(rf"(?P<phrase>.+) (?P<same>{record_id})"), bare=bare, with_unit=with_unit,
                     head=head, bodies={keyword: tuple(patterns) for keyword, patterns in bodies.items()})
-
-
-# ------------------------------------------------------------------------- the 0.2.0 records
-# Earthquake domains keep the 0.2.0 record types (as classic and traps.builders_for do): models.Report,
-# whose generic names (values, group, source) are read-only properties and whose qualifier is the
-# attribute its key names (mag_type), and corrections that give new_mag, old_mag and mag_type. A table
-# writes them through their generic names and reads them back as 0.2.0 objects.
-
-
-def _legacy(domain: Domain) -> bool:
-    return isinstance(domain, Earthquakes)
-
-
-def _generic_report(r: Report | RecordReport, glossary: Glossary) -> RecordReport:
-    """A report as its generic parts, whatever its type."""
-    if isinstance(r, RecordReport):
-        return r
-    qualifiers = {f.qualifier: getattr(r, f.qualifier) for f in glossary.fields if f.qualifier is not None}
-    return RecordReport(ref=r.ref, source=r.source, status=r.status, time=r.time, lat=r.lat, lon=r.lon,
-                        group=r.group, values=dict(r.values),
-                        qualifiers={key: value for key, value in qualifiers.items() if value is not None},
-                        place=r.place, same_as=r.same_as)
-
-
-def _legacy_report(r: RecordReport) -> Report | None:
-    """A row of an earthquake table as the 0.2.0 Report it is (None when it lacks a magnitude, its type
-    or a depth)."""
-    try:
-        return Report(ref=r.ref, network=r.source, status=r.status, time=r.time, lat=r.lat, lon=r.lon,
-                      depth_km=r.values[DEPTH.key], mag=r.values[MAGNITUDE.key],
-                      mag_type=r.qualifiers[MAGNITUDE.qualifier], region=r.group, place=r.place, same_as=r.same_as)
-    except KeyError:
-        return None
-
-
-def _correction_parts(n: Notice) -> tuple[str | None, float | None, float | None, str | None]:
-    """The field a correction revises, its new and old value and its new qualifier: a generic
-    correction names its field, a 0.2.0 one revises the magnitude and gives its type."""
-    if n.field is None and n.new_mag is not None:
-        return MAGNITUDE.key, n.new_mag, n.old_mag, n.mag_type
-    return n.field, n.new_value, n.old_value, n.qualifier
-
-
-def _legacy_notice(n: Notice) -> Notice:
-    """A notice of an earthquake table as 0.2.0 words it: a correction of the magnitude gives new_mag,
-    old_mag and mag_type."""
-    if n.kind != "correction" or n.field != MAGNITUDE.key:
-        return n
-    return Notice(kind="correction", target=n.target, time=n.time, new_mag=n.new_value, old_mag=n.old_value,
-                  mag_type=n.qualifier)

@@ -58,7 +58,7 @@ FORM_MARKERS = {
     "record_first": re.compile(r"^.+, filed as .+, was recorded at .+\. It gave .+\."),
     "time_first": re.compile(r"^At .+, the .+ recorded .+, listing .+; the report is marked "),
     "figures_first": re.compile(r"^.+: those were the figures for .+, filed as .+ and recorded at "),
-    "place_first": re.compile(r"^In .+ was recorded at .+ by the .+: .+\. Status: "),
+    "place_first": re.compile(r"^(?:In|Near) .+ was recorded at .+ by the .+: .+\. Status: "),
 }
 COORDS = {"hemi": re.compile(r"\d+(?:\.\d+)?°[NS], \d+(?:\.\d+)?°[EW]"),
           "signed": re.compile(r"\(-?\d+(?:\.\d+)?, -?\d+(?:\.\d+)?\)")}
@@ -135,7 +135,8 @@ def anatomy(text: str, glossary, domain, reports) -> Counter:
             seen.update(f"coords:{fmt}" for fmt, pattern in COORDS.items() if pattern.search(paragraph))
         for _ in data.notices:
             seen["notice:" + ("top" if i < lede else "end" if i > signoff else "interleaved")] += 1
-        if any(paragraph == head.format(group=r.group) for head in SUBHEADS for r in reports):
+        if any(paragraph == head.format(group=r.group) for heads in SUBHEADS.values() for head in heads
+               for r in reports):
             seen["subhead"] += 1
     return seen
 

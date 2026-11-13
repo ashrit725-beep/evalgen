@@ -42,16 +42,15 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping
 
 from ..digest import MONTHS
 from ..domains.base import Domain, Glossary, GlossaryField, RecordReport, TrapVocab
-from ..geo import utc_offset_hours
 from ..models import Notice
 from ..ops import DigestData
 from ..units import Unit
 from .base import (COORDS_PATTERN, NUMBER, TIME_PATTERN, UTC_TIME_FORMATS, Genre, RenderContext, alternation,
-                   check_round_trip, format_coords, format_time, id_pattern, parse_coords, parse_time)
+                   check_round_trip, domain_items, format_coords, format_time, id_pattern, parse_coords, parse_time)
 from .classic import RECORD_COORD_PRESETS, RECORD_TIME_PRESETS, UNIT_PRESETS, ZONES
 
 # ------------------------------------------------------------------------------ the genre
@@ -374,7 +373,7 @@ def _render(ctx: RenderContext, glossary: Glossary) -> str:
     stations = {source: f"{rng.choice(words)} {number}" for source, number in zip(sources, numbers)}
     net = _Net(rng, style, glossary, domain.trap_vocab, style["control"], stations)
     zones = {} if glossary.located else {source: rng.randint(*ZONES) for source in sources}
-    readouts = [(r, net.readout(r, utc_offset_hours(r.lon) if glossary.located else zones[r.source])) for r in reports]
+    readouts = [(r, net.readout(r, domain.utc_offset(r) if glossary.located else zones[r.source])) for r in reports]
 
     exchanges: list[list[tuple[str, str]]] = []
     if style["layout"] == "by_station":
@@ -510,19 +509,7 @@ def _parse(text: str, glossary: Glossary, domain: Domain) -> DigestData:
             notice = _notice(match["body"], grammar)
             if notice is not None:
                 notices.append(notice)
-    return DigestData(_own(domain, reports), _own(domain, notices))
-
-
-def _own(domain: Domain, items: Sequence[Any]) -> list[Any]:
-    """Generic reports or notices as the domain's digests hold them; one the domain cannot hold (an
-    earthquake line without a magnitude type) is no report of it, and changes nothing."""
-    out = []
-    for item in items:
-        try:
-            out.append(domain.from_generic(item))
-        except ValueError:
-            continue
-    return out
+    return DigestData(domain_items(domain, reports), domain_items(domain, notices))
 
 
 def _report(match: re.Match[str], glossary: Glossary) -> RecordReport | None:

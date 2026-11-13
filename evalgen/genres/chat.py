@@ -45,8 +45,8 @@ the shared formats and the exact codec of genres.base, so that the parser reads 
 notice back exactly from the text and the glossary alone. Each message is checked to read back as
 it is written (a report whose words a voice cannot print unambiguously is pasted instead, its words
 as quoted tokens), and so is every rendering (genres.base.check_round_trip). Earthquakes keep their
-0.2.0 record types: a Report's values and magnitude type are printed and rebuilt under the generic
-names of models._GenericNames, and a 0.2.0 correction revises the magnitude.
+0.2.0 record types, a Report and a correction that revises the magnitude: they are printed in their
+generic form (Domain.to_generic) and read back through Domain.from_generic, as in every other genre.
 """
 from __future__ import annotations
 
@@ -61,13 +61,12 @@ from typing import Any, Mapping, Sequence
 from ..digest import MONTHS, WEEKDAYS
 from ..domains.base import Domain, Glossary, GlossaryField, RecordReport, TrapVocab
 from ..domains.earthquakes import Earthquakes
-from ..geo import utc_offset_hours
-from ..models import Notice, Report
+from ..models import Notice
 from ..ops import DigestData
 from ..units import Unit, decode, encode
-from .base import (COORDS_PATTERN, NUMBER, TIME_FORMATS, TIME_PATTERN, UTC_TIME_FORMATS, Genre, RenderContext,
-                   alternation, check_round_trip, format_coords, format_time, format_value, id_pattern, parse_coords,
-                   parse_time, read_value, value_pattern)
+from .base import (COORDS_PATTERN, GROUP_PREPOSITION, NUMBER, TIME_FORMATS, TIME_PATTERN, UTC_TIME_FORMATS, Genre,
+                   RenderContext, alternation, check_round_trip, domain_items, format_coords, format_time,
+                   format_value, id_pattern, parse_coords, parse_time, read_value, value_pattern)
 
 # ------------------------------------------------------------------------------ the genre
 
@@ -113,15 +112,15 @@ class Chat(Genre):
                 and all(any(kind.fullmatch(line) for kind in _LINE_KINDS) for line in rest))
 
     def parse(self, digest_text: str, glossary: Glossary | None, domain: Domain) -> DigestData:
-        """Every report and notice exactly, read through the prompt's glossary; an earthquake digest in
-        a prompt without one is read through the domain's own."""
-        legacy = _records_020(domain)
+        """Every report and notice exactly, read through the prompt's glossary (an earthquake digest in
+        a prompt without one through the domain's own), as the domain's digests hold them."""
         if glossary is None:
-            if not legacy:
+            if not isinstance(domain, Earthquakes):
                 raise ValueError(f"a digest of {domain.name} records is read through the glossary its prompt prints, "
                                  "and this prompt prints none")
             glossary = domain.glossary()
-        return _parse_log(digest_text, glossary, legacy)
+        data = _parse_log(digest_text, glossary)
+        return DigestData(domain_items(domain, data.reports), domain_items(domain, data.notices))
 
 
 CHAT = Chat()
@@ -262,52 +261,21 @@ def _draw_unit(rng: random.Random, field: GlossaryField, preset: str) -> Unit | 
 
 # --------------------------------------------------------------------- 0.2.0 earthquake records
 # Voices print, and the parser reads, the generic RecordReport and Notice. An earthquake domain keeps
-# the 0.2.0 Report, whose values and magnitude type are attributes of their own under the generic names
-# of models._GenericNames, and the 0.2.0 Notice, whose correction revises the magnitude.
-
-# The generic names of a 0.2.0 Report's values (models._GenericNames) and of the magnitude's qualifier
-# (the earthquake field specs): the magnitude, which a 0.2.0 correction revises, and the depth in km.
-MAGNITUDE_020, DEPTH_020, MAG_TYPE_020 = "mag", "depth", "mag_type"
+# the 0.2.0 Report and the 0.2.0 Notice, whose correction revises the magnitude: they are printed in their
+# generic form (Domain.to_generic) and read back through Domain.from_generic (genres.base.domain_items),
+# as in every other genre.
 
 
-def _records_020(domain: Domain) -> bool:
-    """Earthquake domains keep the 0.2.0 record types (as traps.builders_for and the classic genre do)."""
-    return isinstance(domain, Earthquakes)
+def _generic_report(domain: Domain, r: Any) -> RecordReport:
+    """A report as every voice prints it, in its generic form and without the generator's bookkeeping
+    (role, trap), so that it compares equal to the report its message reads back to."""
+    return replace(domain.to_generic(r), role="primary", trap_id=None)
 
 
-def _generic_report(r: Report | RecordReport) -> RecordReport:
-    """A report as every voice prints it, without the generator's bookkeeping (role, trap)."""
-    if isinstance(r, RecordReport):
-        return replace(r, role="primary", trap_id=None)
-    return RecordReport(ref=r.ref, source=r.source, status=r.status, time=r.time, lat=r.lat, lon=r.lon, group=r.group,
-                        values=dict(r.values), qualifiers={MAG_TYPE_020: r.mag_type}, place=r.place, same_as=r.same_as)
-
-
-def _report_020(r: RecordReport) -> Report | None:
-    """The 0.2.0 Report a parsed line stands for (None: it lacks a magnitude, a depth or a magnitude type)."""
-    if set(r.values) != {MAGNITUDE_020, DEPTH_020} or MAG_TYPE_020 not in r.qualifiers:
-        return None
-    return Report(ref=r.ref, network=r.source, status=r.status, time=r.time, lat=r.lat, lon=r.lon,
-                  depth_km=r.values[DEPTH_020], mag=r.values[MAGNITUDE_020], mag_type=r.qualifiers[MAG_TYPE_020],
-                  region=r.group, place=r.place, same_as=r.same_as)
-
-
-def _generic_notice(n: Notice) -> Notice:
-    """A notice as every wording prints it: a 0.2.0 correction as one of the magnitude field."""
-    if n.kind == "correction" and n.field is None:
-        return Notice(kind="correction", target=n.target, time=n.time, field=MAGNITUDE_020, new_value=n.new_mag,
-                      old_value=n.old_mag, qualifier=n.mag_type)
-    return replace(n, trap_id=None)
-
-
-def _notice_020(n: Notice) -> Notice | None:
-    """The 0.2.0 Notice a parsed one stands for (None: a correction of a field a 0.2.0 one cannot revise)."""
-    if n.kind != "correction":
-        return n
-    if n.field != MAGNITUDE_020:
-        return None
-    return Notice(kind="correction", target=n.target, time=n.time, new_mag=n.new_value, old_mag=n.old_value,
-                  mag_type=n.qualifier)
+def _generic_notice(domain: Domain, n: Notice) -> Notice:
+    """A notice as every wording prints it, in its generic form (a 0.2.0 correction as one of the
+    magnitude field) and without its trap."""
+    return replace(domain.to_generic(n), trap_id=None)
 
 
 # ------------------------------------------------------------------------------ writing a log
@@ -323,6 +291,7 @@ class _Printed:
     where: str | None  # its position, in a drawn format (None: records have none)
     units: tuple[Unit | None, ...]  # the unit of each field's value, in glossary order
     note: str | None  # the duplicate note before same_as
+    preposition: str = "in"  # how the casual voice places a record in its group (Domain.group_preposition)
 
 
 @dataclass
@@ -374,8 +343,8 @@ def _render_log(ctx: RenderContext, glossary: Glossary) -> str:
                                 nick))
 
     for r in ctx.reports:
-        report = _generic_report(r)
-        printed = _print_report(report, rng, style, glossary, vocab, zones)
+        report = _generic_report(ctx.domain, r)
+        printed = _print_report(report, rng, style, glossary, vocab, zones, ctx.domain)
         body = _report_body(report, printed, glossary)
         if not _reads_back(body, report, grammar, glossary):  # words this voice cannot print unambiguously
             printed = replace(printed, voice="paste", lead="")
@@ -387,7 +356,7 @@ def _render_log(ctx: RenderContext, glossary: Glossary) -> str:
 
     board = []
     for n in ctx.notices:
-        notice = _generic_notice(n)
+        notice = _generic_notice(ctx.domain, n)
         body = _notice_body(notice, rng, glossary, vocab, style["units"], grammar)
         nick = rng.choice([*people, bot])
         if style["notices"] == "board":
@@ -435,17 +404,20 @@ def _someone_else(rng: random.Random, people: Sequence[str], nick: str | None) -
 
 
 def _print_report(r: RecordReport, rng: random.Random, style: Mapping[str, Any], glossary: Glossary, vocab: TrapVocab,
-                  zones: Mapping[str, int]) -> _Printed:
-    """Draw how one report is printed: its voice, lead-in, time and position formats, units and note."""
+                  zones: Mapping[str, int], domain: Domain) -> _Printed:
+    """Draw how one report is printed: its voice, lead-in, time and position formats, units and note.
+    Its time is in the local time of its position, as its domain gives it (Domain.utc_offset), or of its
+    source when records have none; the casual voice places it in its group with the domain's preposition."""
     voice = _draw(rng, VOICE_PRESETS[style["voices"]])
     lead = rng.choice(LEADS) if voice != "relay" and rng.random() < LEAD_RATE else ""
-    offset = utc_offset_hours(r.lon) if glossary.located else zones[r.source]
+    offset = domain.utc_offset(r) if glossary.located else zones[r.source]
+    preposition = domain.group_preposition
     when = format_time(r.time, _draw(rng, TIME_PRESETS[style["time"]]), offset)
     where = (format_coords(r.lat, r.lon, _draw(rng, COORD_PRESETS[style["coords"]]), glossary.coord_decimals)
              if glossary.located else None)
     units = tuple(_draw_unit(rng, f, style["units"]) for f in glossary.fields)
     note = rng.choice(vocab.duplicate_notes) if r.same_as else None
-    return _Printed(voice, lead, when, where, units, note)
+    return _Printed(voice, lead, when, where, units, note, preposition)
 
 
 def _report_body(r: RecordReport, p: _Printed, glossary: Glossary) -> str:
@@ -473,7 +445,7 @@ def _report_body(r: RecordReport, p: _Printed, glossary: Glossary) -> str:
         parts += [] if r.place is None else [f"place: {r.place}"]
         return " · ".join(parts)
     if p.voice == "casual":
-        text = (f"{p.lead}{r.source} reports {glossary.noun} {r.ref} ({r.status}) in {r.group}"
+        text = (f"{p.lead}{r.source} reports {glossary.noun} {r.ref} ({r.status}) {p.preposition} {r.group}"
                 + "".join(f" at {w}" for w in where) + f", recorded {p.when}: " + ", ".join(values)
                 + (f"; {p.note} {r.same_as}" if r.same_as else "") + ".")
         return text + ("" if r.place is None else f" Place: {r.place}.")
@@ -608,7 +580,8 @@ def _grammar(glossary: Glossary) -> _Grammar:
     relay = (rf"(?P<source>.+?) · {noun} (?P<ref>{record_id}) · (?P<status>{status}) · (?P<group>.+?)"
              + (f" · {where}" if located else "") + "".join(f" · {value}" for value in values)
              + rf" · recorded {when}(?: · (?P<note>.+?) (?P<same>{record_id}))?(?: · place: (?P<place>.+))?")
-    casual = (rf"{lead}(?P<source>.+?) reports {noun} (?P<ref>{record_id}) \((?P<status>{status})\) in (?P<group>.+?)"
+    casual = (rf"{lead}(?P<source>.+?) reports {noun} (?P<ref>{record_id}) \((?P<status>{status})\) {GROUP_PREPOSITION} "
+              rf"(?P<group>.+?)"
               + (f" at {where}" if located else "") + f", recorded {when}: " + ", ".join(values)
               + rf"(?:; (?P<note>.+?) (?P<same>{record_id}))?\.(?: Place: (?P<place>.+)\.)?")
     terse = (rf"{lead}(?P<ref>{record_id}) \((?P<source>.+?), (?P<status>{status})\) — (?P<group>.+?)"
@@ -632,24 +605,20 @@ def _grammar(glossary: Glossary) -> _Grammar:
                     notices=tuple(notices))
 
 
-def _parse_log(text: str, glossary: Glossary, legacy: bool) -> DigestData:
-    """Every report and notice of a chat log, in 0.2.0 types when `legacy`. Lines that are not messages
-    (the header, days, joins, pins) and messages that are neither (repeats among them) change nothing."""
+def _parse_log(text: str, glossary: Glossary) -> DigestData:
+    """Every report and notice of a chat log, in their generic form. Lines that are not messages (the
+    header, days, joins, pins) and messages that are neither (repeats among them) change nothing."""
     grammar = _grammar(glossary)
-    reports: list[Any] = []
+    reports: list[RecordReport] = []
     notices: list[Notice] = []
     for raw in text.splitlines():
         line = raw.strip()
         found = _MESSAGE.fullmatch(line) or _PINNED.fullmatch(line)
         item = None if found is None else _read_body(found["body"], grammar, glossary)
         if isinstance(item, Notice):
-            notice = _notice_020(item) if legacy else item
-            if notice is not None:
-                notices.append(notice)
+            notices.append(item)
         elif isinstance(item, RecordReport):
-            report = _report_020(item) if legacy else item
-            if report is not None:
-                reports.append(report)
+            reports.append(item)
     return DigestData(reports, notices)
 
 

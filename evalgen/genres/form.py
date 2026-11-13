@@ -42,26 +42,26 @@ evalgen.units, times to the second (in UTC or with their UTC offset stated) and 
 the parser reads every form back through the glossary alone, and every rendering is checked to read
 back to exactly its reports and notices (genres.base.check_round_trip). Earthquake domains keep their
 0.2.0 record types (models.Report, and the magnitude correction of models.Notice): their forms are
-written from the same generic names as any other record's, and read back into those types.
+written from their generic form (Domain.to_generic), as any other record's are, and read back into
+those types through Domain.from_generic (genres.base.generic_items and domain_items).
 """
 from __future__ import annotations
 
 import functools
 import random
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from ..domains.base import Domain, Glossary, GlossaryField, RecordReport
 from ..domains.earthquakes import Earthquakes
-from ..geo import utc_offset_hours
-from ..models import Notice, Report
+from ..models import Notice
 from ..ops import DigestData
 from ..units import Unit, decode, encode, find_unit
 from .base import (NUMBER, TIME_FORMATS, UTC_TIME_FORMATS, Genre, RenderContext, alternation, check_round_trip,
-                   format_coords, format_time, format_value, id_pattern, parse_coords, parse_time, read_value,
-                   value_pattern)
+                   domain_items, format_coords, format_time, format_value, generic_items, id_pattern, parse_coords,
+                   parse_time, read_value, value_pattern)
 
 # ------------------------------------------------------------------------------ the genre
 
@@ -110,11 +110,12 @@ class Form(Genre):
         change, may be read through the domain's own glossary when a prompt prints none; every other
         domain's records are read through the one its prompt prints."""
         if glossary is None:
-            if not _legacy(domain):
+            if not isinstance(domain, Earthquakes):
                 raise ValueError(f"a digest of {domain.name} records is read through the glossary its prompt prints, "
                                  "and this prompt prints none")
             glossary = domain.glossary()
-        return _parse(digest_text, glossary, legacy=_legacy(domain))
+        data = _parse(digest_text, glossary)
+        return DigestData(domain_items(domain, data.reports), domain_items(domain, data.notices))
 
 
 FORM = Form()
@@ -561,10 +562,11 @@ class _Draft:
 
 def _render(ctx: RenderContext, glossary: Glossary) -> str:
     """The forms of a context's reports, notices and chatter, as `ctx.style` draws them: drafted in
-    planting order, arranged, numbered in filing order and written out under the header."""
+    planting order, arranged, numbered in filing order and written out under the header. Reports and
+    notices are written in their generic form (genres.base.generic_items)."""
     rng, style = ctx.rng, ctx.style
     reports = _report_drafts(ctx, glossary)
-    amendments = [_amendment_draft(notice, ctx, glossary) for notice in map(_generic_notice, ctx.notices)]
+    amendments = [_amendment_draft(notice, ctx, glossary) for notice in generic_items(ctx.domain, ctx.notices)]
     body = _arrange(reports, amendments, ctx.chatter, rng, style, glossary)
     codes = {frame.name: (_code(rng, frame.codes, glossary), _code(rng, frame.amendment_codes, glossary))
              for frame in FRAMES}
@@ -597,16 +599,23 @@ def _report_drafts(ctx: RenderContext, glossary: Glossary) -> list[_Draft]:
     local time of its position, or of its source when records have none), how its position and values
     are written, its cross-reference note and who prepared it."""
     rng, style, vocab = ctx.rng, ctx.style, ctx.domain.trap_vocab
-    entries = [_entry(r, glossary) for r in ctx.reports]
+    entries: list[RecordReport] = generic_items(ctx.domain, ctx.reports)
     zones = {} if glossary.located else {s: rng.randint(*ZONES) for s in sorted({e.source for e in entries})}
-    deadlines: dict[str, int] = {}  # a form is sent before the compilation and before any notice about its record
+    # A form is sent before the compilation and before any notice about its record. Every form of the
+    # rendering shares one longest delay, shorter than the shortest time from any record to a notice about
+    # it, so that no form's delay tells whether a notice names its record: capping the forms that notices
+    # name alone gave the planted reports (every retracted and every corrected one) shorter delays.
+    notified: dict[str, int] = {}
     for notice in ctx.notices:
-        deadlines[notice.target] = min(deadlines.get(notice.target, ctx.compiled_at), notice.time)
+        notified[notice.target] = min(notified.get(notice.target, ctx.compiled_at), notice.time)
+    gaps = [notified[ref] - e.time for e in entries for ref in {e.ref, e.same_as} if ref in notified]
+    longest = min([MAX_SENT_DELAY_S, *(gap - 1 for gap in gaps if gap > 1)])
     drafts = []
     for e in entries:
         frame = FRAMES_BY_NAME[_draw(rng, FORM_PRESETS[style["forms"]])]
-        offset = utc_offset_hours(e.lon) if glossary.located else zones[e.source]
-        sent = _sent_time(rng, e.time, min(deadlines.get(ref, ctx.compiled_at) for ref in (e.ref, e.same_as or e.ref)))
+        offset = ctx.domain.utc_offset(e) if glossary.located else zones[e.source]
+        own = min(notified.get(ref, ctx.compiled_at) for ref in (e.ref, e.same_as or e.ref))
+        sent = _sent_time(rng, e.time, min(own, e.time + longest + 1))
         look = _Look(frame, when=format_time(e.time, _draw(rng, TIME_PRESETS[style["time"]]), offset),
                      coords=_draw(rng, COORD_PRESETS[style["coords"]]) if glossary.located else "hemi",
                      units=tuple(_draw_unit(rng, f, style["units"]) for f in glossary.fields),
@@ -658,11 +667,18 @@ def _header(ctx: RenderContext, glossary: Glossary) -> str:
     return f"{first.format(**words)}\n{second.format(**words)}"
 
 
+MAX_SENT_DELAY_S = 90 * 60 + 59  # a form is sent at most an hour and a half after its record's time
+
+
 def _sent_time(rng: random.Random, when: int, deadline: int) -> int:
-    """When a report's form was sent: one to ninety minutes after its record's time, and before
-    `deadline` (the compilation, or an earlier notice about the record) when the record's time is."""
-    sent = when + rng.randint(1, 90) * 60 + rng.randrange(60)
-    return sent if sent < deadline else when + max(0, deadline - when) // 2
+    """When a report's form was sent: drawn alike over one minute to MAX_SENT_DELAY_S after its record's
+    time, and before `deadline` (the compilation, or the rendering's shared limit, see _report_drafts):
+    from one second when the deadline leaves less than a minute, at the record's time when it leaves no
+    second."""
+    room = min(MAX_SENT_DELAY_S, deadline - when - 1)
+    if room < 1:
+        return when
+    return when + rng.randint(60 if room >= 60 else 1, room)
 
 
 def _code(rng: random.Random, codes: Sequence[str], glossary: Glossary) -> str:
@@ -774,61 +790,9 @@ def _angle(value: float, hemispheres: str, fmt: str, decimals: int) -> str:
     return f"{encode(abs(value), decimals)}°{hemispheres[0] if value >= 0 else hemispheres[1]}"
 
 
-# --------------------------------------------------------------- the 0.2.0 records of earthquakes
-# Earthquake domains keep the 0.2.0 record types. A models.Report gives its values by field key through
-# its generic names (models._GenericNames: "mag" and "depth", held in the attributes below) and keeps the
-# qualifier of a value in the attribute its key names ("mag_type"); a 0.2.0 correction notice revises
-# the "mag" field with new_mag, old_mag and mag_type.
-
-LEGACY_VALUE_ATTRIBUTES = {"mag": "mag", "depth": "depth_km"}
-LEGACY_CORRECTED_FIELD = "mag"
-
-
-def _legacy(domain: Domain) -> bool:
-    """Earthquake domains read and write the 0.2.0 record types."""
-    return isinstance(domain, Earthquakes)
-
-
-def _entry(report: Report | RecordReport, glossary: Glossary) -> RecordReport:
-    """A report under the generic names that forms are written from."""
-    if isinstance(report, RecordReport):
-        return report
-    qualifiers = {f.qualifier: getattr(report, f.qualifier) for f in glossary.fields
-                  if f.qualifier is not None and getattr(report, f.qualifier, None) is not None}
-    return RecordReport(ref=report.ref, source=report.source, status=report.status, time=report.time, lat=report.lat,
-                        lon=report.lon, group=report.group, values=dict(report.values), qualifiers=qualifiers,
-                        place=report.place, same_as=report.same_as)
-
-
-def _generic_notice(notice: Notice) -> Notice:
-    """A notice under the generic names: a 0.2.0 correction names the field it revises."""
-    if notice.kind != "correction" or notice.field is not None or notice.new_mag is None:
-        return notice
-    return replace(notice, field=LEGACY_CORRECTED_FIELD, new_value=notice.new_mag, old_value=notice.old_mag,
-                   qualifier=notice.mag_type, new_mag=None, old_mag=None, mag_type=None)
-
-
 def _corrected_field(notice: Notice, glossary: Glossary) -> int | None:
     """The index of the glossary field a correction revises (None: a retraction, or a field it lacks)."""
     return next((i for i, f in enumerate(glossary.fields) if f.key == notice.field), None)
-
-
-def _domain_report(entry: RecordReport, glossary: Glossary, legacy: bool) -> Report | RecordReport:
-    """A report read from a form, as its domain's records are: a 0.2.0 Report for earthquakes."""
-    if not legacy:
-        return entry
-    return Report(ref=entry.ref, network=entry.source, status=entry.status, time=entry.time, lat=entry.lat,
-                  lon=entry.lon, region=entry.group, place=entry.place, same_as=entry.same_as,
-                  **{attribute: entry.values[key] for key, attribute in LEGACY_VALUE_ATTRIBUTES.items()},
-                  **{f.qualifier: entry.qualifiers.get(f.qualifier) for f in glossary.fields if f.qualifier})
-
-
-def _domain_notice(notice: Notice, legacy: bool) -> Notice:
-    """A notice read from a form, as its domain's notices are: a 0.2.0 correction for earthquakes."""
-    if not legacy or notice.kind != "correction" or notice.field != LEGACY_CORRECTED_FIELD:
-        return notice
-    return replace(notice, new_mag=notice.new_value, old_mag=notice.old_value, mag_type=notice.qualifier, field=None,
-                   new_value=None, old_value=None, qualifier=None)
 
 
 # ----------------------------------------------------------------------------- reading forms
@@ -894,17 +858,18 @@ def _grammar(glossary: Glossary) -> _Grammar:
         values=tuple(re.compile(value_pattern(f, "v")) for f in glossary.fields))
 
 
-def _parse(text: str, glossary: Glossary, *, legacy: bool) -> DigestData:
-    """Every report and notice of a form digest; blocks that are not forms change nothing."""
+def _parse(text: str, glossary: Glossary) -> DigestData:
+    """Every report and notice of a form digest, in their generic form; blocks that are not forms change
+    nothing."""
     grammar = _grammar(glossary)
-    reports: list[Any] = []
+    reports: list[RecordReport] = []
     notices: list[Notice] = []
     for block in _blocks(text):
         item = _read_form(block, grammar, glossary)
         if isinstance(item, RecordReport):
-            reports.append(_domain_report(item, glossary, legacy))
+            reports.append(item)
         elif isinstance(item, Notice):
-            notices.append(_domain_notice(item, legacy))
+            notices.append(item)
     return DigestData(reports, notices)
 
 

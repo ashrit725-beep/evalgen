@@ -64,12 +64,12 @@ SYNTHETIC_WINDOW_DAYS = 30
 TDB_MINUS_UTC_S = 69.184
 JD_UNIX_EPOCH = 2_440_587.5  # the Julian date of 1970-01-01 00:00 UTC
 
-KILOMETRE = Unit("km", "kilometres")
-ASTRONOMICAL_UNIT = Unit("au", "astronomical units", AU_KM, decimals=6, step=0.001)
-LUNAR_DISTANCE = Unit("LD", "lunar distances", LD_KM, decimals=3, step=0.5)
-KM_PER_S = Unit("km/s", "kilometres per second")
-KM_PER_H = Unit("km/h", "kilometres per hour", 1 / 3600, decimals=0, step=2000.0)
-MILES_PER_HOUR = Unit("mph", "miles per hour", MPH_KM_PER_S, decimals=0, step=1000.0)
+KILOMETRE = Unit("km", "kilometres", one="kilometre")
+ASTRONOMICAL_UNIT = Unit("au", "astronomical units", AU_KM, decimals=6, step=0.001, one="astronomical unit")
+LUNAR_DISTANCE = Unit("LD", "lunar distances", LD_KM, decimals=3, step=0.5, one="lunar distance")
+KM_PER_S = Unit("km/s", "kilometres per second", one="kilometre per second")
+KM_PER_H = Unit("km/h", "kilometres per hour", 1 / 3600, decimals=0, step=2000.0, one="kilometre per hour")
+MILES_PER_HOUR = Unit("mph", "miles per hour", MPH_KM_PER_S, decimals=0, step=1000.0, one="mile per hour")
 
 # Margins and steps follow each field's spread: miss distances run from about 100,000 km to 7.5 million
 # km (0.05 au), relative velocities from under 1 to about 40 km/s (median near 10), and H from about 16
@@ -458,6 +458,7 @@ class Neo(Domain):
     id_label = "approach ID"
     source_label = "catalogue"
     group_label = "body"
+    group_preposition = "near"  # an approach is recorded near the body it passes, never in it
 
     fields = (MISS_DISTANCE, RELATIVE_VELOCITY, ABSOLUTE_MAGNITUDE)
     roles = {"primary": RELATIVE_VELOCITY.key, "secondary": MISS_DISTANCE.key}
