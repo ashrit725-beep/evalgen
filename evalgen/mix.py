@@ -53,7 +53,10 @@ never one that a private run config loaded into the process (``Registry.is_priva
 only under its config. A process runs each plugin file once: a plugin whose file has changed since the
 process ran it is refused, and a run records the SHA-256 of the bytes that ran. The config is read
 strictly: a file that is not JSON, or that gives a key twice in one object (JSON readers keep one of
-the two, so such a file could show one config and verify as another), is refused.
+the two, so such a file could show one config and verify as another), is refused, and so is one that
+no commitment can hash: JSON nested too deeply to read, or text with a lone surrogate escape such as
+"\\ud800", which no UTF-8 encodes (``read_config_data``). JSON is read as json reads bytes: UTF-8, -16 or
+-32, with or without a byte-order mark, none of which changes the commitment.
 
 Like the seed, the config is committed by hash: the manifest records ``sha256(canonical_json(config))``
 (``config_commitment``), and the random nonce stops anyone from guessing a small config from its hash.
@@ -69,19 +72,40 @@ What the evaluator publishes, and when:
                            (seed_commitment) and the config's (private_config_commitment). Nothing
                            else: not the manifest, which holds the seed, nor the config or its plugins.
     after the evaluation   the config, its plugin files, and the seed with its nonce. Anyone can then
-                           check the config against its commitment (``verify_private_config``, ``cli.py
-                           verify-config``) and regenerate the run, which checks every plugin against
+                           check the config against the commitment published before the evaluation
+                           (``cli.py verify-config --commitment HEX CONFIG``: ``verify_private_config``
+                           with `commitment`) and regenerate the run, which checks every plugin against
                            the SHA-256 its config gives before running it.
 
+The check is against the published value: a run's manifest commits to the config that made the run,
+whichever that was, so ``cli.py verify-config RUN_DIR CONFIG`` says only that a config and a run agree
+(a run regenerated from a swapped config agrees with it). It prints the commitment it checked against,
+which must be the one published before the evaluation.
+
 A config names its plugins by path, so the commitment pins what a held-out domain or genre is only
-through each plugin's SHA-256: with it, the commitment covers the plugins' content, which can no longer
-change once the commitment is published; a plugin given by its path alone is committed to by its path
-only, and could be edited after the commitment without anyone noticing.
+through each plugin's SHA-256: with it, the commitment covers the plugin file's own bytes, which can no
+longer change once the commitment is published; a plugin given by its path alone is committed to by its
+path only, and could be edited after the commitment without anyone noticing. The SHA-256 covers that one
+file and nothing it reads, so a plugin must be self-contained: no reads of other files (beside it or
+elsewhere), of the environment, the clock or the network, and imports only from evalgen and Python's
+standard library. Otherwise two runs under one commitment can hold out different domains or genres.
+
+Regenerating a revealed run executes the evaluator's plugin code, in-process and with the rights of
+whoever runs it (generate and demo run a config's plugins before any name is checked; run, score, report
+and resolve run them only from a config that the run's commitment authenticates). The SHA-256 pins which
+code runs, not that it is safe: a verifier reads the plugins first, or regenerates in a sandbox.
+verify-config runs no plugin.
+
+generate's console names every domain of the run, held-out ones included (each snapshot's line), and the
+manifest and the default run folder name the mix: like the manifest, its console log is private until
+the evaluation is over.
 """
 from __future__ import annotations
 
 import json
+import os
 import random
+import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,7 +117,7 @@ from .domains.base import Domain
 from .genres import get_genre
 from .genres.base import Genre
 from .seeds import SeedLog
-from .util import canonical_json, read_manifest, sha256_hex
+from .util import SHA256_HEX, canonical_json, read_manifest, sha256_hex, shown
 
 LEGACY = "legacy"
 RANDOM = "random"
@@ -115,6 +139,11 @@ NONCE_ADVICE = ("its nonce must be at least 32 random hexadecimal digits: draw o
                 "python -c \"import secrets; print(secrets.token_hex(16))\"")
 PLUGIN_KEYS = ("path", "sha256")  # a plugin given with the SHA-256 of its bytes
 SHA256_DIGITS = 64
+# Python 3.11 and later refuse to read an integer of more digits (sys.int_info.default_max_str_digits) and 3.9
+# reads it: a config is read the same way by every Python, so a longer one is refused by all of them.
+MAX_INT_DIGITS = 4300
+COMMITMENT_TEXT = re.compile(r"[0-9a-fA-F]{64}")  # a commitment as a verifier may give it, in either case
+SHOWN_MIX = 80  # characters of a mix that an error message quotes
 
 Log = Optional[Callable[[str], None]]  # Optional, not "X | None": this alias is evaluated at import (Python 3.9)
 
@@ -160,6 +189,12 @@ def _genre(name: str) -> Genre:
         raise UnknownName(str(exc.args[0])) from None
 
 
+def shown_mix(text: str) -> str:
+    """A mix as an error message quotes it: whole, or its first SHOWN_MIX characters when it is longer (a list of
+    every cell, or a mistake thousands of entries long, is not echoed whole)."""
+    return repr(text) if len(text) <= SHOWN_MIX else f"{text[:SHOWN_MIX]!r}... ({len(text)} characters)"
+
+
 def parse_mix(text: str) -> tuple[Entry, ...]:
     """The entries of a mix that lists them, with every name checked (an unknown one raises
     UnknownName, a KeyError); () for legacy. The random mix has no entries of its own: it draws from
@@ -173,13 +208,13 @@ def parse_mix(text: str) -> tuple[Entry, ...]:
     for part in text.split(","):
         domain, colon, genre = (piece.strip() for piece in part.partition(":"))
         if not domain or (colon and not genre):
-            raise MixError(f"mix entry {part.strip()!r} is not a domain or domain:genre")
+            raise MixError(f"mix entry {shown_mix(part.strip())} is not a domain or domain:genre")
         _domain(domain)
         if genre:
             _genre(genre)
         entries.append(Entry(domain, genre or None))
     if len(set(entries)) != len(entries):
-        raise MixError(f"the mix {text!r} names an entry twice")
+        raise MixError(f"the mix {shown_mix(text)} names an entry twice")
     return tuple(entries)
 
 
@@ -343,25 +378,51 @@ def _distinct_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return members
 
 
-def _read_config_json(path: Path) -> Any:
-    """The JSON of a config file, read strictly: DuplicateKey for a key given twice in any one object,
-    ValueError for text that is not JSON (or not UTF-8)."""
-    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_distinct_members)
+def _bounded_int(text: str) -> int:
+    """An integer of a config's JSON, read alike by every Python: one of more than MAX_INT_DIGITS digits is
+    refused (ValueError), as Python 3.11 and later refuse it and 3.9 does not."""
+    digits = len(text.lstrip("-"))
+    if digits > MAX_INT_DIGITS:
+        raise ValueError(f"it holds an integer of {digits} digits, more than the {MAX_INT_DIGITS} that JSON readers take")
+    return int(text)
+
+
+def read_config_data(path: str | Path) -> Any:
+    """The JSON value of a private run config file, read strictly, as generate and verify-config read it:
+    FileNotFoundError for a path that is not a file (a folder, or nothing: "" names the current folder);
+    MixError for a file that is not one JSON value (as json reads bytes: UTF-8, -16 or -32, with or without
+    a byte-order mark, none of which changes the commitment), that is nested too deeply to read (json raises
+    RecursionError for it), that gives a key twice in one object (it reads as two configs: the first value
+    of the key or the last, so which one was committed to has no answer), or that no commitment can hash:
+    text with a lone surrogate escape such as "\\ud800", which json reads and no UTF-8 encodes."""
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"the private run config {path} is not a file")
+    try:
+        data = json.loads(path.read_bytes(), object_pairs_hook=_distinct_members, parse_int=_bounded_int)
+    except DuplicateKey as exc:
+        raise MixError(f"the private run config {path} is malformed: {exc}") from None
+    except RecursionError:
+        raise MixError(f"the private run config {path} is not JSON that evalgen reads: it is nested too deeply") from None
+    except ValueError as exc:  # not JSON, not text in an encoding that JSON allows, or an integer too long
+        raise MixError(f"the private run config {path} is not JSON ({exc})") from None
+    try:
+        config_commitment(data)
+    except UnicodeEncodeError:
+        raise MixError(f"the private run config {path} cannot be committed to: it holds a lone surrogate escape (such as "
+                       "\\ud800), which is no character, so no UTF-8 and no commitment holds it") from None
+    except (RecursionError, ValueError) as exc:  # nested past what json writes, though not past what it reads
+        raise MixError(f"the private run config {path} cannot be committed to: {type(exc).__name__}: {exc}") from None
+    return data
 
 
 def read_private_config(path: str | Path) -> PrivateConfig:
-    """Read and check a private run config (``config_problems``); a missing file raises
-    FileNotFoundError, a malformed one MixError (not JSON, a key given twice, or a shape that
-    config_problems refuses). Plugin paths are relative to the config's folder."""
+    """Read and check a private run config: its JSON (``read_config_data``: a missing file raises
+    FileNotFoundError, one that cannot be committed to MixError) and its shape (``config_problems``,
+    MixError). Plugin paths are relative to the config's folder, and resolved with os.path.realpath,
+    which no symbolic link makes raise on any Python (Path.resolve raises RuntimeError on a loop on 3.9)."""
     path = Path(path)
-    if not path.is_file():  # a folder, or nothing ("" names the current folder)
-        raise FileNotFoundError(f"the private run config {path} is not a file")
-    try:
-        data = _read_config_json(path)
-    except DuplicateKey as exc:
-        raise MixError(f"the private run config {path} is malformed: {exc}") from None
-    except ValueError as exc:
-        raise MixError(f"the private run config {path} is not JSON ({exc})") from None
+    data = read_config_data(path)
     problems = config_problems(data)
     if problems:
         raise MixError(f"the private run config {path} cannot be used: " + "; ".join(problems))
@@ -370,7 +431,7 @@ def read_private_config(path: str | Path) -> PrivateConfig:
         path=path, data=data,
         domains={name: split for split in SPLITS for name in data["domains"][split]},
         genres={name: split for split in SPLITS for name in data["genres"][split]},
-        plugins=tuple((path.parent / (e if isinstance(e, str) else e["path"])).resolve() for e in entries),
+        plugins=tuple(Path(os.path.realpath(path.parent / (e if isinstance(e, str) else e["path"]))) for e in entries),
         plugin_sha256=tuple(None if isinstance(e, str) else e["sha256"].lower() for e in entries),
     )
 
@@ -381,29 +442,61 @@ def config_commitment(config: Mapping[str, Any]) -> str:
     return sha256_hex(canonical_json(config))
 
 
-def verify_config(config: Mapping[str, Any], commitment: str) -> bool:
-    """Whether a revealed config is the one a commitment was made to."""
-    return secrets.compare_digest(config_commitment(config), commitment)
+def read_commitment(text: str) -> str:
+    """A commitment as a verifier gives it (the private_config_commitment published before the
+    evaluation): 64 hexadecimal digits, in either case, blanks around them ignored; returned as evalgen
+    writes it, in lower case. Anything else raises MixError: it is no commitment, so no config can match it."""
+    digits = text.strip() if isinstance(text, str) else ""
+    if not COMMITMENT_TEXT.fullmatch(digits):
+        raise MixError(f"{shown(text)} is not a commitment: a commitment is 64 hexadecimal digits, as generate prints it")
+    return digits.lower()
 
 
-def verify_private_config(path: str | Path, run_dir: str | Path) -> bool:
-    """Whether the private run config at `path` is the one the run in `run_dir` committed to (its
-    manifest's private_config_commitment). A run generated without a config raises MixError; a file
-    that is not JSON is not the config. A file that gives a key twice in one object raises MixError: it
-    reads as two configs (the first value of the key or the last), so whether it is the committed one
-    has no answer. The plugins' bytes are checked when a run loads them (see the module docstring). A
-    `run_dir` that is not a run raises FileNotFoundError (util.read_manifest)."""
-    manifest = read_manifest(run_dir)
-    recorded = manifest.get("private_config_commitment")
+def run_commitment(run_dir: str | Path) -> str:
+    """The commitment to its private run config that the run in `run_dir` records (its manifest's
+    private_config_commitment, which util.read_manifest checks is 64 hexadecimal digits). A run generated
+    without a config raises MixError; a `run_dir` that is not a run raises FileNotFoundError, or RunDirError
+    for one that evalgen will not read (util.read_manifest)."""
+    recorded = read_manifest(run_dir).get("private_config_commitment")
     if recorded is None:
         raise MixError(f"{run_dir} was generated without a private run config, so it committed to none")
-    try:
-        data = _read_config_json(Path(path))
-    except DuplicateKey as exc:
-        raise MixError(f"{path} is malformed: {exc}, so it cannot be checked against a commitment") from None
-    except ValueError:
+    return recorded
+
+
+def revealed_commitment(path: str | Path) -> str:
+    """The commitment of the private run config at `path`, read as generate reads it (``read_config_data``):
+    what a verifier compares with the commitment published before the evaluation."""
+    return config_commitment(read_config_data(path))
+
+
+def verify_config(config: Any, commitment: Any) -> bool:
+    """Whether a revealed config is the one a commitment was made to. A commitment that is not 64
+    hexadecimal digits (a received manifest may hold anything) matches no config, and so does a config
+    that no commitment can hash: neither raises."""
+    if not isinstance(commitment, str) or not COMMITMENT_TEXT.fullmatch(commitment):
         return False
-    return verify_config(data, recorded)
+    try:
+        actual = config_commitment(config)
+    except (RecursionError, TypeError, ValueError):  # a lone surrogate (UnicodeEncodeError), or what is no JSON
+        return False
+    return secrets.compare_digest(actual, commitment.lower())
+
+
+def verify_private_config(path: str | Path, run_dir: str | Path | None = None, *,
+                          commitment: str | None = None) -> bool:
+    """Whether the private run config at `path` is the one committed to: as `commitment` (the value
+    published before the evaluation, ``read_commitment``), which is the check a verifier needs, or as the
+    run in `run_dir` records it (``run_commitment``), which says only that the config and that run agree. A
+    run regenerated from a config agrees with it, whatever was published, so the run's commitment must
+    itself be the published one. Give one of the two: MixError otherwise, for a commitment that is not
+    one, for a run generated without a config, and for a file that cannot be read as one config
+    (``read_config_data``). The plugins' bytes are checked when a run loads them (see the module
+    docstring)."""
+    if (run_dir is None) == (commitment is None):
+        raise MixError("check a config against the commitment published before the evaluation (commitment), or "
+                       "against a run's manifest (run_dir): give one of the two")
+    expected = read_commitment(commitment) if commitment is not None else run_commitment(run_dir)
+    return secrets.compare_digest(revealed_commitment(path), expected)
 
 
 # ------------------------------------------------------------------------------------ plugins
@@ -424,10 +517,12 @@ def load_plugin(path: str | Path, sha256: str | None = None, *, private: bool = 
     that were checked. A file that this process has run already is not run again, and its bytes must
     still be those that ran: a process runs one version of a plugin (registry.load_module). With
     `private` (a private run config's plugin), each entry is marked private as soon as it is registered
-    (_register_module). Raises MixError for a file that is gone, refused, changed since this process ran
-    it, defines neither entry, or defines one that its registry refuses (a name a built-in or another
-    plugin already has, or a domain that does not hold together)."""
-    path = Path(path).resolve()
+    (_register_module). Raises MixError for a file that is gone (or a link that loops: the path is
+    resolved with os.path.realpath, which raises on no Python), refused, changed since this process ran
+    it, whose own code fails or ends the process (sys.exit) as it runs, that defines neither entry, or
+    that defines one that its registry refuses (a name a built-in or another plugin already has, or a
+    domain that does not hold together, whatever Domain.validate raises on it)."""
+    path = Path(os.path.realpath(path))
     if not path.is_file():
         raise MixError(f"the plugin {path} does not exist")
     source = path.read_bytes()
@@ -438,6 +533,9 @@ def load_plugin(path: str | Path, sha256: str | None = None, *, private: bool = 
         module = registry.load_module(path, source)
     except registry.PluginChanged as exc:
         raise MixError(str(exc)) from None
+    except SystemExit as exc:  # a plugin defines entries; it never ends the process that loads it
+        raise MixError(f"the plugin {path} called sys.exit({exc.code!r}) as it ran: a plugin defines DOMAIN or GENRE, "
+                       "and never ends the command that loads it") from None
     except Exception as exc:  # the plugin's own code failed: a syntax error, a missing import, what it raised
         raise MixError(f"the plugin {path} failed to run: {type(exc).__name__}: {exc}") from exc
     return _register_module(path, module, private=private)
@@ -460,9 +558,18 @@ def _register_module(path: Path, module: Any, *, private: bool = False) -> list[
                 _mark_private(loaded[-1:])
     except (TypeError, ValueError) as exc:  # the registry refuses the entry
         raise MixError(f"the plugin {path} cannot be registered: {exc}") from None
+    except Exception as exc:  # a domain whose attributes are not what Domain.validate reads (a field that is a number)
+        raise MixError(f"the plugin {path} cannot be registered: {type(exc).__name__}: {exc}") from None
     if not loaded:
         raise MixError(f"the plugin {path} defines neither DOMAIN nor GENRE")
     return loaded
+
+
+def plugin_file(entry: Entrant) -> Path | None:
+    """The plugin file that defines `entry`, a domain or a genre (registry.Registry.origin, resolved); None for
+    a built-in entry, and for one that its caller registered directly."""
+    entries = domains.REGISTRY if isinstance(entry, Domain) else genres.REGISTRY
+    return None if entries.is_builtin(entry.name) else entries.origin(entry.name)
 
 
 def _mark_private(entries: Sequence[Entrant]) -> None:
@@ -743,13 +850,15 @@ def plan_mix(mix: str, private_config: str | Path | None = None) -> Plan:
             private = sorted({e.domain for e in entries if domains.REGISTRY.is_private(e.domain)}
                              | {e.genre for e in entries if e.genre is not None and genres.REGISTRY.is_private(e.genre)})
             if private:
-                raise MixError(f"the mix {text!r} names {', '.join(private)}, which a private run config loaded into this "
-                               "process: a run draws from a config's plugins only under that config (--private-config)")
+                raise MixError(f"the mix {shown_mix(text)} names {', '.join(private)}, which a private run config loaded "
+                               "into this process: a run draws from a config's plugins only under that config "
+                               "(--private-config)")
         else:
             outside = sorted({e.domain for e in entries if e.domain not in config.domains}
                              | {e.genre for e in entries if e.genre is not None and e.genre not in config.genres})
             if outside:
-                raise MixError(f"the mix {text!r} names {', '.join(outside)}, which the private run config does not list")
+                raise MixError(f"the mix {shown_mix(text)} names {', '.join(outside)}, which the private run config does "
+                               "not list")
         options = sorted(choices(entries, genre_order), key=lambda o: (domain_rank(o[0].name), genre_rank(o[1].name)))
         canonical = _canonical_text(entries, domain_rank, genre_rank)
     used_domains = dict.fromkeys(d.name for d, _ in options)
@@ -774,5 +883,5 @@ def single_choice(mix: str) -> tuple[Domain, Genre] | None:
         return None
     if len(plan.options) > 1:
         names = ", ".join(f"{domain.name}:{genre.name}" for domain, genre in plan.options)
-        raise MixError(f"the mix {mix!r} leaves a choice ({names}): each instance is drawn from it (Plan.draw)")
+        raise MixError(f"the mix {shown_mix(mix)} leaves a choice ({names}): each instance is drawn from it (Plan.draw)")
     return plan.options[0]

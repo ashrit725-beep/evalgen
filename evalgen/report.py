@@ -34,11 +34,11 @@ from .domains import get_domain
 from .domains.earthquakes import Earthquakes
 from .genres.base import printed_glossary
 from .mix import HELD_OUT, LEGACY, PUBLIC, RANDOM, SPLITS, Inventory, load_run_plugins
-from .models import Instance, Question
+from .models import Instance, Question, check_registered
 from .ops import KINDS, Step, describe, terminal_step
 from .scoring import (brier, design_effect, difference_ci, equivalent, mcnemar_exact, normalize,
                       paired_difference_ci, stratified_difference, widened, wilson)
-from .util import RunDirError, read_json, read_manifest, utc_iso, write_in, write_json
+from .util import LAST_SECOND, RunDirError, read_json, read_manifest, shown, utc_iso, write_in, write_json
 
 PACKAGE_DIR = Path(__file__).resolve().parent  # the evalgen sources that code_fingerprint covers
 GAP_FLAG = 0.10  # flag a public-minus-new gap above 10 points whose 95% CI excludes zero
@@ -123,14 +123,49 @@ def read_scores(run_dir: Path) -> list[dict]:
 
 def read_forecasts(run_dir: Path) -> list[dict]:
     """The forecasts of a run (forecasts.json); [] for a run without one. A file that is not a list of
-    objects, as generate and resolve write it, is refused (RunDirError)."""
+    forecasts as generate and resolve write them (forecast_problem) is refused (RunDirError), before resolve
+    grades or fetches anything: a run received from someone else may hold any JSON there, and resolve and
+    the report would stop on a traceback. (Whether the domain a forecast names asks forecasts is known once
+    the run's plugins are loaded: resolve checks that.)"""
     path = Path(run_dir) / "forecasts.json"
     if not path.exists():
         return []
     forecasts = read_run_json(path)
     if not isinstance(forecasts, list) or not all(isinstance(f, dict) for f in forecasts):
         raise RunDirError(f"{path} is not a list of forecasts as evalgen writes it")
+    for number, forecast in enumerate(forecasts):
+        problem = forecast_problem(forecast)
+        if problem is not None:
+            raise RunDirError(f"{path} is not a list of forecasts as evalgen writes it: its forecast {number} {problem}")
     return forecasts
+
+
+def forecast_problem(forecast: Mapping[str, Any]) -> str | None:
+    """What keeps one entry of forecasts.json from being a forecast as generate and resolve write it, or None:
+    the ID of its instance, its status (pending, or resolved with an outcome of 0 or 1), the rule that
+    resolves it (a window in UTC seconds that a date can print, and a finite place, radius and magnitude,
+    which resolve sends to the catalogue), and the name of its domain, when it gives one."""
+    status = forecast.get("status")
+    if status not in ("pending", "resolved"):
+        return f"has the status {shown(status)}, not pending or resolved"
+    if not isinstance(forecast.get("instance_id"), str):
+        return "names no instance"
+    rule = forecast.get("rule")
+    if not isinstance(rule, dict):
+        return "has no rule that resolves it"
+    for key in ("start", "end"):
+        moment = rule.get(key)
+        if not (isinstance(moment, int) and not isinstance(moment, bool) and 0 <= moment <= LAST_SECOND):
+            return f"has a rule whose {key} is {shown(moment)}, not a time in UTC seconds"
+    for key in ("lat", "lon", "radius_km", "min_mag"):
+        value = rule.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return f"has a rule whose {key} is {shown(value)}, not a number"
+    if status == "resolved" and (type(forecast.get("outcome")) is not int or forecast["outcome"] not in (0, 1)):
+        return f"is resolved with the outcome {shown(forecast.get('outcome'))}, not 0 or 1"
+    if not isinstance(forecast.get("domain"), (str, type(None))):
+        return f"names its domain as {shown(forecast.get('domain'))}, not by a name"
+    return None
 
 
 def legacy_run(instances: Iterable[Instance]) -> bool:
@@ -704,6 +739,7 @@ def compute(run_dir: Path, *, private_config: str | Path | None = None,
     # A report is built from the run's instances and scores, never from less: a committed run keeps only its
     # manifest and report, and reporting on it would replace the report with an empty one.
     instances = load_instances(run_dir, manifest)
+    check_registered(instances, run_dir)  # every domain, genre and answer type they name, now that plugins are loaded
     scores = read_scores(run_dir)
     if not scores:
         raise FileNotFoundError(f"no scores in {run_dir}; run `python cli.py run {run_dir}` and `python cli.py score "
@@ -849,8 +885,9 @@ def _mix_lines(run: dict) -> list[str]:
     if commitment:
         lines.append(f"- **Private run config:** committed as `{commitment}`, the SHA-256 of its canonical JSON, "
                      "which can be published before the evaluation; once the config is revealed, "
-                     f"`python cli.py verify-config RUN_DIR CONFIG`, with RUN_DIR the folder of this run "
-                     f"(`{run['run_id']}`), checks it. The domains and genres it holds out are marked held out above.")
+                     "`python cli.py verify-config --commitment HEX CONFIG`, with HEX the commitment published before "
+                     "the evaluation, checks it, and HEX must be the commitment above. The domains and genres it holds "
+                     "out are marked held out above.")
     else:
         lines.append("- **Private run config:** none, so every domain and genre is public.")
     return lines

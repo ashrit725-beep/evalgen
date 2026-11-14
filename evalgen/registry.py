@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import importlib.util
+import os
 import pkgutil
 import sys
 import weakref
@@ -91,6 +92,11 @@ class Registry(Generic[T]):
         return name in self._private
 
     def register(self, entry: T) -> T:
+        """Add `entry` under its name, after the package's own entries, which are discovered first, as every
+        lookup discovers them: so an entry registered before the first lookup is listed (and asked to sniff a
+        digest) after the built-in ones, as one registered later is, and one that takes a built-in's name is
+        refused (ValueError) instead of breaking every later lookup."""
+        self._discover()
         if not isinstance(entry, self.kind):
             raise TypeError(f"not a {self.kind.__name__}: {entry!r}")
         known = self._entries.get(entry.name)
@@ -107,7 +113,7 @@ class Registry(Generic[T]):
     def load_plugin(self, path: str | Path) -> T:
         """Register the entry defined in a Python file outside the package. The private run config
         names these files (evalgen.mix); loading the same file again returns the same entry."""
-        path = Path(path).resolve()
+        path = _resolved(path)
         self._discover()  # built-ins first, so that a plugin cannot take a built-in name
         entry = self.register(self._entry_in(load_module(path)))
         self._origin.setdefault(entry.name, path)
@@ -157,9 +163,16 @@ class PluginChanged(ImportError):
 _EXECUTED_SHA256: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
+def _resolved(path: str | Path) -> Path:
+    """A plugin file's path with every symbolic link resolved, by os.path.realpath: Path.resolve raises
+    RuntimeError on a link that loops on Python 3.9 and not on later versions, where realpath raises on
+    neither (a loop then names a file that does not exist, which the loader says)."""
+    return Path(os.path.realpath(path))
+
+
 def _module_name(path: Path) -> str:
     """The name a plugin file's module is registered under in sys.modules: one per resolved path."""
-    return "evalgen_plugin_" + hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:16]
+    return "evalgen_plugin_" + hashlib.sha256(str(_resolved(path)).encode("utf-8")).hexdigest()[:16]
 
 
 def load_module(path: str | Path, source: bytes | None = None) -> ModuleType:
@@ -170,7 +183,7 @@ def load_module(path: str | Path, source: bytes | None = None) -> ModuleType:
     executed already is not run again: with `source`, those bytes must be the ones it executed, or
     PluginChanged is raised (a module that ran other bytes is never passed off as these); without
     `source`, the module is returned as it ran."""
-    path = Path(path).resolve()
+    path = _resolved(path)
     module_name = _module_name(path)
     module = sys.modules.get(module_name)
     if module is None:

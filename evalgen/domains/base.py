@@ -875,11 +875,21 @@ def _point_label_problems(label: str, what: str, *, allowed: Sequence[str]) -> l
     """What is wrong with a point label, a format string that questions fill with `number` (and the legacy one
     with `source`, the source of the record the point is drawn near): a field other than those `allowed`, by
     whatever conversion, format spec, attribute or index it is written with ("{source!s}", "{source.upper}"),
-    which off the legacy path would name the source of the record a question's point is drawn near, almost
-    always the answer's (or which formatting would refuse); and no number, without which no two points of an
-    instance could have labels of their own (questions._draw_point draws numbers until a label is new)."""
+    or nested in another field's format spec ("{number:{source[0]}<4}"), which off the legacy path would name
+    the source of the record a question's point is drawn near, almost always the answer's (or which
+    formatting would refuse); and no number, without which no two points of an instance could have labels of
+    their own (questions._draw_point draws numbers until a label is new)."""
+    def names(text: str) -> list[str]:  # string.Formatter.parse gives the top-level fields only
+        found = []
+        for _, name, spec, _ in string.Formatter().parse(text):
+            if name is not None:
+                found.append(name)
+            if spec:
+                found += names(spec)
+        return found
+
     try:
-        fields = [name for _, name, _, _ in string.Formatter().parse(label) if name is not None]
+        fields = names(label)
     except ValueError as exc:
         return [f"its {what} {label!r} is not a format string ({exc})"]
     roots = {re.split(r"[.\[]", name, maxsplit=1)[0] for name in fields}

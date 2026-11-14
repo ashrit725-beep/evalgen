@@ -185,7 +185,12 @@ class Instance:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Instance":
         """An instance as to_dict wrote it. Its reports are earthquake Reports, or the RecordReports of
-        a generic domain (whose lines carry their values by field key)."""
+        a generic domain (whose lines carry their values by field key). An instance file of a run received
+        from someone else may hold any JSON, and run, score and report index it, so JSON that is not of the
+        shape to_dict writes raises ValueError, saying what is wrong (instance_problem)."""
+        problem = instance_problem(d)
+        if problem is not None:
+            raise ValueError(problem)
         return cls(
             instance_id=d["instance_id"],
             seed=d["seed"],
@@ -207,7 +212,155 @@ class Instance:
         )
 
     def question(self, qid: str) -> Question:
-        return next(q for q in self.questions if q.qid == qid)
+        """The question `qid` of this instance; KeyError when it has none (not a bare StopIteration, which a
+        generator around the call would turn into a RuntimeError)."""
+        for q in self.questions:
+            if q.qid == qid:
+                return q
+        raise KeyError(f"{self.instance_id} has no question {qid!r}")
+
+    def unregistered(self) -> list[str]:
+        """What this instance names that no registry of this process knows: its domain, the genres of its
+        renderings and the answer types of its questions (evalgen.domains, evalgen.genres, evalgen.scoring),
+        each as "domain 'x'", "genre 'y'" or "answer type 'z'". run, score and report look each of them up,
+        once the run's plugins are loaded; an instance file received from someone else may name anything."""
+        from .domains import get_domain  # imported here: evalgen.domains imports this module
+        from .genres import get_genre
+        from .scoring import get_answer_type
+
+        named = (("domain", [] if self.domain is None else [self.domain], get_domain),
+                 ("genre", [r.genre for r in self.renderings if r.genre is not None], get_genre),
+                 ("answer type", [q.answer_type for q in self.questions], get_answer_type))
+        unknown = []
+        for kind, names, lookup in named:
+            for name in dict.fromkeys(names):
+                try:
+                    lookup(name)
+                except KeyError:
+                    unknown.append(f"{kind} {name!r}")
+        return unknown
+
+
+def check_registered(instances: list[Instance], run_dir: Any) -> None:
+    """Refuse (util.RunDirError) the instances of the run in `run_dir` when one names a domain, a genre or
+    an answer type that this process does not know (Instance.unregistered), once the run's plugins are
+    loaded: run, score and report look them up, and would otherwise stop on a KeyError midway."""
+    from pathlib import Path
+
+    from .util import RunDirError
+
+    for inst in instances:
+        unknown = inst.unregistered()
+        if unknown:
+            raise RunDirError(f"{Path(run_dir) / 'instances' / (inst.instance_id + '.json')} names {', '.join(unknown)}, "
+                              "which neither evalgen nor the run's plugins define: it is not an instance that evalgen "
+                              "wrote for this run")
+
+
+_SPLITS = ("public", "held_out")  # an instance's split (evalgen.mix.SPLITS)
+
+
+def _whole(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _texts(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _chain_problem(chain: Any) -> str | None:
+    """What is wrong with a question's chain as the solvers, the scorer and the report read it: a list of
+    steps, each an object whose op is one evalgen knows, with a terminal step among them."""
+    from .ops import role  # imported here: ops imports the domains, which import this module
+
+    if not isinstance(chain, list) or not all(isinstance(step, dict) for step in chain):
+        return "is not a list of steps"
+    ops = [step.get("op") for step in chain]
+    if not all(isinstance(op, str) and role(op) is not None for op in ops):
+        return f"names an op that evalgen does not know ({', '.join(map(repr, ops))})"
+    if not any(role(op) == "terminal" for op in ops):
+        return "has no terminal step"
+    return None
+
+
+def instance_problem(d: Any) -> str | None:
+    """What keeps `d` (JSON as read from an instance file) from being an instance as to_dict writes it, or
+    None: the keys that run, score, report and resolve index, in the types evalgen writes them, and the
+    questions that traps and renderings name being the instance's own. Names that a registry must know
+    (domain, genres, answer types) are checked once a run's plugins are loaded (check_registered)."""
+    if not isinstance(d, dict):
+        return "it is not a JSON object"
+    if not isinstance(d.get("instance_id"), str):
+        return "its instance_id is not text"
+    for key in ("seed", "compiled_at", "window_hours"):
+        if not _whole(d.get(key)):
+            return f"its {key} is not a whole number"
+    for key in ("event_ids", "chatter"):
+        if not _texts(d.get(key)):
+            return f"its {key} are not a list of texts"
+    if not isinstance(d.get("reports"), list) or not all(isinstance(r, dict) and isinstance(r.get("ref"), str)
+                                                         for r in d["reports"]):
+        return "its reports are not objects, each with the ID it prints (ref)"
+    if not isinstance(d.get("notices"), list) or not all(isinstance(n, dict) for n in d["notices"]):
+        return "its notices are not objects"
+    questions = d.get("questions")
+    if not isinstance(questions, list) or not all(isinstance(q, dict) for q in questions):
+        return "its questions are not objects"
+    qids = [q.get("qid") for q in questions]
+    if not _texts(qids) or len(set(qids)) != len(qids):
+        return "its questions are not named by distinct QIDs"
+    for q in questions:
+        for key in ("template_id", "pool", "answer_type"):
+            if not isinstance(q.get(key), str) or not q[key]:
+                return f"question {q['qid']} has no {key} as text"
+        if not isinstance(q.get("unit"), (str, type(None))) or not _texts(q.get("evidence", [])):
+            return f"question {q['qid']} has a unit or evidence that is not text"
+        problem = _chain_problem(q.get("chain"))
+        if problem is not None:
+            return f"the chain of question {q['qid']} {problem}"
+        features = q.get("features", {})
+        if not isinstance(features, dict) or not _whole(features.get("trap_exposure", 0)) or not isinstance(
+                features.get("filters_matter", True), bool):
+            return f"the features of question {q['qid']} are not a trap exposure and whether its filters matter"
+    if not isinstance(d.get("answer_key"), dict) or not all(qid in d["answer_key"] for qid in qids):
+        return "it holds no answer key for each of its questions"
+    traps = d.get("traps")
+    if not isinstance(traps, list) or not all(isinstance(t, dict) for t in traps):
+        return "its traps are not objects"
+    for t in traps:
+        if not all(isinstance(t.get(key), str) for key in ("trap_id", "kind", "form", "target", "description")):
+            return "a trap has no ID, kind, form, target or description as text"
+        if not isinstance(t.get("mishandles"), list):
+            return f"trap {t['trap_id']} lists no careless readings"
+        for key in ("affected", "fallen"):
+            named = t.get(key, {})
+            if not isinstance(named, dict) or not set(named) <= set(qids):
+                return f"trap {t['trap_id']} names in its {key} what is not a question of the instance"
+        if not all(isinstance(answers, list) for answers in t.get("fallen", {}).values()):
+            return f"trap {t['trap_id']} gives its fallen answers otherwise than as lists"
+    renderings = d.get("renderings")
+    if not isinstance(renderings, list) or not renderings or not all(isinstance(r, dict) for r in renderings):
+        return "its renderings are not objects"
+    for r in renderings:
+        if not (isinstance(r.get("variant"), str) and _whole(r.get("seed")) and isinstance(r.get("style"), dict)
+                and all(isinstance(r.get(key), str) for key in ("digest", "prompt", "prompt_sha256"))
+                and isinstance(r.get("genre"), (str, type(None)))):
+            return "a rendering has no variant, seed, style, digest or prompt of the types evalgen writes"
+        texts = r.get("question_text")
+        if not isinstance(texts, dict) or not all(isinstance(texts.get(qid), str) for qid in qids):
+            return f"rendering {r['variant']} words not every question of the instance as text"
+    forecast = d.get("forecast")
+    if forecast is not None and not (isinstance(forecast, dict) and isinstance(forecast.get("qid"), str)
+                                     and isinstance(forecast.get("rule"), dict)):
+        return "its forecast has no QID and rule"
+    if not isinstance(d.get("domain"), (str, type(None))) or d.get("split") not in (None, *_SPLITS):
+        return "its domain or split is not one that evalgen writes"
+    if not isinstance(d.get("surface"), (dict, type(None))):
+        return "its surface words are not an object"
+    after = d.get("chatter_after")
+    if after is not None and not (isinstance(after, list) and all(a is None or _whole(a) for a in after)):
+        return "its chatter times are not whole numbers"
+    return None
 
 
 def _without_unset(d: dict[str, Any], optional: tuple[str, ...]) -> dict[str, Any]:
