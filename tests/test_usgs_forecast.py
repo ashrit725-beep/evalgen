@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 
-from evalgen import pipeline
+from evalgen import pipeline, sources
 from evalgen.domains.earthquakes import EARTHQUAKES
 from evalgen.seeds import SeedLog
 from evalgen.sources import (USER_AGENT, USGS_FEEDS, build_domain_snapshot, build_snapshot, generate_synthetic,
@@ -208,8 +208,8 @@ class FakeResponse:
 
 @pytest.fixture
 def usgs_server(monkeypatch):
-    """requests.get answers as the USGS feed would, with what a test serves, and records every request: no
-    test ever reaches the network."""
+    """Every live request (sources.http_get) answers as the USGS feed would, with what a test serves, and
+    records every request: no test ever reaches the network."""
     calls: list[dict] = []
     served = SimpleNamespace(content=feed_from(USGS_FEEDS["day"]), status=200, error=None)
 
@@ -219,7 +219,7 @@ def usgs_server(monkeypatch):
             raise served.error
         return FakeResponse(served.content, served.status)
 
-    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(sources, "http_get", fake_get)
     return SimpleNamespace(calls=calls, served=served)
 
 
@@ -244,13 +244,15 @@ def test_the_usgs_live_source_is_fetched_once_frozen_hashed_and_replayed(usgs_se
                                                               "replay of frozen feed raw_feed.geojson (SHA-256 verified)")
     assert len(usgs_server.calls) == 2  # the replay asked nothing
     write_json(directory / "snapshot.json", dict(read_json(directory / "snapshot.json"), raw_sha256="0" * 64))
-    assert "WARNING" in build_domain_snapshot(EARTHQUAKES, "live", SeedLog(2), snapshot_file=str(frozen))[0].note
+    with pytest.raises(ValueError, match="do not match the raw_sha256"):  # changed bytes are refused, not replayed
+        build_domain_snapshot(EARTHQUAKES, "live", SeedLog(2), snapshot_file=str(frozen))
 
 
 def test_the_usgs_feed_window_is_the_one_its_metadata_names(usgs_server, tmp_path):
-    """A feed covers the hour or the day that its metadata.url names (the day feed when it names none), live
-    or frozen as a file of its own."""
-    for url, window in ((USGS_FEEDS["hour"], 1), (USGS_FEEDS["day"], 24), (None, 24)):
+    """A feed covers the day that its metadata.url names (the day feed when it names none), live or frozen as
+    a file of its own. The hour that the hour feed covers is too short a window off the legacy path (the
+    hour feed is read in legacy runs only): it falls back live, and its frozen file is refused."""
+    for url, window in ((USGS_FEEDS["day"], 24), (None, 24)):
         usgs_server.served.content = feed_from(url)
         snapshot, raw = build_domain_snapshot(EARTHQUAKES, "live", SeedLog(1))
         assert (snapshot.source, snapshot.window_hours) == ("usgs", window) == ("usgs", EARTHQUAKES.live.parse(raw)[2])
@@ -259,6 +261,14 @@ def test_the_usgs_feed_window_is_the_one_its_metadata_names(usgs_server, tmp_pat
         replay, _ = build_domain_snapshot(EARTHQUAKES, "live", SeedLog(1), snapshot_file=str(path))
         assert (replay.window_hours, replay.url, replay.note) == (window, f"file:{path.name}",
                                                                   f"frozen feed file {path.name}")
+    usgs_server.served.content = feed_from(USGS_FEEDS["hour"])
+    assert EARTHQUAKES.live.parse(usgs_server.served.content)[2] == 1
+    snapshot, raw = build_domain_snapshot(EARTHQUAKES, "live", SeedLog(1))
+    assert (snapshot.source, raw) == ("synthetic", None) and "covers 1 hour(s)" in snapshot.note
+    path = tmp_path / "feed-1.geojson"
+    path.write_bytes(usgs_server.served.content)
+    with pytest.raises(ValueError, match="covers 1 hour"):
+        build_domain_snapshot(EARTHQUAKES, "live", SeedLog(1), snapshot_file=str(path))
 
 
 def test_the_usgs_live_source_falls_back_to_synthetic_earthquakes(usgs_server):
@@ -301,7 +311,7 @@ def test_a_usgs_run_off_the_legacy_path_is_live_frozen_and_replays_exactly(usgs_
     def unreachable(*args, **kwargs):
         raise requests.ConnectionError("offline: a replay never asks the network")
 
-    monkeypatch.setattr(requests, "get", unreachable)
+    monkeypatch.setattr(sources, "http_get", unreachable)
     replay = pipeline.generate(pipeline.GenerateConfig(seed=17, instances=3, mix="earthquakes:news", source="usgs",
                                                        snapshot_file=str(frozen)), tmp_path / "replay", log=quiet)
     names = sorted(p.relative_to(live).as_posix() for sub in ("instances", "prompts") for p in (live / sub).rglob("*")
@@ -310,7 +320,7 @@ def test_a_usgs_run_off_the_legacy_path_is_live_frozen_and_replays_exactly(usgs_
     note = read_json(replay / "manifest.json")["snapshot"]["note"]
     assert note == "replay of frozen feed raw_feed.geojson (SHA-256 verified)"
     usgs_server.served.error = requests.ConnectionError("no network")  # and offline, the run is synthetic
-    monkeypatch.setattr(requests, "get", unreachable)
+    monkeypatch.setattr(sources, "http_get", unreachable)
     offline = pipeline.generate(cfg, tmp_path / "offline", log=quiet)
     meta = read_json(offline / "snapshot" / "snapshot.json")
     assert meta["source"] == "synthetic" and meta["note"].startswith("usgs unavailable (ConnectionError")

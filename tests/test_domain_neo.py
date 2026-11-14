@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 
-from evalgen import pipeline
+from evalgen import pipeline, sources
 from evalgen.domains import get_domain
 from evalgen.domains.neo import (ASTRONOMICAL_UNIT, AU_KM, CAD_URL, CHATTER, KM_PER_H, LD_KM, LUNAR_DISTANCE,
                                  MILES_PER_HOUR, NEO, RULES, SOURCES, SYNTHETIC_WINDOW_DAYS, TRAP_VOCAB, half_month,
@@ -267,8 +267,8 @@ class FakeResponse:
 
 @pytest.fixture
 def cad_server(monkeypatch):
-    """requests.get answers as the CAD API would, with what a test serves, and records every request: no test
-    ever reaches the network."""
+    """Every live request (sources.http_get) answers as the CAD API would, with what a test serves, and records
+    every request: no test ever reaches the network."""
     calls: list[dict] = []
     served = SimpleNamespace(content=FIXTURE_BYTES, status=200, error=None)
 
@@ -278,7 +278,7 @@ def cad_server(monkeypatch):
             raise served.error
         return FakeResponse(served.content, served.status)
 
-    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(sources, "http_get", fake_get)
     return SimpleNamespace(calls=calls, served=served)
 
 
@@ -301,8 +301,8 @@ def test_the_live_source_is_fetched_once_frozen_hashed_and_replayed(cad_server, 
     assert again == raw and replay.events_sha256 == snapshot.events_sha256 and len(cad_server.calls) == 2
     assert (replay.url, replay.note) == (CAD_URL, "replay of frozen feed raw_cad.json (SHA-256 verified)")
     write_json(directory / "snapshot.json", dict(read_json(directory / "snapshot.json"), raw_sha256="0" * 64))
-    assert "WARNING" in build_domain_snapshot(NEO, "live", SeedLog(2),
-                                              snapshot_file=str(directory / "raw_cad.json"))[0].note
+    with pytest.raises(ValueError, match="do not match the raw_sha256"):  # changed bytes are refused, not replayed
+        build_domain_snapshot(NEO, "live", SeedLog(2), snapshot_file=str(directory / "raw_cad.json"))
 
 
 def test_the_live_source_falls_back_to_synthetic_approaches(cad_server):

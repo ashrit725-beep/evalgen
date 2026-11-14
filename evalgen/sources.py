@@ -11,17 +11,30 @@ replayable, with the synthetic records as the fallback. Its records are the doma
 or Events for earthquakes), and ``save_snapshot`` and ``load_snapshot`` handle either. A run of
 several domains freezes one snapshot per domain; ``frozen_feed`` finds, in such a run's snapshot
 folder, what replays each domain: its frozen bytes, or nothing when the run drew synthetic records.
+
+Every live request goes through ``http_get``: a session of its own that reads nothing from the environment
+but the proxies that its variables name (no netrc credentials, no CA bundle), bounded as a whole
+(FETCH_DEADLINE_S), not only read by read. Bytes that a source's parser cannot read make it fall back to
+synthetic data; a value in them that cannot be real (not a finite number, out of range, outside the
+feed's window) is left out. A replay checks what a frozen snapshot's snapshot.json says against the bytes
+beside it (``check_sidecar``) and refuses what was changed instead of using it.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import random
 import re
+import socket
+import threading
+import time
+import urllib.parse
+import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import requests
 
@@ -47,6 +60,16 @@ DUPLICATE_WINDOW_S, DUPLICATE_RADIUS_KM = 3, 15.0
 
 ALNUM = "abcdefghijklmnopqrstuvwxyz0123456789"
 
+# What a live record or snapshot can be. A time outside these two dates, a magnitude above 10, a position
+# off the globe or a depth beyond the mantle's is no reading of the world: it is left out of a feed. A
+# snapshot off the legacy path covers at least MIN_WINDOW_HOURS (a planted phantom's notice comes 92 minutes
+# after it, within the window: traps.NOTICE_DELAY), as the USGS hour feed does not, and at most a year.
+EARLIEST_TIME = int(datetime(1800, 1, 1, tzinfo=timezone.utc).timestamp())
+LATEST_TIME = int(datetime(2200, 1, 1, tzinfo=timezone.utc).timestamp())
+MAX_MAGNITUDE = 10.0
+DEPTH_RANGE_KM = (-100.0, 1000.0)
+MIN_WINDOW_HOURS, MAX_WINDOW_HOURS = 2, 366 * 24
+
 
 @dataclass
 class Snapshot:
@@ -58,6 +81,9 @@ class Snapshot:
     events_sha256: str
     raw_sha256: str | None = None  # hash of the frozen feed bytes (live sources only)
     url: str | None = None
+    # When the live source was fetched, by the wall clock: like the manifest's generated_at_utc it differs
+    # between two fetches of the same bytes. A replay off the legacy path keeps the time its frozen snapshot
+    # records; a legacy replay is stamped with the time it ran, as 0.2.0 stamped it.
     fetched_at: str | None = None
     note: str | None = None  # e.g. why we fell back to synthetic data
     domain: str | None = None  # the domain of a snapshot off the legacy path; unset (and unrecorded) in legacy runs
@@ -244,18 +270,59 @@ def region_from_place(place: str | None) -> str:
     return (tail[:1].upper() + tail[1:]) if tail else "Unknown region"
 
 
+def read_feed_json(raw: bytes, what: str) -> Any:
+    """`raw` read as JSON text in UTF-8. ValueError for bytes that are not, and for JSON nested too deeply
+    to read (which the json module reports as a RecursionError), so that a live source answering with
+    either falls back to synthetic data, and a frozen copy of either is refused, as for any bytes that
+    are not its feed."""
+    text = raw.decode("utf-8")
+    try:
+        return json.loads(text)
+    except RecursionError:
+        raise ValueError(f"{what} is JSON nested too deeply to read") from None
+
+
 def parse_usgs_geojson(raw: bytes) -> tuple[list[Event], int, list[str]]:
     """Parse a USGS GeoJSON summary feed: Events (earthquakes only, one per quake), the feed's
     generation time, and the IDs of duplicate solutions that were collapsed. Bytes that are not such a
     feed, whether not JSON or JSON of another shape, raise ValueError, so that a live source that answers
-    with them falls back to synthetic data as one that cannot be reached does."""
-    data = json.loads(raw.decode("utf-8"))
+    with them falls back to synthetic data as one that cannot be reached does. An earthquake that no real
+    feed lists is left out, as one without a magnitude is: a magnitude, a position or a depth that is not
+    a finite number or not in range (a magnitude above MAX_MAGNITUDE, a latitude beyond a pole, a depth
+    outside DEPTH_RANGE_KM), or a time outside EARLIEST_TIME..LATEST_TIME; a feed generated outside them
+    is no feed (ValueError)."""
+    return parse_usgs_document(usgs_document(raw))
+
+
+def usgs_document(raw: bytes) -> dict:
+    """A USGS GeoJSON feed read as JSON: an object with a list of features (ValueError otherwise)."""
+    data = read_feed_json(raw, "the USGS feed")
     if not isinstance(data, dict) or not isinstance(data.get("features", []), list):
         raise ValueError("not a USGS GeoJSON feed: it is not an object with a list of features")
+    return data
+
+
+def parse_usgs_document(data: dict) -> tuple[list[Event], int, list[str]]:
+    """The events of a USGS feed read as JSON (usgs_document), as parse_usgs_geojson gives them."""
     try:
         return _usgs_events(data)
-    except (AttributeError, TypeError, IndexError) as exc:  # a feature, its properties or metadata of another shape
-        raise ValueError(f"not a USGS GeoJSON feed ({type(exc).__name__}: {exc})") from None
+    except (AttributeError, TypeError, IndexError, OverflowError) as exc:  # a feature, its properties or metadata
+        raise ValueError(f"not a USGS GeoJSON feed ({type(exc).__name__}: {exc})") from None  # of another shape
+
+
+def _real_quake(mag: float, lat: float, lon: float, depth: float, when: Any) -> bool:
+    """Whether a feed's earthquake could be a real one: a finite magnitude of at most MAX_MAGNITUDE, a place
+    on the globe, a depth in DEPTH_RANGE_KM, and a time (in milliseconds) between EARLIEST_TIME and
+    LATEST_TIME. The time is checked before it is read as a whole number, which an infinite one is not."""
+    if not all(math.isfinite(x) for x in (mag, lat, lon, depth)):
+        return False
+    if mag > MAX_MAGNITUDE or not -90.0 <= lat <= 90.0 or not -180.0 <= lon <= 180.0:
+        return False
+    if not DEPTH_RANGE_KM[0] <= depth <= DEPTH_RANGE_KM[1]:
+        return False
+    if isinstance(when, float) and not math.isfinite(when):
+        return False
+    return EARLIEST_TIME <= int(when) // 1000 <= LATEST_TIME
 
 
 def _usgs_events(data: dict) -> tuple[list[Event], int, list[str]]:
@@ -274,6 +341,8 @@ def _usgs_events(data: dict) -> tuple[list[Event], int, list[str]]:
         if not EVENT_ID_RE.fullmatch(event_id):
             continue
         lon, lat, depth = (float(c) for c in coords[:3])
+        if not _real_quake(float(mag), lat, lon, depth, props["time"]):
+            continue
         place = props.get("place")
         events.append(Event(
             id=event_id,
@@ -292,13 +361,125 @@ def _usgs_events(data: dict) -> tuple[list[Event], int, list[str]]:
     generated_ms = int((data.get("metadata") or {}).get("generated") or 0)
     if not generated_ms:
         generated_ms = max((e.time for e in events), default=0) * 1000 + 1000
+    if not EARLIEST_TIME <= generated_ms // 1000 <= LATEST_TIME:
+        raise ValueError(f"not a USGS GeoJSON feed: it says it was generated at {generated_ms} ms, which no feed was")
     events, dropped = collapse_duplicate_solutions(events, rank=lambda e: preference[e.id])
     return events, generated_ms // 1000, dropped
 
 
+# The summary feeds of the USGS, by the period their name ends in ("all_day.geojson"): the hours each covers.
+USGS_PERIODS = {"hour": 1, "day": 24, "week": 7 * 24, "month": 30 * 24}
+_PERIOD = re.compile(r"_(hour|day|week|month)\b")
+
+
+def usgs_window(data: dict) -> int:
+    """The hours that a USGS summary feed read as JSON covers: the period its metadata.url names (the hour,
+    day, week or month feed), and a day when it names none."""
+    metadata = data.get("metadata")
+    url = metadata.get("url") if isinstance(metadata, dict) else None
+    found = _PERIOD.search(url) if isinstance(url, str) else None
+    return USGS_PERIODS[found.group(1)] if found else 24
+
+
+# ------------------------------------------------------------------------------- live requests
+
+# Each live request waits at most its timeout to connect and for each read, and at most FETCH_DEADLINE_S
+# for the whole answer, from the first connection to the last byte of a body of at most MAX_BODY_BYTES.
+FETCH_DEADLINE_S = 60.0
+MAX_BODY_BYTES = 64 * 2 ** 20
+_CHUNK_BYTES = 64 * 1024
+
+
+class FetchTimeout(requests.exceptions.Timeout):
+    """A live request that took longer than its deadline as a whole, however quick each read of it was."""
+
+
+class BodyTooLarge(requests.exceptions.RequestException):
+    """A live answer whose body is longer than MAX_BODY_BYTES."""
+
+
+def proxies_for(url: str) -> dict[str, str]:
+    """The proxies that a live request to `url` goes through: those the environment's proxy variables name
+    explicitly (http_proxy, https_proxy and all_proxy, in either case), unless no_proxy exempts the URL's
+    host. Nothing else of the environment is read: no netrc file, no proxy settings of the system."""
+    named = urllib.request.getproxies_environment()
+    host = urllib.parse.urlsplit(url).hostname or ""
+    if not named or urllib.request.proxy_bypass_environment(host, named):
+        return {}
+    return {scheme: proxy for scheme, proxy in sorted(named.items()) if scheme in ("http", "https", "all")}
+
+
+def http_get(url: str, *, params: Mapping[str, Any] | None = None, headers: Mapping[str, str] | None = None,
+             timeout: float = 20.0, deadline: float | None = None) -> requests.Response:
+    """GET `url` for a live source: the response, with its body read in full whatever its status (the caller
+    decides what an error status means).
+
+    The request goes through a session of its own with trust_env off, so it sends no credentials from a
+    netrc file and reads no CA bundle or proxy settings from the environment; it goes through a proxy only
+    when the environment's proxy variables name one (proxies_for). It waits at most `timeout` seconds to
+    connect and for each read, and at most `deadline` seconds (FETCH_DEADLINE_S unless given) for the whole
+    answer: a server that sends its answer a byte at a time, or that holds the connection open and never
+    answers, is given up once the deadline passes (FetchTimeout), and so is a body longer than
+    MAX_BODY_BYTES (BodyTooLarge). The request runs on a thread of its own, which the caller stops waiting
+    for at the deadline, wherever it is (connecting, waiting for the headers, reading the body)."""
+    limit = FETCH_DEADLINE_S if deadline is None else deadline
+    until = time.monotonic() + limit
+    wait = max(0.001, min(timeout, limit))
+    late = f"{urllib.parse.urlsplit(url).hostname or url} did not answer in full within {limit:g} s"
+    outcome: dict[str, Any] = {}
+
+    def fetch() -> None:
+        try:
+            with requests.Session() as session:
+                session.trust_env = False
+                answer = session.get(url, params=params, headers=headers, timeout=(wait, wait), stream=True,
+                                     proxies=proxies_for(url))
+                outcome["streaming"] = answer
+                try:
+                    body = bytearray()
+                    for chunk in answer.iter_content(_CHUNK_BYTES):
+                        body += chunk
+                        if len(body) > MAX_BODY_BYTES:
+                            raise BodyTooLarge(f"{urllib.parse.urlsplit(url).hostname} answered with more than "
+                                               f"{MAX_BODY_BYTES} bytes")
+                        if time.monotonic() > until:
+                            raise FetchTimeout(late)
+                    answer._content = bytes(body)  # what Response.content gives from now on
+                finally:
+                    answer.close()
+            outcome["response"] = answer
+        except BaseException as exc:  # handed to the caller as it is
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=fetch, name="evalgen-live-request", daemon=True)
+    worker.start()
+    worker.join(max(0.0, until - time.monotonic()))
+    if worker.is_alive():  # still connecting, waiting or reading: given up, and its connection closed
+        _abandon(outcome.get("streaming"))
+        raise FetchTimeout(late)
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["response"]
+
+
+def _abandon(answer: requests.Response | None) -> None:
+    """Shut the connection of an answer given up on, so that the thread reading it stops at once rather
+    than at the server's next byte. (Shutting down, unlike closing, wakes a read blocked on the socket.)
+    The socket is the connection's, or, for an answer after which the server closes the connection, the
+    one its body is read from, which http.client keeps in the response's file alone."""
+    raw = getattr(answer, "raw", None)
+    sock = getattr(getattr(raw, "connection", None), "sock", None)
+    if sock is None:
+        body = getattr(getattr(raw, "_fp", None), "fp", None)
+        sock = getattr(getattr(body, "raw", None), "_sock", None)
+    if isinstance(sock, socket.socket):
+        with contextlib.suppress(OSError):
+            socket.socket.shutdown(sock, socket.SHUT_RDWR)
+
+
 def fetch_usgs(feed: str, timeout: float = 20.0) -> tuple[bytes, str]:
     url = USGS_FEEDS[feed]
-    response = requests.get(url, timeout=timeout, headers={"User-Agent": USER_AGENT})
+    response = http_get(url, timeout=timeout, headers={"User-Agent": USER_AGENT})
     response.raise_for_status()
     return response.content, url
 
@@ -339,6 +520,10 @@ def _synthetic_snapshot(seedlog: SeedLog, pool_size: int, note: str | None = Non
 
 SIDECAR_TYPES = {"source": (str,), "domain": (str,), "url": (str, type(None)), "window_hours": (int,),
                  "fetched_at": (str, type(None)), "raw_sha256": (str, type(None))}
+LEGACY_WINDOWS = (1, 24)  # the windows a legacy run records: its hour feed's or its day feed's
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:[^\x00-\x1f\x7f]+")  # a scheme, a colon, then no control character
+_FETCHED_AT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 
 
 def read_sidecar(path: Path) -> dict[str, Any]:
@@ -348,7 +533,7 @@ def read_sidecar(path: Path) -> dict[str, Any]:
     as from one's own."""
     try:
         meta = read_json(path)
-    except (OSError, ValueError) as exc:  # not readable, not UTF-8, not JSON
+    except (OSError, ValueError, RecursionError) as exc:  # not readable, not UTF-8, not JSON
         raise ValueError(f"{path} is not the snapshot.json of a frozen snapshot ({type(exc).__name__}: {exc})") from None
     if not isinstance(meta, dict):
         raise ValueError(f"{path} is not the snapshot.json of a frozen snapshot: it holds no JSON object")
@@ -360,32 +545,84 @@ def read_sidecar(path: Path) -> dict[str, Any]:
     return meta
 
 
-def _replayed(path: Path, raw: bytes, window_hours: int) -> tuple[int, str, str, str | None]:
+def check_sidecar(meta: Mapping[str, Any], raw: bytes, path: Path, *, source: str, domain: str, window: int,
+                  legacy: bool = False) -> None:
+    """Refuse (ValueError, naming the file) the snapshot.json `meta`, read from `path`, if it does not describe
+    the frozen bytes `raw` beside it as the run that froze them wrote it.
+
+    Its hash must be theirs: it records their SHA-256 (raw_sha256, which a live snapshot always records),
+    and they match it. What no hash covers is checked against the bytes and the replay: they came from
+    `source`, the live source of `domain` (a legacy run's snapshot names no domain: it is of earthquakes),
+    and they cover the window they give (`window` hours; a legacy run records its hour or its day feed's,
+    LEGACY_WINDOWS). Their origin (url) and the time they were fetched (fetched_at) have the form evalgen
+    writes; the source run's manifest, when a replay finds it, vouches for their values
+    (pipeline._replay_check). A replay refuses what fails, rather than replay bytes that were changed."""
+    def refuse(why: str) -> ValueError:
+        return ValueError(f"{path} does not describe the frozen bytes beside it: {why}, so they are not replayed")
+
+    if meta.get("source") != source:
+        said = meta.get("source")
+        raise refuse("it says its snapshot is synthetic" if said == "synthetic"
+                     else f"it says they came from {said!r}, not from {domain}'s live source ({source})")
+    if meta.get("domain", DEFAULT_DOMAIN) != domain:
+        raise refuse(f"it says they are of {meta.get('domain', DEFAULT_DOMAIN)}, not of {domain}")
+    recorded = meta.get("raw_sha256")
+    if not isinstance(recorded, str) or not _SHA256.fullmatch(recorded):
+        raise refuse("it records no raw_sha256 of them, which the snapshot.json of a live snapshot always does")
+    if recorded != sha256_hex(raw):
+        raise refuse("they do not match the raw_sha256 that it records (one or the other changed since they were "
+                     "frozen)")
+    if "window_hours" in meta and (meta["window_hours"] not in LEGACY_WINDOWS if legacy
+                                   else meta["window_hours"] != window):
+        raise refuse(f"it gives a window of {meta['window_hours']} hours, which "
+                     + ("is neither a legacy run's hour nor its day" if legacy else f"they do not: they cover {window}"))
+    url = meta.get("url")
+    if url is not None and (len(url) > 2048 or not _URL.fullmatch(url)):
+        raise refuse(f"its url {url[:80]!r} is not a URL")
+    fetched_at = meta.get("fetched_at")
+    if fetched_at is not None and not _utc_time(fetched_at):
+        raise refuse(f"its fetched_at {fetched_at[:40]!r} is not a time in UTC as evalgen writes one")
+
+
+def _utc_time(text: str) -> bool:
+    """Whether `text` is a time in UTC as a snapshot records one ("2026-11-08T02:40:00Z")."""
+    if not _FETCHED_AT.fullmatch(text):
+        return False
+    try:
+        datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return False
+    return True
+
+
+def _replayed(path: Path, raw: bytes, window_hours: int, *, source: str, domain: str,
+              legacy: bool = False) -> tuple[int, str, str, str | None]:
     """(window_hours, url, note, fetched_at) for frozen feed bytes read from `path`. Replaying a run's own
-    frozen snapshot keeps its window, its origin and when it was fetched, from the snapshot.json beside it
-    (read_sidecar), and checks its hash; a bare frozen file says nothing of when it was fetched (None)."""
+    frozen snapshot keeps its window, its origin and when it was fetched, from the snapshot.json beside it,
+    which must describe the bytes (read_sidecar, check_sidecar): only then is the replay "SHA-256 verified".
+    A bare frozen file says nothing of when it was fetched (None), and its replay claims no verification."""
     url, note, fetched_at = f"file:{path.name}", f"frozen feed file {path.name}", None
     sidecar = path.with_name("snapshot.json")
     if sidecar.exists():
         meta = read_sidecar(sidecar)
+        check_sidecar(meta, raw, sidecar, source=source, domain=domain, window=window_hours, legacy=legacy)
         window_hours, url = meta.get("window_hours", window_hours), meta.get("url") or url
         fetched_at = meta.get("fetched_at")
-        if meta.get("raw_sha256") and meta["raw_sha256"] != sha256_hex(raw):
-            note += " -- WARNING: bytes do not match the raw_sha256 recorded in snapshot.json"
-        else:
-            note = f"replay of frozen feed {path.name} (SHA-256 verified)"
+        note = f"replay of frozen feed {path.name} (SHA-256 verified)"
     return window_hours, url, note, fetched_at
 
 
 def build_snapshot(source: str, seedlog: SeedLog, *, feed: str = "day", pool_size: int = 360,
                    snapshot_file: str | None = None,
                    fetch: Callable[[str], tuple[bytes, str]] = fetch_usgs) -> tuple[Snapshot, bytes | None]:
-    """Return (snapshot, raw feed bytes or None). USGS failures fall back to synthetic data."""
+    """Return (snapshot, raw feed bytes or None). USGS failures fall back to synthetic data. A frozen feed's
+    snapshot.json, when it lies beside the file, must describe it (check_sidecar), or ValueError is raised."""
     if snapshot_file:
         path = Path(snapshot_file)
         raw = path.read_bytes()
         # A legacy replay is stamped with the time it ran, as 0.2.0 stamped it.
-        window, url, note, _ = _replayed(path, raw, 1 if "hour" in path.name else 24)
+        window, url, note, _ = _replayed(path, raw, 1 if "hour" in path.name else 24, source="usgs",
+                                         domain=DEFAULT_DOMAIN, legacy=True)
         return _usgs_snapshot(raw, seedlog.master, url, window, note=note), raw
     if source == "usgs":
         try:
@@ -398,7 +635,7 @@ def build_snapshot(source: str, seedlog: SeedLog, *, feed: str = "day", pool_siz
             if len(snapshot.events) < MIN_POOL_EVENTS:
                 raise ValueError(f"only {len(snapshot.events)} usable events in the feed")
             return snapshot, raw
-        except (requests.RequestException, ValueError, KeyError) as exc:
+        except (requests.RequestException, ValueError, KeyError, RecursionError, ArithmeticError) as exc:
             note = f"USGS feed unavailable ({failure_text(exc)}); fell back to synthetic data"  # no object address
             return _synthetic_snapshot(seedlog, pool_size, note=note), None
     if source != "synthetic":
@@ -421,13 +658,17 @@ def build_domain_snapshot(domain: Domain, source: str, seedlog: SeedLog, *, pool
     name the domain ("snapshot", <domain>, "clock" and "synthetic"), so no legacy path ever moves.
     "live", or the name of the domain's live source ("usgs"), fetches that source once (`fetch` stands
     in for the adapter's own) and falls back to synthetic records, with a note, when it cannot be
-    reached, cannot be read or gives fewer records than its minimum; a domain without a live source
-    gets synthetic records. A snapshot file holds frozen bytes of the live source, which are replayed
-    (read_frozen_feed). The records must suit the domain (record_problems), or ValueError is raised."""
+    reached, cannot be read, gives fewer records than its minimum or a snapshot that cannot be right
+    (window_problems); a domain without a live source gets synthetic records. A snapshot file holds
+    frozen bytes of the live source, which are replayed (read_frozen_feed), and must be what the
+    snapshot.json beside it describes (check_sidecar). The records must suit the domain
+    (record_problems), or ValueError is raised: the parsers leave out what no real feed holds, so a
+    record that does not suit the domain is an adapter's error."""
     live = domain.live
     if snapshot_file:
         raw, records, compiled_at, window = read_frozen_feed(domain, snapshot_file)
-        window, url, note, fetched_at = _replayed(Path(snapshot_file), raw, window)
+        window, url, note, fetched_at = _replayed(Path(snapshot_file), raw, window, source=live.source,
+                                                  domain=domain.name)
         return _live_domain_snapshot(domain, seedlog, raw, records, compiled_at, window, url, note,
                                      fetched_at=fetched_at), raw
     if source == "synthetic":
@@ -441,6 +682,9 @@ def build_domain_snapshot(domain: Domain, source: str, seedlog: SeedLog, *, pool
     try:
         raw, url = (fetch or live.fetch)()
         records, compiled_at, window = live.parse(raw)
+        problems = window_problems(records, compiled_at, window)
+        if problems:
+            raise ValueError("; ".join(problems[:3]))
         if len(records) < live.min_records:
             raise ValueError(f"only {len(records)} usable records in the feed")
     except (requests.RequestException, *PARSE_ERRORS) as exc:  # out of reach, or bytes its parser cannot read
@@ -449,7 +693,8 @@ def build_domain_snapshot(domain: Domain, source: str, seedlog: SeedLog, *, pool
     return _live_domain_snapshot(domain, seedlog, raw, records, compiled_at, window, url, None, fetched_at=_now()), raw
 
 
-PARSE_ERRORS = (ValueError, KeyError, TypeError, AttributeError, IndexError)  # bytes a live parser cannot read
+# Bytes a live parser cannot read: of another shape, of values out of any range, or JSON nested too deeply.
+PARSE_ERRORS = (ValueError, KeyError, TypeError, AttributeError, IndexError, RecursionError, ArithmeticError)
 # What a failure's message may hold that differs between two runs that fail alike, and so stays out of the
 # note a snapshot records: the query of a URL (a request for the last day of NWS observations names the time
 # it was sent) and the address of an object.
@@ -459,30 +704,75 @@ VOLATILE = re.compile(r"(?<=[\w/.-])\?[\w%.~=&+:-]*|\s+at 0x[0-9a-fA-F]+")
 def failure_text(exc: BaseException) -> str:
     """Why a live source failed, as a snapshot's note records it: the exception's type and message without
     what changes from one moment to the next (VOLATILE), so that two offline runs of one seed, which both
-    fall back to the same synthetic records, write the same files."""
-    return f"{type(exc).__name__}: {VOLATILE.sub('', str(exc))}"
+    fall back to the same synthetic records, write the same files, and without the proxy that the
+    environment names (proxies_for), whose host and port, and any user name in its URL, are written
+    "<proxy>": a note reaches the manifest and the report, which are published."""
+    return f"{type(exc).__name__}: {_without_proxies(VOLATILE.sub('', str(exc)))}"
 
 
-def read_frozen_feed(domain: Domain, snapshot_file: str | Path) -> tuple[bytes, list[Any], int, int]:
+def _without_proxies(text: str) -> str:
+    """`text` with every proxy that the environment names written "<proxy>"."""
+    for proxy in sorted(set(urllib.request.getproxies_environment().values())):
+        parts = urllib.parse.urlsplit(proxy if "://" in proxy else f"http://{proxy}")
+        try:
+            host = parts.hostname
+        except ValueError:
+            continue
+        if not host:
+            continue
+        text = text.replace(proxy, "<proxy>")
+        name = re.escape(host)
+        text = re.sub(rf"host='{name}', port=\d+", "host='<proxy>', port=<proxy>", text, flags=re.IGNORECASE)
+        text = re.sub(rf"(?:[^\s'\"/@]+@)?(?<![\w.-]){name}(?::\d+)?(?![\w-])", "<proxy>", text, flags=re.IGNORECASE)
+    return text
+
+
+def window_problems(records: Sequence[Any], compiled_at: int, window_hours: int) -> list[str]:
+    """What cannot be right about a live snapshot off the legacy path: a compiled_at outside
+    EARLIEST_TIME..LATEST_TIME, a window that is not a whole number of hours from MIN_WINDOW_HOURS (too
+    short for the traps: the USGS hour feed is read in legacy runs only) to MAX_WINDOW_HOURS, or a record
+    timed outside the window, which its digests say they cover."""
+    if isinstance(compiled_at, bool) or not isinstance(compiled_at, int) or not (
+            EARLIEST_TIME <= compiled_at <= LATEST_TIME):
+        return [f"it was compiled at {compiled_at!r}, which no feed was"]
+    if isinstance(window_hours, bool) or not isinstance(window_hours, int) or not (
+            MIN_WINDOW_HOURS <= window_hours <= MAX_WINDOW_HOURS):
+        return [f"it covers {window_hours!r} hour(s): a snapshot off the legacy path covers {MIN_WINDOW_HOURS} to "
+                f"{MAX_WINDOW_HOURS} hours (the USGS hour feed is read in legacy runs only)"]
+    start = compiled_at - window_hours * 3600
+    return [f"{r.id} is timed {r.time}, outside the {window_hours} hours before {compiled_at} that it covers"
+            for r in records if not start <= r.time <= compiled_at]
+
+
+def read_frozen_feed(domain: Domain, snapshot_file: str | Path, *,
+                     legacy: bool = False) -> tuple[bytes, list[Any], int, int]:
     """The frozen bytes of `domain`'s live source in `snapshot_file`, read and checked as a replay
     reads them: (the bytes, their records, the snapshot's compiled_at, its window in hours). A run
-    calls it before it writes anything, so that a file it cannot replay is refused up front.
+    calls it before it writes anything, so that a file it cannot replay is refused up front. A legacy
+    run's frozen USGS feed (`legacy`) is read as build_snapshot reads it: parse_usgs_geojson, over the
+    window its file name gives (1 hour for an hour feed's name, else 24).
 
     FileNotFoundError when the file is not there. ValueError when the domain has no live source, or the
     bytes are not its live source's: its parser cannot read them, they give no record (another
-    source's feed can parse to none), or records that do not suit the domain (record_problems)."""
+    source's feed can parse to none), records that do not suit the domain (record_problems), or (off the
+    legacy path) a snapshot that cannot be right (window_problems); and when the snapshot.json beside them
+    does not describe them (check_sidecar)."""
     live = domain.live
     if live is None:
         raise ValueError(f"{domain.name} has no live source whose frozen bytes could be replayed")
     path = Path(snapshot_file)
     if not path.is_file():
         raise FileNotFoundError(f"the frozen feed {path} is not a file")
-    if path.with_name("snapshot.json").exists():  # what the replay will read beside the bytes (_replayed)
-        read_sidecar(path.with_name("snapshot.json"))
+    sidecar = path.with_name("snapshot.json")
+    meta = read_sidecar(sidecar) if sidecar.exists() else None  # what the replay will read beside the bytes
     raw = path.read_bytes()
     source = f"the live source of {domain.name} ({live.source})"
     try:
-        records, compiled_at, window = live.parse(raw)
+        if legacy:
+            records, compiled_at, _ = parse_usgs_geojson(raw)
+            window = 1 if "hour" in path.name else 24
+        else:
+            records, compiled_at, window = live.parse(raw)
     except PARSE_ERRORS as exc:
         raise ValueError(f"{path} is not a frozen feed of {source}: {type(exc).__name__}: {exc}") from None
     if not records:
@@ -491,29 +781,58 @@ def read_frozen_feed(domain: Domain, snapshot_file: str | Path) -> tuple[bytes, 
     if problems:
         raise ValueError(f"{path} is not a frozen feed of {source}: its records do not suit the domain: "
                          + "; ".join(problems[:3]))
+    problems = [] if legacy else window_problems(records, compiled_at, window)
+    if problems:
+        raise ValueError(f"{path} cannot be replayed off the legacy path: " + "; ".join(problems[:3]))
+    if meta is not None:
+        check_sidecar(meta, raw, sidecar, source=live.source, domain=domain.name, window=window, legacy=legacy)
     return raw, list(records), compiled_at, window
 
 
-def frozen_feed(directory: str | Path, domain: Domain) -> Path | None:
-    """What replays `domain` from the frozen snapshots of an earlier run: the frozen bytes of its live
-    source, or None when that run drew synthetic records for it (synthetic data was asked for, or the
-    source was out of reach and the run fell back), which the same seed draws again.
+def frozen_events_sha256(domain: Domain, raw: bytes, *, legacy: bool = False) -> str:
+    """The events_sha256 of the snapshot that frozen bytes of `domain`'s live source give: read as a legacy run
+    reads a USGS feed (parse_usgs_geojson), or as the domain's live source does."""
+    records = parse_usgs_geojson(raw)[0] if legacy else domain.live.parse(raw)[0]
+    return events_sha256(records)
 
-    `directory` is the run's snapshot folder (or the run's own folder): snapshot/<domain>/ in a run of
-    several domains, snapshot/ itself in a run of one, whose snapshot.json names its domain (a legacy
-    run's names none: its snapshot is of earthquakes). Raises ValueError when the folder holds no
-    snapshot of the domain, or no frozen bytes of the live source its snapshot came from."""
+
+def frozen_folder(directory: str | Path, domain: Domain) -> tuple[Path, dict[str, Any]]:
+    """The folder of `domain`'s frozen snapshot among the frozen snapshots of an earlier run, and its
+    snapshot.json (read_sidecar): snapshot/<domain>/ in a run of several domains, snapshot/ itself in a
+    run of one, whose snapshot.json names its domain (a legacy run's names none: its snapshot is of
+    earthquakes). `directory` is the run's snapshot folder or the run's own. ValueError when it holds no
+    snapshot of the domain."""
     directory = Path(directory)
     for folder in (directory / domain.name, directory, directory / "snapshot" / domain.name, directory / "snapshot"):
         meta = read_sidecar(folder / "snapshot.json") if (folder / "snapshot.json").is_file() else None
         if meta is not None and meta.get("domain", DEFAULT_DOMAIN) == domain.name:
-            break
-    else:
-        raise ValueError(f"{directory} holds no frozen snapshot of {domain.name}")
+            return folder, meta
+    raise ValueError(f"{directory} holds no frozen snapshot of {domain.name}")
+
+
+def frozen_feed(directory: str | Path, domain: Domain) -> Path | None:
+    """What replays `domain` from the frozen snapshots of an earlier run (frozen_folder): the frozen bytes
+    of its live source, or None when that run drew synthetic records for it (synthetic data was asked for,
+    or the source was out of reach and the run fell back), which the same seed draws again.
+
+    Raises ValueError when the folder holds no snapshot of the domain, or no frozen bytes of the live source
+    its snapshot came from; when its snapshot is synthetic while frozen bytes of the domain's live source lie
+    beside it (one of the two was changed); and when it is a legacy run's synthetic snapshot, which a run off
+    the legacy path cannot draw again: it draws its synthetic records with a generator and on seed paths of
+    its own, so that "replay" would be another world under the same seed."""
+    folder, meta = frozen_folder(directory, domain)
     if "source" not in meta:
         raise ValueError(f"{folder / 'snapshot.json'} is not the snapshot.json of a frozen snapshot: it names no source")
     source = meta["source"]
     if source == "synthetic":
+        if "domain" not in meta:
+            raise ValueError(f"{folder / 'snapshot.json'} is a legacy run's synthetic snapshot, which a run off the "
+                             "legacy path cannot draw again (it draws synthetic records on seed paths of its own): "
+                             "regenerate that legacy run from its seed instead")
+        if domain.live is not None and (folder / domain.live.raw_filename).exists():
+            raise ValueError(f"{folder / 'snapshot.json'} says its snapshot of {domain.name} is synthetic, yet frozen "
+                             f"bytes of its live source ({domain.live.raw_filename}) lie beside it: one of the two was "
+                             "changed, so neither is replayed")
         return None
     live = domain.live
     if live is None or live.source != source:
@@ -535,7 +854,8 @@ def _synthetic_domain_snapshot(domain: Domain, seedlog: SeedLog, pool_size: int,
 
 
 def _now() -> str:
-    """The current time, as a snapshot records when its live source was fetched."""
+    """The current time, as a snapshot records when its live source was fetched: by the wall clock, so it is
+    one of a run's volatile values (Snapshot.fetched_at), which a replay off the legacy path keeps as frozen."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -559,13 +879,20 @@ def _checked(domain: Domain, records: Sequence[Any]) -> list[Any]:
     return sorted(records, key=lambda r: (r.time, r.id))
 
 
+def _finite_number(value: Any) -> bool:
+    """Whether `value` is a number (not a bool) that is finite: an int always is."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and (
+        isinstance(value, int) or math.isfinite(value))
+
+
 def record_problems(domain: Domain, records: Sequence[Any]) -> list[str]:
     """What is wrong with snapshot records of `domain`. Each record needs an ID of its own that the
-    scorer can pick out of an answer (the domain's id_pattern), a time in whole seconds, a group, a
-    value for exactly the domain's fields, each stored to its field's places (so that every printed
-    form of it reads back exactly), a location exactly when the domain's records have one, stored to
-    the places of its coordinates, and qualifiers only under the keys of its fields' qualifiers (a
-    digest prints each qualifier with its field's value)."""
+    scorer can pick out of an answer (the domain's id_pattern), a time in whole seconds between
+    EARLIEST_TIME and LATEST_TIME, a group, a value for exactly the domain's fields, each a finite number
+    stored to its field's places (so that every printed form of it reads back exactly), a location exactly
+    when the domain's records have one, on the globe and stored to the places of its coordinates, and
+    qualifiers only under the keys of its fields' qualifiers (a digest prints each qualifier with its
+    field's value)."""
     problems: list[str] = []
     keys = sorted(spec.key for spec in domain.fields)
     qualifier_keys = set(domain.qualifier_keys.values())
@@ -579,18 +906,22 @@ def record_problems(domain: Domain, records: Sequence[Any]) -> list[str]:
             problems.append(f"{r.id} does not match the ID pattern {domain.id_pattern}")
         if not isinstance(r.time, int) or isinstance(r.time, bool):
             problems.append(f"{r.id} is timed {r.time!r}, not in whole seconds")
+        elif not EARLIEST_TIME <= r.time <= LATEST_TIME:
+            problems.append(f"{r.id} is timed {r.time}, not between the years 1800 and 2200")
         if not r.group:
             problems.append(f"{r.id} has no {domain.group_label}")
         if sorted(r.values) != keys:
             problems.append(f"{r.id} has values for {', '.join(sorted(r.values))}, not for {', '.join(keys)}")
         for spec in domain.fields:
             value = r.values.get(spec.key)
-            if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool)
-                                      or round(value, spec.decimals) != value):
+            if value is not None and (not _finite_number(value) or round(value, spec.decimals) != value):
                 problems.append(f"{r.id} has {spec.key} {value!r}, not a number to {spec.decimals} decimal places")
         if (r.lat is None) != (r.lon is None) or (r.lat is not None) != domain.has_location:
             problems.append(f"{r.id} is at ({r.lat}, {r.lon}), but {domain.name} records "
                             + ("have a location" if domain.has_location else "have none"))
+        elif r.lat is not None and not (_finite_number(r.lat) and _finite_number(r.lon)
+                                        and -90 <= r.lat <= 90 and -180 <= r.lon <= 180):
+            problems.append(f"{r.id} is at ({r.lat}, {r.lon}), which is no place on the globe")
         elif coord_decimals is not None and (round(r.lat, coord_decimals) != r.lat
                                              or round(r.lon, coord_decimals) != r.lon):
             problems.append(f"{r.id} is at ({r.lat}, {r.lon}), not to {coord_decimals} decimal places")

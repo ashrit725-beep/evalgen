@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from evalgen import pipeline, scoring
+from evalgen import pipeline, scoring, sources
 from evalgen.digest import LINE_PRESETS, NOTICE_PLACEMENTS, make_chatter
 from evalgen.domains import get_domain
 from evalgen.domains import weather as wx
@@ -375,11 +375,11 @@ def test_fetching_asks_every_station_once_and_freezes_one_bundle(monkeypatch):
                "KORD": FakeResponse("<html>", 200), "KSEA": FakeResponse(served("KSEA")),
                "KDEN": FakeResponse({}, 503)}
 
-    def get(url, params=None, headers=None, timeout=None):
+    def get(url, params=None, headers=None, timeout=None, deadline=None):
         calls.append((url, params, headers, timeout))
         return answers[url.split("/")[-2]]
 
-    monkeypatch.setattr(requests, "get", get)
+    monkeypatch.setattr(sources, "http_get", get)
     monkeypatch.setattr(wx, "_utc_now", lambda: FETCHED + timedelta(microseconds=1234))
     adapter = replace(WEATHER.live, stations=("KJFK", "KORD", "KSEA", "KDEN"))
     raw, url = adapter.fetch()
@@ -400,11 +400,11 @@ def test_fetching_asks_every_station_once_and_freezes_one_bundle(monkeypatch):
         raise requests.ConnectionError("Name or service not known")
 
     calls.clear()  # no network: the first station's failure ends the fetch at once
-    monkeypatch.setattr(requests, "get", unreachable)
+    monkeypatch.setattr(sources, "http_get", unreachable)
     with pytest.raises(requests.ConnectionError):
         adapter.fetch()
     assert len(calls) == 1
-    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResponse({}, 500))  # every station fails
+    monkeypatch.setattr(sources, "http_get", lambda *a, **k: FakeResponse({}, 500))  # every station fails
     with pytest.raises(ValueError, match=r"no station answered with observations \(KJFK: HTTP 500; KORD: HTTP 500; "
                                          r"KSEA: HTTP 500; KDEN: HTTP 500\)"):
         adapter.fetch()
@@ -419,7 +419,7 @@ def test_a_fetch_freezes_each_body_exactly_as_served(monkeypatch):
     bodies = {"KSEA": json.dumps(document, indent=4, ensure_ascii=False).encode("utf-8"),
               "KJFK": json.dumps(served("KJFK"), separators=(",", ":"), ensure_ascii=True).encode("utf-8")
               .replace(b'"Feature"', b'"\\u0046eature"', 1)}
-    monkeypatch.setattr(requests, "get", lambda url, **kwargs: FakeResponse(bodies[url.split("/")[-2]]))
+    monkeypatch.setattr(sources, "http_get", lambda url, **kwargs: FakeResponse(bodies[url.split("/")[-2]]))
     monkeypatch.setattr(wx, "_utc_now", lambda: FETCHED)
     adapter = replace(WEATHER.live, stations=("KSEA", "KJFK"), min_records=2)
     raw, _ = adapter.fetch()
@@ -450,7 +450,7 @@ def test_a_station_that_fails_on_its_own_is_recorded_and_the_others_are_kept(mon
             raise failures[station]
         return FakeResponse({"type": "FeatureCollection", "features": served_by[station]})
 
-    monkeypatch.setattr(requests, "get", get)
+    monkeypatch.setattr(sources, "http_get", get)
     monkeypatch.setattr(wx, "_utc_now", lambda: FETCHED)
     assert STATIONS[0].id == "KBOS"  # the first request times out: not a missing network
     snapshot, raw = build_domain_snapshot(WEATHER, "live", SeedLog(2))
@@ -526,7 +526,7 @@ def test_a_live_run_is_frozen_and_its_replay_reproduces_it(tmp_path, monkeypatch
     by_station = {s.id: [nws_feature(r) for r in served if r.source == s.id] for s in STATIONS}
     monkeypatch.setattr(wx, "_utc_now", lambda: FETCHED)
     with monkeypatch.context() as api:
-        api.setattr(requests, "get", lambda url, **kwargs: FakeResponse(
+        api.setattr(sources, "http_get", lambda url, **kwargs: FakeResponse(
             {"type": "FeatureCollection", "features": by_station[url.split("/")[-2]]}))
         live = pipeline.generate(GenerateConfig(seed=5, instances=3, mix="weather:classic", source="live"),
                                  tmp_path / "live", log=quiet)

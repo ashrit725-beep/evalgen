@@ -54,14 +54,17 @@ import math
 import random
 import re
 import textwrap
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import requests
+from urllib3.exceptions import ProtocolError
 
+from .. import sources
 from ..geo import haversine_km
-from ..sources import USER_AGENT
+from ..sources import EARLIEST_TIME, LATEST_TIME, USER_AGENT, failure_text, read_feed_json
 from ..units import Unit
 from ..util import parse_utc_iso
 from .base import DISTANCE_WORDINGS, RULES_WIDTH, Domain, FieldSpec, Lexicon, Record, Spatial, TrapVocab, record_rules
@@ -528,8 +531,26 @@ NWS_VALUES: Mapping[str, tuple[str, Mapping[str, Convert], tuple[float, float]]]
 
 
 def _utc_now() -> datetime:
-    """The clock, read only when the live source is fetched (never when a bundle is parsed)."""
+    """The clock, read only when the live source is fetched (never when a bundle is parsed). The fetch time
+    is the bundle's fetched_at, which is the snapshot's compiled_at: a live weather snapshot's window ends
+    when it was fetched (and its replay keeps that time, which the frozen bundle holds)."""
     return datetime.now(timezone.utc)
+
+
+_clock = time.monotonic  # what a fetch measures its time budget by
+
+
+def _never_connected(exc: requests.RequestException) -> bool:
+    """Whether a request failed before it reached the server: it timed out connecting, or no connection could
+    be made at all (no network, a name that does not resolve, a proxy that refuses it), as against a
+    connection that was made and then dropped (a ConnectionError of a ProtocolError: "Connection aborted.")
+    or an answer that was too slow."""
+    if isinstance(exc, requests.ConnectTimeout):
+        return True
+    if not isinstance(exc, requests.ConnectionError):
+        return False
+    reason = exc.args[0] if exc.args else None
+    return not isinstance(reason, (ProtocolError, OSError))
 
 
 def _iso(moment: datetime) -> str:
@@ -563,7 +584,9 @@ class NwsObservations:
     min_records: int = 40  # fewer usable observations than this and the snapshot falls back to synthetic
     window_hours: int = 24
     limit: int = 500  # observations asked per station (the API's maximum; a day of five-minute data is 288)
-    timeout: float = 20.0
+    timeout: float = 20.0  # seconds to connect to a station's endpoint, and for each read of its answer
+    deadline: float = 30.0  # seconds for one station's whole answer
+    budget: float = 120.0  # seconds for the whole fetch: once they are spent, no other station is asked
     source: str = "nws"
     raw_filename: str = "raw_feed.json"
     user_agent: str = USER_AGENT
@@ -571,27 +594,34 @@ class NwsObservations:
     def fetch(self) -> tuple[bytes, str]:
         """Every station's observations as one bundle: (its bytes, the URL asked for each station).
 
-        Each response is kept as served, its HTTP status and the exact text of its body (UTF-8, as JSON
-        is), whatever the status; parse decides what can be read. A request that fails on its own (a
-        timeout, a connection dropped after the first station answered, a body that is not UTF-8) is
-        recorded as an error for that station, and the other stations are still asked. Only a first
-        request that cannot connect (no network: the others would not either) raises at once, and a
-        fetch in which no station answered with observations raises ValueError."""
+        Each station is asked once, as every live source is (sources.http_get), within `deadline` seconds,
+        and the whole fetch within `budget` seconds: a station still to be asked once they are spent is
+        recorded as not asked, so that an API that holds every connection open costs the budget, not every
+        station's deadline. Each response is kept as served, its HTTP status and the exact text of its body
+        (UTF-8, as JSON is), whatever the status; parse decides what can be read. A request that fails on
+        its own (a timeout, a connection dropped, a body that is not UTF-8) is recorded as an error for that
+        station, and the other stations are still asked. Only a first request that cannot connect at all (no
+        network, or no route to the API: the others would not connect either; _never_connected) raises at
+        once. A fetch in which no station answered with a body that parse can read as JSON (a 2xx status)
+        raises ValueError; answers that hold too few usable observations fall back later, through
+        min_records (sources.build_domain_snapshot)."""
         fetched_at = _utc_now().replace(microsecond=0)
         params = {"start": _iso(fetched_at - timedelta(hours=self.window_hours)), "limit": self.limit}
         headers = {"User-Agent": self.user_agent, "Accept": "application/geo+json"}
         responses: dict[str, Any] = {}
+        started = _clock()
         for index, station in enumerate(self.stations):
-            try:
-                response = requests.get(OBSERVATIONS_URL.format(station=station), params=params, headers=headers,
-                                        timeout=self.timeout)
-            except requests.ConnectionError as exc:  # a timeout while connecting too
-                if index == 0:
-                    raise
-                responses[station] = {"error": f"{type(exc).__name__}: {exc}"}
+            left = self.budget - (_clock() - started)
+            if left <= 0:
+                responses[station] = {"error": f"not asked: the fetch had spent its {self.budget:g} s"}
                 continue
-            except requests.RequestException as exc:  # a timeout reading this station's answer, say
-                responses[station] = {"error": f"{type(exc).__name__}: {exc}"}
+            try:
+                response = sources.http_get(OBSERVATIONS_URL.format(station=station), params=params, headers=headers,
+                                            timeout=self.timeout, deadline=min(self.deadline, left))
+            except requests.RequestException as exc:  # a timeout, or a connection dropped or never made
+                if index == 0 and _never_connected(exc):
+                    raise
+                responses[station] = {"error": failure_text(exc)}
                 continue
             try:
                 responses[station] = {"status": response.status_code, "body": response.content.decode("utf-8")}
@@ -611,13 +641,18 @@ class NwsObservations:
         """The bundle's observations as Records, its fetch time (the snapshot's compiled_at) and its
         window. Each station's body is read as JSON when the API answered it with success; only stations
         in the table count; an observation outside the window, without a value of every field, or with
-        a value the NWS rejected or questioned, is dropped; of each station's observations in one UTC
-        hour, the latest hourly METAR is kept, or else the latest observation. Raises ValueError (or
-        KeyError) on bytes that are not a bundle."""
-        bundle = json.loads(raw.decode("utf-8"))
+        a value the NWS rejected or questioned (or a quality code that is not a code), is dropped; a
+        station whose body holds something of another shape than the API's is left out, and the other
+        stations are kept; of each station's observations in one UTC hour, the latest hourly METAR is
+        kept, or else the latest observation. Raises ValueError (or KeyError) on bytes that are not a
+        bundle, JSON nested too deeply to read included, and on a bundle fetched outside the years 1800
+        to 2200."""
+        bundle = read_feed_json(raw, "the bundle of NWS observations")
         if not isinstance(bundle, dict) or bundle.get("format") != BUNDLE_FORMAT:
             raise ValueError(f"not a bundle of NWS observations ({BUNDLE_FORMAT})")
         compiled_at = parse_utc_iso(str(bundle["fetched_at"]))
+        if not EARLIEST_TIME <= compiled_at <= LATEST_TIME:
+            raise ValueError(f"the bundle says it was fetched at {str(bundle['fetched_at'])[:40]!r}, which no bundle was")
         window, stations = bundle.get("window_hours", self.window_hours), bundle["stations"]
         if isinstance(window, bool) or not isinstance(window, int) or not 1 <= window <= 24 * 7:
             raise ValueError(f"the bundle covers {window!r} hours, not a whole number of hours up to a week")
@@ -627,18 +662,25 @@ class NwsObservations:
         readings = []
         for station_id, response in stations.items():
             station = STATION_BY_ID.get(station_id)
-            if station is None:
-                continue
-            for feature in _features(_payload(response)):
-                reading = _reading(feature, station)
-                if reading is not None and start <= reading.time < compiled_at:
-                    readings.append(reading)
+            if station is not None:
+                readings += _station_readings(response, station, start, compiled_at)
         return _identified(_hourly(readings)), compiled_at, window
+
+
+def _station_readings(response: Any, station: Station, start: int, end: int) -> list[_Reading]:
+    """The usable observations of one station's frozen response, timed in [start, end): none at all when
+    its body holds something of another shape than the API's, which leaves the other stations as read."""
+    try:
+        readings = [_reading(feature, station) for feature in _features(_payload(response))]
+    except (TypeError, ValueError, KeyError, AttributeError, ArithmeticError):
+        return []
+    return [r for r in readings if r is not None and start <= r.time < end]
 
 
 def _payload(response: Any) -> Any:
     """What one station's frozen response says: its body read as JSON, when the API answered with
-    success (a 2xx status); None for an error status, a failed request or a body that is not JSON."""
+    success (a 2xx status); None for an error status, a failed request or a body that is not JSON
+    (or JSON nested too deeply to read)."""
     if not isinstance(response, dict) or not isinstance(response.get("body"), str):
         return None
     status = response.get("status")
@@ -646,7 +688,7 @@ def _payload(response: Any) -> Any:
         return None
     try:
         return json.loads(response["body"])
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
 
 
@@ -660,11 +702,13 @@ def _failure(response: Any) -> str:
 
 def _features(payload: Any) -> list[Mapping[str, Any]]:
     """The observations of one station's response: a feature collection (the observations endpoint)
-    or a single feature (the latest-observation endpoint); none for anything else."""
+    or a single feature (the latest-observation endpoint); none for anything else, a collection whose
+    features are not a list included."""
     if not isinstance(payload, dict):
         return []
     if payload.get("type") == "FeatureCollection":
-        return [f for f in payload.get("features") or [] if isinstance(f, dict)]
+        features = payload.get("features")
+        return [f for f in features if isinstance(f, dict)] if isinstance(features, list) else []
     return [payload] if payload.get("type") == "Feature" else []
 
 
@@ -675,7 +719,7 @@ def _reading(feature: Mapping[str, Any], station: Station) -> _Reading | None:
         return None
     try:
         when = parse_utc_iso(str(props["timestamp"]))
-    except (KeyError, ValueError):
+    except (KeyError, ValueError, OverflowError):
         return None
     values = {}
     for key, (name, units, (low, high)) in NWS_VALUES.items():
@@ -689,13 +733,15 @@ def _reading(feature: Mapping[str, Any], station: Station) -> _Reading | None:
 
 def _value(quantity: Any, units: Mapping[str, Convert]) -> float | None:
     """A quantity of the API ({"unitCode": "wmoUnit:degC", "value": 11, "qualityControl": "V"}) in the
-    canonical unit, or None when it has no value, a unit not in `units`, or a rejected value."""
+    canonical unit, or None when it has no value, a unit not in `units`, a rejected value, or a quality
+    code that is not a code (text), which cannot say the value was not rejected."""
     if not isinstance(quantity, dict):
         return None
     value, code = quantity.get("value"), str(quantity.get("unitCode") or "")
     convert = units.get(code.rsplit(":", 1)[-1])
-    if (convert is None or quantity.get("qualityControl") in REJECTED_QC or isinstance(value, bool)
-            or not isinstance(value, (int, float)) or not math.isfinite(value)):
+    quality = quantity.get("qualityControl")
+    if (convert is None or (quality is not None and (not isinstance(quality, str) or quality in REJECTED_QC))
+            or isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)):
         return None
     return float(convert(float(value)))
 

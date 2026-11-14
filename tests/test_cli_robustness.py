@@ -15,7 +15,7 @@ import pytest
 import requests
 
 import cli
-from evalgen import pipeline
+from evalgen import pipeline, sources
 from evalgen.adapters import UnknownModel
 from evalgen.domains import all_domains
 from evalgen.domains import weather as wx
@@ -79,8 +79,9 @@ def test_path_options_may_be_given_as_paths(tmp_path):
                                                       snapshot_file=WEATHER_FEED), tmp_path / "file", log=quiet)
     replay = pipeline.generate(pipeline.GenerateConfig(seed=7, instances=1, mix="weather", source="live",
                                                        snapshot_dir=first / "snapshot"), tmp_path / "dir", log=quiet)
-    for run, key, given in ((first, "snapshot_file", WEATHER_FEED), (replay, "snapshot_dir", first / "snapshot")):
-        assert read_json(run / "manifest.json")["config"][key] == str(given)
+    # Recorded by the run's folder ("file/snapshot"), or by its own name: no place on the evaluator's machine.
+    for run, key, recorded in ((first, "snapshot_file", WEATHER_FEED.name), (replay, "snapshot_dir", "file/snapshot")):
+        assert read_json(run / "manifest.json")["config"][key] == recorded
     assert (first / "prompts").is_dir() and (replay / "instances" / "inst-000.json").read_bytes() == (
         first / "instances" / "inst-000.json").read_bytes()
 
@@ -268,7 +269,7 @@ def test_an_offline_live_run_regenerates_byte_for_byte(tmp_path, monkeypatch):
             f"NewConnectionError('<urllib3.connection.HTTPSConnection object at 0x{id(params):x}>: Failed to "
             "establish a new connection: [Errno 61] Connection refused'))")
 
-    monkeypatch.setattr(wx.requests, "get", unreachable)
+    monkeypatch.setattr(sources, "http_get", unreachable)
     runs = []
     for minute in (1, 2):
         monkeypatch.setattr(wx, "_utc_now", lambda minute=minute: datetime(2026, 11, 9, 3, minute, tzinfo=timezone.utc))
