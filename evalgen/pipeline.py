@@ -343,14 +343,14 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
                                               answer_key[q.qid], unit=q.unit),
         }
     chatter_after: list[int | None] | None = None
-    if off_legacy:  # no line about a source's station names a window in which it filed a report, nor is posted early
+    if off_legacy:  # no line names a window that holds a report made at its station, nor is posted early
         timed = timed_chatter(seedlog.rng("instance", index, "chatter"), snapshot.compiled_at,
-                              sorted({e.source for e in events}), domain.chatter, domain.words,
-                              [(g.source, g.time) for g in map(domain.to_generic, reports)])
+                              sorted({domain.status_station(e) for e in events}), domain.chatter, domain.words,
+                              [(domain.status_station(g), g.time) for g in map(domain.to_generic, reports)])
         chatter, chatter_after = [text for text, _ in timed], [after for _, after in timed]
-    else:
+    else:  # the 0.2.0 call: the 0.2.0 lines (digest.CHATTER)
         chatter = make_chatter(seedlog.rng("instance", index, "chatter"), snapshot.compiled_at,
-                               sorted({e.source for e in events}), domain.chatter, domain.words)
+                               sorted({e.source for e in events}))
     forecaster = domain.forecaster
     forecast = None
     if forecaster is not None and snapshot.source == forecaster.source:

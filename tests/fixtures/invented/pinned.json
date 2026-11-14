@@ -1,5 +1,5 @@
 {
-  "about": "What seed 20261108 draws in the invented domain alone: its synthetic snapshot (360 records) and the surfaces of the first three instances of a run (seed path instance/i/surface). tests/test_domain_invented.py checks that the same seed still draws exactly these. The surfaces were pinned again when common English words of two and three letters joined the words no surface may coin (invented.COMMON_WORDS), when the chatter's reminder about units was reworded (units vary from entry to entry, not by source), and when each unit gained its words for one of it (Unit.one, which questions write after a 1); the snapshot and the surfaces were pinned again when clearing agencies (invented.RELAYS) and batches of lots (invented.BATCH_SHARE) joined the world. The surfaces were pinned again when \"repeat filing of\" left the duplicate notes (invented.DUPLICATE_NOTES), since the reading rules call a quoted or read-back copy a repeat.",
+  "about": "What seed 20261108 draws in the invented domain alone: its synthetic snapshot (360 records) and the surfaces of the first three instances of a run (seed path instance/i/surface). tests/test_domain_invented.py checks that the same seed still draws exactly these. The surfaces were pinned again when common English words of two and three letters joined the words no surface may coin (invented.COMMON_WORDS), when the chatter's reminder about units was reworded (units vary from entry to entry, not by source), and when each unit gained its words for one of it (Unit.one, which questions write after a 1); the snapshot and the surfaces were pinned again when clearing agencies (invented.RELAYS) and batches of lots (invented.BATCH_SHARE) joined the world. The surfaces were pinned again when \"repeat filing of\" left the duplicate notes (invented.DUPLICATE_NOTES), since the reading rules call a quoted or read-back copy a repeat. The surfaces were pinned again when the chatter lines that name a window gave its date, and its end's date across midnight ({date}, {until}), and when the chatter lost two words of the notes and notices a surface may draw, which the rules then quote (\"ledger\", of \"struck from the ledger\", and \"entry\", of \"double entry of\").",
   "seed": 20261108,
   "pool_size": 360,
   "compiled_at": 1787378400,
@@ -124,11 +124,11 @@
         ]
       },
       "chatter": [
-        "Ledger maintenance ran from {h1} to {h2} UTC; filing resumed afterwards.",
+        "Scheduled maintenance ran from {h1} UTC on {date} until {until}; filing resumed afterwards.",
         "No {group_label} reported a closure in this period.",
         "Gate traffic at several {group_label}s was heavier than usual.",
-        "The {source_label} feeds were briefly out of step between {h1} and {h2} UTC; nothing was lost.",
-        "Editor's note: entries are reproduced exactly as each {source_label} filed them, units included."
+        "The {source_label} feeds were briefly out of step from {h1} UTC on {date} until {until}; nothing was lost.",
+        "Editor's note: everything is reproduced exactly as each {source_label} filed it, units included."
       ]
     },
     {
@@ -235,9 +235,9 @@
       },
       "chatter": [
         "No {group_label} reported a closure in this period.",
-        "Ledger maintenance ran from {h1} to {h2} UTC; filing resumed afterwards.",
+        "Scheduled maintenance ran from {h1} UTC on {date} until {until}; filing resumed afterwards.",
         "Gate traffic at several {group_label}s was heavier than usual.",
-        "Reminder: units vary from entry to entry; read the unit printed with every value, and convert it as the glossary says.",
+        "Reminder: units vary from line to line; read the unit printed with every value, and convert it as the glossary says.",
         "Late {plural} may be listed in the next edition instead."
       ]
     },
@@ -336,11 +336,11 @@
         ]
       },
       "chatter": [
-        "Reminder: units vary from entry to entry; read the unit printed with every value, and convert it as the glossary says.",
+        "Reminder: units vary from line to line; read the unit printed with every value, and convert it as the glossary says.",
         "Gate traffic at several {group_label}s was heavier than usual.",
-        "The {source_label} feeds were briefly out of step between {h1} and {h2} UTC; nothing was lost.",
+        "The {source_label} feeds were briefly out of step from {h1} UTC on {date} until {until}; nothing was lost.",
         "Late {plural} may be listed in the next edition instead.",
-        "Ledger maintenance ran from {h1} to {h2} UTC; filing resumed afterwards."
+        "Scheduled maintenance ran from {h1} UTC on {date} until {until}; filing resumed afterwards."
       ]
     }
   ]

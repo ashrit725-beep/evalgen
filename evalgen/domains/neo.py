@@ -17,9 +17,12 @@ the largest and the smallest miss distance); H takes part in thresholds only.
     absolute magnitude  H, a plain number stored to 3 decimals (a smaller H is a larger object)
 
 Close approaches span weeks, not hours. Synthetic snapshots cover 30 days, and a live one the whole
-UTC days its approaches fall in, so time windows lie on 3- or 6-hour marks and keep one or two hours
-clear of every approach (questions.Context), and a question about the time of an approach asks for
-its UTC time of day.
+UTC days its approaches fall in (about 60 for the 60 days the live query asks for). Time windows scale
+with that length (questions.Context): their ends lie on marks of five minutes per day of the window,
+rounded up to the next mark of questions.TIME_STEPS_S (3 hours for 25 to 36 days, so for 30; 6 hours for
+37 to 72, so for 60), and every approach lies at least two minutes per day of the window from their ends
+(an hour for 30 days, two hours for 60, 56 minutes for the 28 days of the frozen CAD fixture the tests
+replay). A question about the time of an approach asks for its UTC time of day.
 
 An object's designation repeats across its approaches (2026 VK2 passes Earth, then the Moon ten hours
 later), so an approach ID is the designation without spaces, "-ca" and the number of the object's
@@ -98,10 +101,14 @@ RELATIVE_VELOCITY = FieldSpec(
     filters=("at_least", "below"), correctable=True,
     terminals=("argmax", "max", "time_of_max"),  # no rank: the one rank template, P09, is spatial
 )
+# Printed exactly as stored, like an earthquake's magnitude, so it needs no margin: a threshold is an
+# approach's own H rounded to half a magnitude, with no jitter, and lands on an H of the digest whenever that H
+# is a multiple of 0.5 (most H have one to three decimals, so it seldom does). Such a question turns on "at
+# least" against "below", which the wording states exactly.
 ABSOLUTE_MAGNITUDE = FieldSpec(
     key="h", label="absolute magnitude", canonical_unit=None, units=(), decimals=3,
     answer_type="neo_absolute_magnitude", tolerance=(0.05, 0.0),
-    margin=(0.0, 0.0),  # printed exactly as stored, like an earthquake's magnitude
+    margin=(0.0, 0.0),
     rank_gap=0.0, quantiles=(0.2, 0.8), threshold_step=0.5, filters=("below", "at_least"), terminals=(),
 )
 
@@ -160,10 +167,11 @@ TRAP_VOCAB = TrapVocab(
     correction_notices=("revised to", "recomputed as", "corrected to"),
 )
 
-# Lines that carry no data ({station}, {h1}, {h2}, {date} and the domain's words are filled in by
-# digest.make_chatter); none reads like a report or a notice, and none holds a number.
+# Lines that carry no data ({station}, {h1}, {date}, {until} and the domain's words are filled in by
+# digest.timed_chatter); none reads like a report or a notice, none holds a number, and none uses a word that the
+# rules give a meaning ("mirror", which a re-report's note "mirror of" uses, once named the catalogue's server).
 CHATTER = (
-    "The {source_label} mirror {station} was offline from {h1} UTC on {date} until {h2} UTC.",
+    "The {source_label} server {station} was offline from {h1} UTC on {date} until {until}.",
     "Miss distances are nominal values; the uncertainty of each approach is not reproduced here.",
     "No impact risk was flagged for any object in this digest.",
     "Editor's note: entries are reproduced exactly as each {source_label} filed them, units and time conventions "

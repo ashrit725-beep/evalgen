@@ -9,7 +9,9 @@ differ), with rule 9 naming the greetings and signatures that emails and chats p
 two genre-neutral rules that every genre's quotes, read-backs, forwards and message times need
 (``GENRE_READING_RULES``, ``rules_text``). Its questions there drop the one 0.2.0 wording that reads as
 a range beside a depth ("with a depth of 16 km or more and no more than 40 km from ..."):
-``GENRE_LEXICON``, ``prompt_lexicon``. Records stay the 0.2.0 types: ``models.Event`` (the snapshot)
+``GENRE_LEXICON``, ``prompt_lexicon``; and its digests print the 0.2.0 chatter but for the status line, which
+says when a station was offline, with the date, not that its readings were left out (``GENRE_CHATTER``).
+Records stay the 0.2.0 types: ``models.Event`` (the snapshot)
 and ``models.Report`` (a digest line); genres other than classic write and read Reports and magnitude
 corrections in the generic form of every domain (``to_generic``, ``from_generic``).
 
@@ -41,12 +43,19 @@ from .base import (DISTANCE_WORDINGS, NOTICE_RULE, REPEAT_RULE, Domain, FieldSpe
 
 # Margin guards: no event may sit this close to a threshold, so that display rounding (0.1 km or mi,
 # 0.001 degrees, minute-precision times) can never change a correct answer. Magnitudes need no
-# margin: digests print them exactly as stored.
+# margin: digests print them exactly as stored. A magnitude threshold is an event's own magnitude
+# rounded to 0.1, with no jitter, so it usually equals the magnitude of an event of the digest: such a
+# question turns on "at least" (which keeps that event) against "below" (which drops it), which the
+# wording states exactly.
 DEPTH_MARGIN_KM, DEPTH_MARGIN_REL = 0.6, 0.03
 DISTANCE_MARGIN_KM, DISTANCE_MARGIN_REL = 3.0, 0.06
 MAG_GAP = 0.1  # ranked answers: every gap down to the asked rank must be at least 0.1
 NEAREST_GAP_KM, NEAREST_GAP_REL = 3.0, 0.08  # the nearest quake must beat the runner-up clearly
-NEAREST_MAX_KM = 500.0  # keeps "nearest" questions local, so the 3% distance tolerance stays tight
+# Keeps "nearest" questions local, so the 3% distance tolerance stays tight: the bound of every such question
+# as it is composed, and of every one on the legacy path. Off the legacy path a question whose place is drawn
+# again near a report of the digest once its traps are planted (questions.reanchor_nearest) has no bound: its
+# nearest event can lie thousands of km away, the nearest gap still clear.
+NEAREST_MAX_KM = 500.0
 RADII = {
     "km": (25, 30, 40, 50, 60, 75, 100, 125, 150, 200, 250, 300),
     "mi": (15, 20, 25, 30, 40, 50, 60, 75, 100, 125, 150, 200),
@@ -54,7 +63,9 @@ RADII = {
 
 MAGNITUDE = FieldSpec(
     key="mag", label="magnitude", canonical_unit=None, units=(),
-    decimals=2,  # stored as the feed gives it (USGS: up to 2 decimals); answers are stored values
+    # Stored to 2 decimals, as the USGS feed gives most magnitudes (a few come with more, which the feed's
+    # reader rounds to 2: sources.parse_usgs_geojson); answers are stored values
+    decimals=2,
     answer_type="magnitude", tolerance=(0.05, 0.0), margin=(0.0, 0.0), rank_gap=MAG_GAP,
     quantiles=(0.25, 0.85), threshold_step=0.1,
     filters=("at_least", "below"), terminals=("argmax", "rank", "max", "time_of_max"),
@@ -153,6 +164,15 @@ def genre_lexicon(lexicon: Lexicon) -> Lexicon:
 
 GENRE_LEXICON = genre_lexicon(LEXICON)
 
+# The chatter of earthquake digests off the legacy path: the 0.2.0 lines (digest.CHATTER), which legacy
+# digests print, but for the status line. Its 0.2.0 wording ("Station CI.WBN was offline from 15:18 to
+# 16:19 UTC for maintenance; its readings are not included.") says that the station's readings were left out
+# of the digest, which is no line's to say, and gives no date; off the legacy path it says when the station was
+# offline, with the date, as every domain's status line does, and its window holds no report of the station's
+# network (digest.timed_chatter).
+GENRE_CHATTER = ("Station {station} was offline for maintenance from {h1} UTC on {date} until {until}.",
+                 *CHATTER[1:])
+
 # The wording of the 0.2.0 traps. traps.py plants with the sources and reasons; digest.py prints the
 # notes and notices (solver.py parses exactly these phrases), and rules.READING_RULES names them.
 TRAP_VOCAB = TrapVocab(
@@ -219,12 +239,19 @@ COLLAPSED_S, COLLAPSED_KM = 3, 15.0  # solutions this close are one quake (sourc
 
 
 def synthetic_world(rng: random.Random, n: int, compiled_at: int, window_hours: int) -> list[Event]:
-    """`n` synthetic events of the 0.2.0 world (sources.generate_synthetic) as runs off the legacy path
+    """Up to `n` synthetic events of the 0.2.0 world (sources.generate_synthetic) as runs off the legacy path
     draw them: a share of them filed by a relay network instead (RELAY_FILINGS, with an ID and a magnitude
-    type of that network's), and AFTERSHOCK_SHARE of them aftershocks of the others: 8 seconds to hours
-    after a mainshock drawn by the 0.2.0 weights (1.5 ** magnitude), a few km from it, at about its depth,
-    0.5 to 2 magnitudes smaller, from its network. No two events are one quake's solutions (within 3 s
-    and 15 km of each other), as no two of a real feed's are."""
+    type of that network's), and AFTERSHOCK_SHARE of them aftershocks of the others: 23 seconds to hours
+    after a mainshock drawn by the 0.2.0 weights (1.5 ** magnitude) among the events of magnitude 2 or more
+    (among all of them when there is none), a few km from it, at about its depth, 0.5 to 2 magnitudes
+    smaller, from its network. No two events are one quake's solutions (within 3 s and 15 km of each
+    other), as no two of a real feed's are.
+
+    A world holds fewer than `n` events when the 0.2.0 world merges two of its events as one quake's
+    solutions (sources.collapse_duplicate_solutions, as 0.2.0 does), or when its aftershocks cannot all be
+    placed in 50 tries apiece (a try fails when the aftershock would come after the compilation, lie below
+    the least magnitude its network files, or be one quake with another event). A small world often holds
+    fewer (a few dozen events or less); a pool of the default 360 events is all but always full."""
     n_after = round(n * AFTERSHOCK_SHARE) if n >= 4 else 0
     events = []
     first = generate_synthetic(rng, n - n_after, compiled_at, window_hours)
@@ -236,7 +263,9 @@ def synthetic_world(rng: random.Random, n: int, compiled_at: int, window_hours: 
                             mag_type=synthetic_mag_type(rng, network, e.mag))
                 break
         events.append(e)
-    mains = [e for e in events if e.mag >= 2.0] or events
+    # A copy, never `events` itself: the aftershocks appended to `events` below are no mainshocks, and `weights`
+    # holds one weight per mainshock (drawing from the growing list raised a ValueError).
+    mains = [e for e in events if e.mag >= 2.0] or list(events)
     weights = [1.5 ** e.mag for e in mains]
     for _ in range(50 * n_after):
         if len(events) >= n:
@@ -298,7 +327,7 @@ class Earthquakes(Domain):
     id_answer_type = "event_id"
     group_answer_type = "region"
     trap_vocab = TRAP_VOCAB
-    chatter = CHATTER
+    chatter = GENRE_CHATTER  # off the legacy path; legacy digests print the 0.2.0 lines (digest.CHATTER)
 
     # An aftershock is its mainshock's near twin: off the legacy path a digest often lists the event of its
     # region nearest in time to one it lists, within a quarter of an hour (pipeline.sample_with_slots).
@@ -315,9 +344,10 @@ class Earthquakes(Domain):
         return record.group
 
     def synthetic(self, rng: random.Random, n: int, compiled_at: int, window_hours: int) -> list[Event]:
-        """`n` synthetic events off the legacy path: the 0.2.0 world (sources.generate_synthetic), with
-        aftershocks, and with a share of the events filed by the networks that re-report others' events.
-        A legacy run draws its snapshot from sources.generate_synthetic itself, through build_snapshot."""
+        """Up to `n` synthetic events off the legacy path (synthetic_world says when there are fewer): the
+        0.2.0 world (sources.generate_synthetic), with aftershocks, and with a share of the events filed by
+        the networks that re-report others' events. A legacy run draws its snapshot from
+        sources.generate_synthetic itself, through build_snapshot."""
         return synthetic_world(rng, n, compiled_at, window_hours)
 
     def new_id(self, source: str, rng: random.Random, taken: set[str]) -> str:

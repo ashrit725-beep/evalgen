@@ -292,9 +292,10 @@ def test_the_seed_pins_the_world_and_every_surface():
     were pinned again, deliberately, when common English words joined the words no surface may coin,
     when the chatter's reminder about units was reworded, when each unit gained its words for one of it,
     and with the world, when clearing agencies and batches of lots joined the world, so that the agencies
-    that re-report lots file lots too and real lots are sometimes as close as a re-report; and once more
+    that re-report lots file lots too and real lots are sometimes as close as a re-report; once more
     when "repeat filing of", a word the rules give to quoted and read-back copies, left the duplicate
-    notes.)"""
+    notes; and when the chatter lines that name a window gave its date, and lost "Ledger" and "entry",
+    words of notes and notices that the rules quote.)"""
     pinned = read_json(FIXTURES / "pinned.json")
     log = SeedLog(pinned["seed"])
     snapshot, raw = build_domain_snapshot(INVENTED, "synthetic", log, pool_size=pinned["pool_size"])
