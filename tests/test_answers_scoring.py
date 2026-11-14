@@ -39,11 +39,13 @@ def test_truncated_reply_is_salvaged_by_line_scraping():
     assert reply.status == "lenient" and reply.answers == {"Q1": 7, "Q2": 3.4}
 
 
-def test_the_most_complete_final_answer_wins():
+def test_the_most_complete_answer_wins_and_complete_answers_that_disagree_are_no_answer():
     expected = ["Q1", "Q2", "Q3"]
-    draft_then_commented_final = ('Draft: {"answers": {"Q1": 1, "Q2": 2, "Q3": 3}}\n'
+    draft_then_commented_final = ('Draft: {"answers": {"Q1": 1, "Q2": 5, "Q3": 6}}\n'
                                   'Final:\n{"answers": {"Q1": 4, /* re-checked */ "Q2": 5, "Q3": 6}}')
-    assert parse_reply(draft_then_commented_final, expected).answers == {"Q1": 4, "Q2": 5, "Q3": 6}
+    answers = parse_reply(draft_then_commented_final, expected).answers
+    assert answers["Q2"] == 5 and answers["Q3"] == 6  # the commented object is read, and agrees on these
+    assert normalize("count", answers["Q1"]) is None  # two complete answers that disagree on Q1: a hedge
     full_then_stray_note = '{"answers": {"Q1": 4, "Q2": 5, "Q3": 6}}\nNote: earlier I wrote {"Q1": 5}.'
     assert parse_reply(full_then_stray_note, expected).answers == {"Q1": 4, "Q2": 5, "Q3": 6}
 

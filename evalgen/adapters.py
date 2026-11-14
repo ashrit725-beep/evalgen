@@ -318,14 +318,57 @@ def is_truncated(record: dict) -> bool:
 def token_usage(record: dict) -> tuple[int | None, int | None]:
     """(input, output) tokens of a stored reply as the API reported them (Anthropic or OpenAI wording).
     Anthropic counts cached prompt tokens separately, so they are added back in; output tokens include
-    any thinking the model did. (None, None) when the reply carries no usage, e.g. a reference solver."""
-    usage = (record.get("meta") or {}).get("usage") or {}
+    any thinking the model did. (None, None) when the reply carries no usage, e.g. a reference solver; a
+    count that is not an integer (a reply edited by hand) counts as not reported."""
+    meta = record.get("meta")
+    usage = meta.get("usage") if isinstance(meta, dict) else None
+    if not isinstance(usage, dict):
+        return None, None
+
+    def count(key: str) -> int | None:
+        value = usage.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
     if "input_tokens" in usage or "output_tokens" in usage:
-        prompt = sum(usage.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
-        return prompt, usage.get("output_tokens")
+        prompt = sum(count(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+        return prompt, count("output_tokens")
     if "prompt_tokens" in usage or "completion_tokens" in usage:
-        return usage.get("prompt_tokens"), usage.get("completion_tokens")
+        return count("prompt_tokens"), count("completion_tokens")
     return None, None
+
+
+def _unexpected(data: Any, why: str) -> AdapterError:
+    """A 200 response whose body is not the shape the API documents: the call failed, and the next `run`
+    asks the prompt again (an OpenAI-compatible server or a proxy may answer with anything)."""
+    return AdapterError(f"unexpected response body ({why}): {_shown(data)}")
+
+
+def _shown(data: Any) -> str:
+    try:
+        return json.dumps(data)[:300]
+    except (TypeError, ValueError, RecursionError):  # nested too deep to write back
+        return f"a {type(data).__name__}"
+
+
+def _kept(value: Any) -> Any:
+    """A value of a response body as a stored reply keeps it (its model, stop reason, usage): as it is when
+    it can be written back as JSON, else None (a server can nest it too deep for that)."""
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError, RecursionError):
+        return None
+    return value
+
+
+def _text_parts(parts: Any, data: Any, what: str) -> str:
+    """The text of a list of content blocks or parts ({"type": "text", "text": "..."}), one per line, the
+    others (thinking, tool use) left out; AdapterError when it is no such list."""
+    if not isinstance(parts, list) or not all(isinstance(part, dict) for part in parts):
+        raise _unexpected(data, f"{what} is not a list of objects")
+    texts = [part.get("text") for part in parts if part.get("type") == "text"]
+    if not all(isinstance(text, str) for text in texts):
+        raise _unexpected(data, f"a text block of {what} has no text")
+    return "\n".join(texts)
 
 
 def _post_json(session: Any, url: str, headers: dict, body: dict, timeout: float, *, retries: int = 4,
@@ -356,7 +399,7 @@ def _post_json(session: Any, url: str, headers: dict, body: dict, timeout: float
             raise AdapterError(f"HTTP {response.status_code}: {response.text[:500]}")
         try:
             return response.json()
-        except ValueError as exc:  # a 200 with a broken body: retry like a server error
+        except (ValueError, RecursionError) as exc:  # a 200 with a broken body (or nested too deep): retry it
             if attempt == retries:
                 raise AdapterError(f"invalid JSON in response: {exc}") from exc
             time.sleep(min(30, 2 ** attempt))
@@ -386,9 +429,11 @@ class AnthropicAdapter(Adapter):
             body["temperature"] = self.temperature
         headers = {"x-api-key": self.api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
         data = _post_json(self.session, self.URL, headers, body, self.timeout, drop_on_400=("temperature",))
-        text = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
-        return Completion(text, {"model": data.get("model"), "stop_reason": data.get("stop_reason"),
-                                 "usage": data.get("usage")})
+        if not isinstance(data, dict):
+            raise _unexpected(data, "not an object")
+        text = _text_parts(data.get("content"), data, "content")  # text blocks, each on its own line
+        return Completion(text, {"model": _kept(data.get("model")), "stop_reason": _kept(data.get("stop_reason")),
+                                 "usage": _kept(data.get("usage"))})
 
 
 class OpenAIAdapter(Adapter):
@@ -415,10 +460,21 @@ class OpenAIAdapter(Adapter):
             body["temperature"] = self.temperature
         headers = {"Authorization": f"Bearer {self.api_key}", "content-type": "application/json"}
         data = _post_json(self.session, self.url, headers, body, self.timeout, drop_on_400=("temperature",))
-        choice = (data.get("choices") or [{}])[0]
-        text = (choice.get("message") or {}).get("content") or ""
-        return Completion(text, {"model": data.get("model"), "finish_reason": choice.get("finish_reason"),
-                                 "usage": data.get("usage")})
+        choices = data.get("choices") if isinstance(data, dict) else None
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise _unexpected(data, "no choice")
+        choice = choices[0]
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            raise _unexpected(data, "the choice has no message object")
+        content = message.get("content")
+        if isinstance(content, list):  # some compatible servers send a list of content parts
+            content = _text_parts(content, data, "the message content")
+        elif content is not None and not isinstance(content, str):
+            raise _unexpected(data, "the message content is not text")
+        return Completion(content or "", {"model": _kept(data.get("model")),
+                                          "finish_reason": _kept(choice.get("finish_reason")),
+                                          "usage": _kept(data.get("usage"))})
 
 
 def make_adapter(spec: str, seed: int = 0, max_tokens: int = DEFAULT_MAX_TOKENS) -> Adapter:
