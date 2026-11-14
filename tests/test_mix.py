@@ -25,7 +25,7 @@ import pytest
 import requests
 
 import cli
-from evalgen import domains, genres, pipeline, scoring
+from evalgen import domains, genres, mix, pipeline, scoring
 from evalgen.adapters import AdapterError, MockAdapter, Task, make_adapter
 from evalgen.answers import parse_reply
 from evalgen.domains import get_domain
@@ -43,7 +43,7 @@ from evalgen.seeds import SeedLog, derive_seed
 from evalgen.solver import extract_digest
 from evalgen.util import canonical_json, read_json, slugify, write_json
 
-from conftest import TOY_PLUGIN, quiet
+from conftest import SHARED, TOY_PLUGIN, _contents, left_as_found, quiet
 from test_domain_neo import FIXTURE_BYTES as CAD_BYTES
 from test_domain_weather import FETCHED, nws_feature
 from test_domain_weather import FIXTURE as NWS_FIXTURE
@@ -856,6 +856,29 @@ def test_a_run_directory_never_runs_code_that_it_names(registries, tmp_path, mon
     assert not marker.exists()
 
 
+def test_what_a_test_registers_is_gone_after_it(tmp_path, capsys):
+    """A run generated with a private run config registers its plugins for the rest of the process, as the
+    command line does: once a test had generated one, every later test of the session saw the toy domain and the
+    toy-telex genre beside the built-in ones, and a test that lists the built-in genres failed or passed by the
+    order the tests ran in. Every test and every module now leaves the process's registries, its answer types
+    and the plugins of its configs as it found them (conftest.left_as_found), whatever it loaded."""
+    def state() -> list:
+        return [(getattr(owner, name), _contents(getattr(owner, name))) for owner, name in SHARED]
+
+    before = state()
+    config = write_config(tmp_path / "private.json")
+    with left_as_found():
+        assert cli.main(["generate", "--seed", "11", "--instances", "1", "--mix", "random", "--private-config",
+                         str(config), "--out", str(tmp_path / "run")]) == 0
+        assert "toy" in [d.name for d in domains.all_domains()] and "toy-telex" in [g.name for g in genres.all_genres()]
+        assert "toy_temperature" in scoring.ANSWER_TYPES and mix._CONFIG_PLUGINS
+        domains.REGISTRY = domains.Registry()  # even a registry replaced outright, without monkeypatch
+    capsys.readouterr()
+    after = state()
+    assert [value for value, _ in after] == [value for value, _ in before]  # the same objects
+    assert [contents for _, contents in after] == [contents for _, contents in before]  # holding the same
+
+
 # ------------------------------------------------------------------------------ the report
 
 
@@ -1251,6 +1274,15 @@ def test_a_report_says_which_held_out_sets_are_public_code_and_shows_what_the_mo
     assert "the two templates of a twin pair are never more than one question apart" in markdown
     assert "each twin pair is used equally often" not in markdown  # the 0.2.0 sentence, which legacy reports keep
     assert "`naive` reads each digest with its genre's parser" in markdown and "treats every line" not in markdown
+    # Its answers depend on what a rendering prints of its reports, not only on which reports it holds: the classic
+    # digest of earthquakes prints some times to the minute, which can break a tie between two reports of one
+    # magnitude otherwise than a table, printing seconds, does.
+    assert "depend only on which reports" not in markdown and "breaks a tie differently" in markdown
+    assert "Its answers depend on which reports a digest holds and on what it prints of them." in markdown
+    # The flag of the source and genre gaps is stated whole: it also needs each side's compared rows to come from two
+    # instances or more (split_gap), which the template gap's flag does not.
+    assert ("adjusted gap flags a model tuned to the public domains or genres (flag: > 10 points with a 95% CI that "
+            "excludes 0, and the compared rows of each side from two instances or more") in markdown
     types = {t for m in data["models"] for t in m["by_answer_type"]} - set(ANSWER_TYPE_ORDER)
     assert types and all(f"- `{t}`: " in markdown for t in types)
     for text in (markdown, (run / "report.json").read_text(encoding="utf-8")):

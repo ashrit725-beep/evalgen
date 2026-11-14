@@ -21,7 +21,7 @@ Without the new options, 0.3.0 writes the 0.2.0 run byte for byte.
 python3 -m pip install -r requirements.txt     # requests + pytest (Python 3.10+)
 python3 cli.py demo --seed 42 --instances 20  # fully offline, no API keys, ~1 second
 python3 cli.py demo --mix random               # 0.3.0: every domain and genre, offline, ~3 seconds
-python3 -m pytest -q                           # 865 tests, ~3 minutes
+python3 -m pytest -q                           # 866 tests, ~3 minutes
 ```
 
 The demo writes `runs/demo-synthetic-seed42/report.md` (and `report.json`), as 0.2.0 did, which replaces
@@ -114,7 +114,9 @@ What this adds to the list above:
 2. **Held-out domains and genres.** A domain or genre defined in a private plugin is new to every
    model at evaluation time. The report's *source gap* and *genre gap* compare public with held-out
    sets like for like. A large adjusted gap flags a model tuned to the public domains or genres, as
-   the template gap flags one tuned to the public skeletons.
+   the template gap flags one tuned to the public skeletons: above 10 points, with a 95% interval
+   that excludes 0 and, unlike the template gap, compared rows from two instances or more on each
+   side (see Report additions).
 3. **Cross-genre consistency.** A variant is rendered in another genre than its original, so the
    same question asked of an email thread and of a radio transcript must get the same answer. Like
    metamorphic consistency, this needs no ground truth beyond the scores (two answers agree when they
@@ -358,7 +360,7 @@ whatever text it returned (usually none), flagged in the report, and asked again
 | model spec | what it is |
 |---|---|
 | `oracle` | rule-based solver that reads **only the digest text**, applies the reading rules and runs each question's operation chain; must score 100%. Off the legacy path `run` also gives it the rendering's genre and the instance's domain by name (see the oracle under Genres) |
-| `naive` | the same parser, but every report counts as a separate quake and notices are ignored; it loses points only where traps (alone or combined) change the answer, apart from rare display-rounding effects. Off the legacy path it reads each digest with its genre's parser, as the oracle does, which has already set aside the quoted and read-back repeats and the message times that the rules say are no reports. So it never meets a genre's noise, and its consistency across renderings and genres is high by construction |
+| `naive` | the same parser, but every report counts as a separate quake and notices are ignored; it loses points only where traps (alone or combined) change the answer, apart from rare display-rounding effects. Off the legacy path it reads each digest with its genre's parser, as the oracle does, which has already set aside the quoted and read-back repeats and the message times that the rules say are no reports. So it never meets a genre's noise. Its answers depend on which reports a digest holds and on what it prints of them; every rendering prints the same reports, so its consistency across renderings and genres is high by construction, though a time or value that one rendering prints more coarsely than another can break a tie differently (the classic digest of earthquakes prints some times to the minute) |
 | `mock` | a **simulated** contaminated model, not a language model. It answers public-template questions correctly 92% of the time (80% when paraphrased) and new-template questions 62% of the time; its errors are seeded by the prompt text and usually fall into the traps. It exists to exercise every metric without API keys. `mock:held_out=P` (0.3.0) also lowers each of those chances by P on an instance from a held-out domain and by P on a rendering in a held-out genre, as a model tuned to the public ones would be (`held_out_domains=P` or `held_out_genres=P` for one kind, joined with `+` for different penalties). A chance stops at 0, so where the penalties that apply add up to more than 0.62, the chance on a new template, they lower accuracy by less than they say, and a gap they inject is smaller than the penalty; `run` prints a note for such a mock |
 | `anthropic[:model]` | Anthropic Messages API (`ANTHROPIC_API_KEY`; default model `claude-opus-5-5`, override with `:model` or `EVALGEN_ANTHROPIC_MODEL`) |
 | `openai[:model]` | OpenAI Chat Completions (`OPENAI_API_KEY`; default `gpt-4.1`, override with `:model` or `EVALGEN_OPENAI_MODEL`; `OPENAI_BASE_URL` points it at any compatible server) |
@@ -1309,11 +1311,12 @@ the share of rows in strata that both sides have.
   a group or a time), the trap exposure (0, 1 or 2+) and whether the filters matter; the template
   gap uses the last two. The genre gap's strata also tell the original rendering from a reworded
   variant. The template pool is not a stratum. The pools are balanced within each domain over a run
-  (every instance asks about as many public questions as new ones, see Templates, and within each
-  domain a twin pair never drifts more than one question apart), but not within each difficulty
-  stratum, where a domain's share of public questions differs by chance and by which templates fit
-  its records. For a model with a large template gap, a run's adjusted source gap therefore moves by
-  a few points either way, with no bias over designs: over 40 designs of 40 instances, with the
+  (every instance asks as many public questions as new ones, give or take one, or rarely more where
+  no template of one pool fits its records, see Templates; and within each domain a twin pair never
+  drifts more than one question apart), but not within each difficulty stratum, where a domain's
+  share of public questions differs by chance and by which templates fit its records. For a model
+  with a large template gap, a run's adjusted source gap therefore moves by a few points either way,
+  with a bias over designs that is small but not zero: over 40 designs of 40 instances, with the
   mock's 30-point template gap, the expected adjusted source gap ranged from -3.7 to +5.1 points
   (SD 2.1), against intervals of about ±20. A pool stratum would cost more coverage than it removes.
 - **Each gap is also stratified by the other kind, by name.** The source gap's strata hold the genre
@@ -1334,7 +1337,8 @@ the share of rows in strata that both sides have.
   independent, when that ratio is above 1. The adjusted gap takes the design effect of the rows that it
   compares (its strata are too small for a cluster-robust variance of their own). Where answers do not
   cluster, the design effect is close to 1 and the intervals hardly change; the simulations below
-  measure both cases. The template gap keeps its 0.2.0 interval: every instance asks both pools.
+  measure both cases. The template gap keeps its 0.2.0 interval: almost every instance asks both
+  pools.
 - **The flag** is the template gap's: an adjusted gap above 10 points whose 95% interval excludes
   0, and, for the source and genre gaps, compared rows from two instances or more on each side (see
   Limitations: one instance leaves its side's interval unwidened). A gap needs rows on both sides, so
@@ -1413,7 +1417,7 @@ and be flagged in at most 5%:
 | right 65% of the time on neo, 85% elsewhere, in `weather,neo:email,invented:table` with only email held out | | 98%, 2% (4%, 94%) | | |
 | right 65% of the time in table, 85% in classic, in `earthquakes:classic,invented:classic,weather:table` with only weather held out | n/a in every run (29%, 71%) | | | |
 
-The template gap needs neither change: every instance asks both pools, so an instance's own
+The template gap needs neither change: almost every instance asks both pools, so an instance's own
 difficulty cancels in it (with a random effect per rendering or per instance of SD 2, its interval
 covered the gap of 0 in 97-98% of 1,000 runs, and flagged 1-2% at 40 instances).
 
@@ -1528,7 +1532,7 @@ evalgen/
   forecast.py           delayed-resolution questions and resolution (USGS FDSN)
   audit.py report.py    audit sample; report.md / report.json
   pipeline.py           one cycle end to end
-tests/                  865 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
+tests/                  866 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
                         digest parsing, reply parsing and scoring, USGS and forecasts, adapters, report,
                         gap intervals, head to head, reading-rules coverage, CLI and its errors, received
                         runs that try to reach outside their folder; each domain and genre, every domain in
@@ -1574,10 +1578,19 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   earthquakes under 0.3.0).
 * **The legacy traps can be told apart without the rules.** Legacy runs keep the 0.2.0 placement byte
   for byte (see Digest and traps): its re-reports lie seconds and a few km from their quake, mostly
-  from networks that file no event of their own, so a reader who merges reports within 40 s, keeping
-  the commoner network's, closes about a fifth of the gap between the naive reader and the oracle in a
-  legacy digest (minute-rounded times blunt the window), without reading a status, a note or a
-  notice. Runs off the legacy path have no such tell (see Traps under 0.3.0).
+  from networks that file no event of their own. Readers that read no status, note or notice close
+  much of the gap between the naive reader and the oracle there. Measured over every rendering of 252
+  fresh synthetic legacy instances (seeds 5001–5084, at 8e63aee; legacy output is the same at every
+  0.3.0 commit, so the figures hold for all of them), with 95% intervals over instances: merging
+  reports within 40 s and 8.5 km, keeping the commoner network's, closes 24.7% [21.4, 28.2]
+  (minute-rounded times blunt the window); the same merge within a region over 10 minutes or an hour,
+  35.6% and 37.8%; dropping every report from at, pt and ew, the re-reporting networks that file no
+  event of their own in the synthetic world, 28.5% [24.9, 32.4]; and the hour's merge with that drop,
+  the best combination tried, 38.9% [35.3, 42.9], against 41.1% [37.3, 44.9] for the status rule that
+  the rules intend (a paired difference of 2.2 points [−0.5, +5.0], so the two cannot be told apart).
+  On the legacy path, therefore, how often a model handles the traps is not evidence that it read the
+  rules, and that holds for the trap rates of the README's study too. Off the legacy path these readers
+  close nothing measurable (see Traps under 0.3.0).
 * **The mock is a simulation.** Its numbers show that the metrics work; they say nothing about any
   real model. Run `anthropic` / `openai` for real numbers.
 * **Live runs so far are Anthropic only.** Claude Opus 5.5 and Claude Haiku 5.5 have been run
@@ -1657,8 +1670,8 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
 * **The other intervals count questions.** The accuracy intervals, the template gap's, the
   consistency intervals (over answer pairs) and the head-to-head comparison treat questions as
   independent, as 0.2.0 did, so they are too narrow for a model whose errors cluster within
-  instances. Of these only the template gap's feeds a flag, and its pools are asked alike in every
-  instance (see the simulation above). Legacy reports keep all of them exactly.
+  instances. Of these only the template gap's feeds a flag, and its pools are asked alike in almost
+  every instance (see the simulation above). Legacy reports keep all of them exactly.
 * **The design effect is an approximation.** The adjusted gap's interval is widened by the design
   effect of the rows it compares taken as one raw difference, because its strata are too small for a
   cluster-robust variance of their own. In simulation its intervals covered 93–96% of runs with

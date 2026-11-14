@@ -163,7 +163,9 @@ def _rate(k: int, n: int) -> dict:
 
 def _flagged(adjusted: tuple[float, float, float, float] | None) -> bool:
     """The flag of every gap (templates, sources, genres): an adjusted gap above GAP_FLAG whose 95% CI
-    excludes zero."""
+    excludes zero. The source and genre gaps also need the compared rows of each side to come from two
+    instances or more (split_gap); the template gap keeps the 0.2.0 flag, its two pools being asked side by
+    side in almost every instance."""
     return bool(adjusted is not None and adjusted[0] > GAP_FLAG and adjusted[1] > 0)
 
 
@@ -344,16 +346,17 @@ def held_out_metrics(rows: list[dict], index: Mapping[tuple, dict], instances: l
     rendered in genres of both splits drops out of the genre gap, and a genre never given to originals
     of domains of both splits out of the source gap; where none is left, no stratum compares the two
     sides and the adjusted gap is n/a rather than a flag on the wrong kind. (The template pool is not a
-    stratum. The pools are balanced within each domain over a run, since every instance asks as many
-    public as new questions, give or take one, and within each domain a twin pair never drifts more
-    than one question apart; but not within each difficulty stratum, where a domain's share of public
-    questions differs by chance and by which templates fit its records. So for a model with a large
-    template gap a run's adjusted source gap moves by a few points either way, with no bias over
-    designs: in 40 designs of 40 instances, with the simulated model's 30-point template gap, the
-    expected adjusted source gap ranged from -3.7 to +5.1 points (SD 2.1), against intervals of about
-    ±20. A pool stratum would cost more coverage than that.) The intervals of both gaps treat the
-    instance as the independent unit (split_gap). An instance's split is the one it records; a genre's
-    comes from `inventory`."""
+    stratum. The pools are balanced within each domain over a run (every instance asks as many public
+    as new questions, give or take one, or rarely more, where no template of one pool fits its records
+    and questions.compose_questions makes up the number from the other pool, and within each domain a
+    twin pair never drifts more than one question apart), but not within each difficulty stratum,
+    where a domain's share of public questions differs by chance and by which templates fit its
+    records. So for a model with a large template gap a run's adjusted source gap moves by a few points
+    either way, with a bias over designs that is small but not zero: in 40 designs of 40 instances,
+    with the simulated model's 30-point template gap, the expected adjusted source gap ranged from -3.7
+    to +5.1 points (SD 2.1), against intervals of about ±20. A pool stratum would cost more coverage
+    than that.) The intervals of both gaps treat the instance as the independent unit (split_gap). An
+    instance's split is the one it records; a genre's comes from `inventory`."""
     inventory = inventory or Inventory({}, {})
     by_id = {inst.instance_id: inst for inst in instances}
     questions = {(inst.instance_id, q.qid): q for inst in instances for q in inst.questions}
@@ -418,7 +421,8 @@ def split_gap(rows: list[dict], split_of: Callable[[dict], str | None],
               stratum_of: Callable[[dict], tuple]) -> dict | None:
     """Accuracy on the public side minus accuracy on the held-out side (`split_of` says which side a
     row is on): raw, and adjusted (scoring.stratified_difference) within the strata that `stratum_of`
-    gives, with its coverage, and flagged as the template gap is. None unless both sides have rows.
+    gives, with its coverage, and flagged as the template gap is when the compared rows of each side come
+    from two instances or more (below). None unless both sides have rows.
 
     Each 95% interval treats the instance, not the row, as the independent unit. An instance's questions
     are read in one digest, and each of its renderings asks all of them, so one misreading can cost
@@ -900,7 +904,9 @@ def _held_out_section(models: list[dict], run: dict) -> list[str]:
           "treats the instance, not the question, as the independent unit: an instance's questions are read in one "
           "digest and asked again in each rendering, so a model's answers to them go together. A large positive "
           f"adjusted gap flags a model tuned to the public domains or genres (flag: > {int(GAP_FLAG * 100)} points "
-          "with a 95% CI that excludes 0). It is a flag, not proof.",
+          "with a 95% CI that excludes 0, and the compared rows of each side from two instances or more, since the "
+          "rows of a single instance show no spread between instances and leave the CI unwidened). It is a flag, "
+          "not proof.",
           ""]
     for key, title, what, rendered in (("source_gap", "Sources", "domains", "original renderings"),
                                        ("genre_gap", "Genres", "genres", "every rendering")):
@@ -1033,9 +1039,11 @@ def render_markdown(data: dict, run_dir: Path) -> str:
     naive = (f"`naive` treats every line as a separate {record} and ignores notices." if legacy else
              "`naive` reads each digest with its genre's parser, as the oracle does, so the quoted and read-back "
              "repeats and the message times that the reading rules set aside never reach it; it then treats "
-             f"every report as a separate {record} and ignores notices. Its answers depend only on which reports "
-             "a digest holds, and every rendering of an instance holds the same ones, so its consistency across "
-             "renderings and genres is high by construction: it says nothing about how a reader copes with a "
+             f"every report as a separate {record} and ignores notices. Its answers depend on which reports a "
+             "digest holds and on what it prints of them. Every rendering of an instance prints the same reports, "
+             "so its consistency across renderings and genres is high by construction, except where a time or value "
+             "that one rendering prints more coarsely than another breaks a tie differently (the classic digest of "
+             "earthquakes prints some times to the minute): it says nothing about how a reader copes with a "
              "genre's noise.")
     md += ["`oracle` reads only the digest text and applies the reading rules, so it should score 100%. That shows every "
            f"item is answerable from the text. {naive} `mock` is a *simulated* model with built-in benchmark "

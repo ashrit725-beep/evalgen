@@ -85,7 +85,8 @@ details are in each run's miss analysis: [0.1.0](runs/compare-100/miss_analysis.
 ## Takeaways
 
 - **The rules removed the errors they targeted.** Counting only one magnitude scale went from 2
-  misses to 0, and counting a retracted report from 2 to 0.
+  misses to 0, and counting a retracted report from 2 to 0, though misses this rare, on different
+  questions, cannot prove that the models read the new wording.
 - **Haiku's total barely moved: 21 → 20.** Most of its misses are careful-reading slips, such as
   local-time conversions, skipped lines, double-counted re-reports and unit slips, which no rule
   wording prevents.
@@ -108,10 +109,19 @@ details are in each run's miss analysis: [0.1.0](runs/compare-100/miss_analysis.
 - **The causes are inferred.** The models' reasoning is hidden, so the cause of each miss is the
   review agents' most likely explanation, with a confidence level in the miss analysis.
 - **Default settings only.** One effort level and one run per model per rule version.
+- **Trap handling is not evidence that a model read the rules.** In digests like these the planted
+  lines can be told from real ones by where they lie and which network filed them: on 252 fresh
+  digests written as the 0.2.0 run's were (seeds 5001–5084), a reader that merges reports of one
+  region lying within an hour and 8.5 km of each other and drops those of the networks that file no
+  events of their own, reading no status, note or notice, closes 38.9% of the gap between a reader
+  who counts every line and one who applies every rule, nearly the 41.1% closed by the status rule
+  that the rules intend (keep only the REVIEWED reports). evalgen 0.3.0 removes this tell from runs
+  with any `--mix` but `legacy`, the default, which keeps these digests byte for byte (see the
+  limitations in [`docs/DESIGN.md`](docs/DESIGN.md)).
 
 ## Reproduce it
 
-Install the dependencies (requests and pytest; Python 3.10 or later), run the 865 tests (about 3
+Install the dependencies (requests and pytest; Python 3.10 or later), run the 866 tests (about 3
 minutes), and run a full cycle offline, with no API key and no cost:
 
 ```bash
@@ -201,7 +211,7 @@ metrics and their limitations.
   `verify-config`).
 - `configs/private.example.json`: the format of a private run config (an example only: real
   held-out sets must stay private).
-- `tests/`: 865 tests.
+- `tests/`: 866 tests.
 - `runs/compare-100/` and `runs/compare-100-v2/`: each comparison's report (`report.md` and
   `report.json`), miss analysis and `manifest.json` (seed, settings, code fingerprint). The raw
   prompts and replies are not committed. The 0.1.0 run cannot be regenerated with the current code,

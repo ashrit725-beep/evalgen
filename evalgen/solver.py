@@ -7,7 +7,9 @@ naive   parses the same lines but skips deduplication and ignores notices, i.e. 
         report as a separate record. It should lose points exactly where traps matter. In the classic
         genre every report is one line; the other genres' parsers have already set aside what their
         rules say is no report (quoted and read-back repeats, message times), so naive never sees a
-        genre's noise: its answers depend only on the reports that a digest holds.
+        genre's noise: its answers depend only on the reports that a digest holds, as it prints them
+        (a time that one rendering prints to the minute and another to the second can break a tie
+        between two reports differently).
 
 Both receive each question's operation chain (its machine-readable meaning) instead of parsing
 the English wording: the point is to test the digest, not to build a language-understanding

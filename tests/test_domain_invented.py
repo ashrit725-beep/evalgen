@@ -38,7 +38,7 @@ from evalgen.pipeline import GenerateConfig, question_specs
 from evalgen.questions import Context, fingerprint, fmt_num, public_templates, round_to_step
 from evalgen.report import load_instances
 from evalgen.rules import Mishandle
-from evalgen.scoring import AnswerType, is_correct, normalize, register_answer_type, same_answer
+from evalgen.scoring import AnswerType, is_correct, normalize, same_answer
 from evalgen.seeds import SeedLog
 from evalgen.solver import solve
 from evalgen.sources import build_domain_snapshot, load_snapshot, record_problems
@@ -51,14 +51,6 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "invented"
 COMPILED_AT = 1_780_000_000
 SEED = 7101  # the run every run-level test reads
 VOLATILE = {"run_id", "seed_commitment", "seed_nonce", "generated_at_utc", "code_sha256", "evalgen_version"}
-
-
-@pytest.fixture(scope="module", autouse=True)
-def registered():
-    """The domain's answer types in the scorer, as discovering the domain registers them (whatever
-    answer-type table a test before this module discovered the built-in domains with)."""
-    for answer_type in INVENTED.answer_types():
-        register_answer_type(answer_type)
 
 
 def surfaces(n: int, start: int = 0) -> list[dict]:

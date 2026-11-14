@@ -21,8 +21,16 @@ lie: a re-report sits 3 to 40 s and 1 to 8 km from its quake, filed by one of th
 re-report others' events (us, at, pt, ew), of which only us files events of its own, a second report at
 its quake's very time and place, and a conflicting magnitude within 0.2 of an asked threshold. So in a
 legacy digest these features, which the reading rules never mention, pick out planted lines without
-their notes, statuses or notices: a reader who merges reports within 40 s, keeping the commoner
-network's, closes about a fifth of the gap between the naive reader and the oracle.
+their notes, statuses or notices. Over every rendering of 252 fresh synthetic legacy instances (seeds
+5001-5084; legacy output is the same at every 0.3.0 commit), in shares of the gap between the naive
+reader and the oracle, with 95% intervals over instances: a reader who merges reports within 40 s and
+8.5 km, keeping the commoner network's, closes 24.7% [21.4, 28.2]; the same merge within a region over
+10 minutes or an hour, 35.6% or 37.8%; dropping every report from at, pt and ew, the re-reporting
+networks that file no event of their own, 28.5% [24.9, 32.4]; and the hour's merge with that drop, the
+best combination tried, 38.9% [35.3, 42.9], against 41.1% [37.3, 44.9] for the status rule (a paired
+difference of 2.2 points [-0.5, +5.0]: the two cannot be told apart). On the legacy path, then, how
+often a model handles the traps is no evidence that it read the rules. Off it, where planted reports
+stand in for slots (below), these readers close nothing measurable.
 
 Off the legacy path, a planted report stands in for a *slot*: a record drawn with the digest, exactly
 as its records are, but not kept (pipeline.sample_with_slots; see the slot builders below). A phantom is
