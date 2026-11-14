@@ -9,8 +9,15 @@ Scoring rules (public, like everything else):
   distance          |answer - key| <= max(1.5, 3% of key)   (in the unit the question asked for)
   utc_time          within 1 minute (HH:MM, 24-hour)
   probability       not scored for accuracy; Brier score once the forecast resolves
-A string answer is read only when it is unambiguous: "7 events" is 7 and "5,088.8 km" is 5088.8,
-but a string holding several different values ("7 or 8", "3-4", two event IDs) counts as no answer.
+A string answer is read only when it is unambiguous: "7 events" and "seven events" are 7, "5,088.8 km"
+is 5088.8, ".5" is 0.5, "9:47 PM" and "21:47:00+00:00" are 21:47, and "It's a tie" or "equal counts" is
+a tie. A string that is no single committed value counts as no answer: several different values ("7 or
+8", "3-4", two event IDs, "nc75012345 or none", "Nevada or tie"), a bound ("at least 7", "7+", "<5%",
+"before 21:47", "21:47 ± 5 min"), a time with an offset other than +00:00, or a negated tie ("not a
+tie"). "About 7" and "~7" name one value and are read as it. A list of values (several values given for
+one question) is an answer only when every one of them reads the same; an object ({"value": 7}) is none.
+Readers never raise and take time linear in the length of an answer, whatever it holds: a number beyond
+the range of a float is no answer.
 
 Answer types live in a registry (``ANSWER_TYPES``). A type's kind (count, id, number, group, clock
 or probability) says how its answers are read; the type adds its tolerance, ID pattern, number
@@ -35,38 +42,111 @@ TIE_WORDS = {"tie", "tied", "equal", "same", "neither", "both", "draw", "even"}
 WORD_NUMBERS = {word: i for i, word in enumerate(
     "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
     "sixteen seventeen eighteen nineteen twenty".split())}
-_NUMBER = re.compile(r"[-+]?\d+(?:\.\d+)?")
-_GROUPED = re.compile(r"(?<=\d)[,   ](?=\d{3}(?!\d))")  # thousands separators: 5,088.8
-_HEDGE = re.compile(r"\b(?:or|between|either)\b|\d\s*(?:-|–|to)\s*\d", re.IGNORECASE)
+_NUMBER = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)")  # 7, -1.1, 7., .5
+# Thousands separators, once whitespace (a no-break, narrow or thin space too) is one plain space: 5,088.8,
+# 5 088.8, 5'088.8.
+_GROUPED = re.compile(r"(?<=\d)[, '’](?=\d{3}(?!\d))")
+_HEDGE = re.compile(r"\b(?:or|between|either)\b|\d\s*(?:-|–|—|to|through|thru)\s*[-+]?\.?\d")  # 7 or 8, 3-4
+# A bound is no answer: a word for one before a number ("at least 7", "over 4.3", "up to 7"), a comparison or
+# plus-minus sign ("<5%", "≥ 7", "7 ± 1"), a plus after a number ("7+") or a word for one after it ("7 at most").
+_BOUND_WORDS = (r"at\s+least|at\s+most|(?:more|less|fewer|greater|higher|lower)\s+than|over|under|above|below|beyond"
+                r"|exceeding|nearly|almost|up\s+to|as\s+(?:many|much|few|little)\s+as|upwards\s+of|in\s+excess\s+of"
+                r"|maximum|minimum")
+_BOUND = re.compile(rf"\b(?:{_BOUND_WORDS})\s*(?:of\s+)?[-+]?\.?\d|[<>≤≥⩽⩾≦≧±]|\+\s*/\s*-|\+-"
+                    r"|\d\s*\+(?![\d.])|\d\s*at\s+(?:least|most)\b")
+_WORD_NUMBER = "|".join(WORD_NUMBERS)
+_WORD_BOUND = re.compile(rf"\b(?:{_BOUND_WORDS})\s+(?:of\s+)?(?:{_WORD_NUMBER})\b"
+                         rf"|\b(?:{_WORD_NUMBER})\s+at\s+(?:least|most)\b")
 _FRACTION = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(?:/|in|out of)\s*(\d+(?:\.\d+)?)\s*$", re.IGNORECASE)
-_CLOCK = re.compile(r"(\d{1,2})[:h](\d{2})")
+_FIFTY_FIFTY = re.compile(r"\s*(?:50\s*[/:–-]\s*50|fifty[\s-]fifty)\s*", re.IGNORECASE)
+# A time of day: HH:MM (or 21h47), its seconds (dropped), a 12-hour clock's AM or PM, UTC, an offset from UTC.
+_CLOCK = re.compile(r"(?<![\d:.])(\d{1,2})[:h](\d{2})(?!\d)(?::\d{2}(?:[.,]\d+)?)?(?:\s*([ap])\.?\s?m\b\.?)?"
+                    r"(?:\s*(?:z|utc|gmt)\b)?(?:\s*([+-])(\d{1,2})(?::?(\d{2}))?(?![\d:]))?", re.IGNORECASE)
+# A time offered with an alternative or as a bound: "21:47 or later", "before 21:47", "21:47 ± 5 min".
+_TIME = r"\d{1,2}[:h]\d{2}"
+_CLOCK_HEDGE = re.compile(
+    r"\b(?:or|either|between)\b|[<>≤≥⩽⩾≦≧±]|\+\s*/\s*-|\+-"
+    r"|\b(?:before|after|by|until|till|since|from|past|not\s+(?:before|after)|(?:no\s+|not\s+)?(?:later|earlier|sooner)"
+    rf"\s+than)\s+(?:(?:about|around|approximately|approx\.?|~)\s*)?{_TIME}"
+    rf"|{_TIME}(?::\d{{2}})?\s*(?:[ap]\.?\s?m\.?\s*)?(?:(?:z|utc|gmt)\s*)?(?:at\s+the\s+(?:latest|earliest)"
+    r"|and\s+(?:later|after|earlier|before)|onwards?\b)", re.IGNORECASE)
+_NEGATION = re.compile(r"\b(?:no|not|never|nor|none|without)\b|n't\b")
+_TIE_TOKEN = re.compile(r"[^\W\d_]+(?:'[^\W\d_]+)?|\d+")
+# Words a tie answer may hold besides a tie word and numbers: "It's a tie", "they are equal", "tied at 3 each".
+_TIE_FILLERS = frozenset((
+    "a", "an", "the", "it", "it's", "its", "is", "this", "that", "that's", "there", "there's", "they", "they're",
+    "are", "was", "were", "be", "answer", "result", "exact", "exactly", "dead", "perfect", "at", "with", "each",
+    "apiece", "all", "vs", "v", "versus", "to", "and", "of", "count", "counts", "number", "numbers", "total", "totals",
+    "tally", "tallies", "split", "score", "game"))
+_GROUP_ENDS = " .!\"'*`“”‘’"  # stripped from both ends of a group answer: "**Nevada**", "Nevada!"
+
+
+def _finite(x: Any) -> bool:
+    """Whether a parsed answer is a finite number (an integer too large for a float is not)."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        return False
+    try:
+        return math.isfinite(x)
+    except OverflowError:
+        return False
+
+
+def _text(value: Any) -> str:
+    """An answer as text: a string itself, a number or a truth value as Python writes it (an integer of
+    more than 50 digits, which some Pythons refuse to write, as no text)."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool) and not -10 ** 50 < value < 10 ** 50:
+        return ""
+    return str(value)
 
 
 def _number(value: Any) -> float | None:
-    """A single unambiguous number, or None."""
+    """A single unambiguous finite number, or None: a string holding several different numbers, a range, an
+    alternative or a bound is none, and so is a number beyond the range of a float."""
     if isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
-        return float(value) if math.isfinite(value) else None
-    if isinstance(value, str):
-        text = value.strip().lower().replace("−", "-")  # typographic minus sign: "−1.1 km"
-        if text in WORD_NUMBERS:
-            return float(WORD_NUMBERS[text])
-        text = _GROUPED.sub("", text)
-        if _HEDGE.search(text):
+    if isinstance(value, int):
+        try:
+            return float(value)
+        except OverflowError:  # an integer too large for a float
             return None
-        numbers = {float(x) for x in _NUMBER.findall(text)}
-        return numbers.pop() if len(numbers) == 1 else None
-    return None
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.lower().replace("−", "-").split())  # typographic minus sign: "−1.1 km"
+    if text in WORD_NUMBERS:
+        return float(WORD_NUMBERS[text])
+    text = _GROUPED.sub("", text)
+    if _HEDGE.search(text) or _BOUND.search(text):
+        return None
+    numbers = set()
+    for match in _NUMBER.finditer(text):
+        x = float(match.group())
+        if not math.isfinite(x):  # 400 digits: beyond the range of a float
+            return None
+        numbers.add(x)
+    if not numbers:  # a number word with words around it: "seven events"
+        if _WORD_BOUND.search(text):
+            return None
+        words = {WORD_NUMBERS[word] for word in re.findall(r"[a-z]+", text) if word in WORD_NUMBERS}
+        return float(words.pop()) if len(words) == 1 else None
+    return numbers.pop() if len(numbers) == 1 else None
 
 
 def _parse_probability(value: Any) -> float | None:
-    """A number, a percentage ("15%"), a fraction ("1 in 3") or a decimal comma ("0,3")."""
+    """A number, a percentage ("15%"), a fraction ("1 in 3"), a decimal comma ("0,3") or "50/50"."""
     if not isinstance(value, str):
         return _number(value)
+    if _FIFTY_FIFTY.fullmatch(value):
+        return 0.5
     fraction = _FRACTION.match(value)
     if fraction:
-        return float(fraction.group(1)) / float(fraction.group(2)) if float(fraction.group(2)) else None
+        numerator, denominator = float(fraction.group(1)), float(fraction.group(2))
+        if not (math.isfinite(numerator) and math.isfinite(denominator)) or not denominator:
+            return None
+        return numerator / denominator
     x = _number(value.replace(",", ".") if re.fullmatch(r"\s*\d+,\d+\s*", value) else value)
     return x / 100.0 if x is not None and "%" in value else x
 
@@ -104,41 +184,93 @@ class AnswerType:
 
 def _read_count(t: AnswerType, value: Any) -> int | None:
     x = t.parse(value)
-    return int(round(x)) if x is not None and abs(x - round(x)) < 1e-6 else None
+    if not _finite(x):
+        return None
+    whole = round(x)
+    return int(whole) if abs(x - whole) < 1e-6 else None
 
 
 def _read_number(t: AnswerType, value: Any) -> float | None:
-    return t.parse(value)
+    x = t.parse(value)
+    return x if _finite(x) else None
 
 
 def _read_probability(t: AnswerType, value: Any) -> float | None:
     x = t.parse(value)
-    return x if x is not None and 0.0 <= x <= 1.0 else None
+    return x if _finite(x) and 0.0 <= x <= 1.0 else None
 
 
 def _read_id(t: AnswerType, value: Any) -> str | None:
-    text = str(value).strip().lower()
-    ids = {m.group(0) for m in re.finditer(t.id_pattern, text)} if t.id_pattern else set()
+    """The one ID an answer names, found by the type's pattern as a whole word ("WX-4821370" names no
+    "wx-482137"); None for an answer that names two, or offers one with an alternative ("nc75012345 or
+    none"); an answer in which the pattern finds no ID is compared as it is written."""
+    text = _text(value).strip().lower()
+    if not t.id_pattern:
+        return text or None
+    try:
+        pattern = re.compile(rf"(?<![0-9a-z])(?:{t.id_pattern})(?![0-9a-z])")
+    except re.error:  # a pattern that cannot be wrapped (a global inline flag): matched as it is
+        pattern = re.compile(t.id_pattern)
+    ids = {m.group(0) for m in pattern.finditer(text)}
     if len(ids) == 1:
-        return ids.pop()
+        return None if re.search(r"\b(?:or|either)\b", pattern.sub(" ", text)) else ids.pop()
     return None if ids else (text or None)
 
 
+def _is_tie(text: str, suffixes: tuple[str, ...]) -> bool:
+    """Whether a group answer (cased and spaced as _read_group leaves it) says that there is a tie and
+    nothing else: a tie word, with only fillers, numbers and the type's group words beside it ("It's a tie",
+    "equal counts", "tied at 3"), maybe followed by a note in parentheses or by "between ... and ..." ("tie
+    (Nevada 3, Utah 3)"), or said of the groups ("Nevada and Utah are tied"). A negated tie ("not a tie",
+    "Nevada, no tie") is none."""
+    text = text.replace("’", "'")
+    if _NEGATION.search(text):
+        return False
+    if text.endswith(")") and text.rfind("(") > 0:
+        text = text[:text.rfind("(")]
+    for clause in (" between ", " among "):
+        if clause in text:
+            text = text[:text.index(clause)]
+    for verb in (" are ", " were "):
+        if verb in text:
+            text = text[text.rindex(verb) + len(verb):]
+    words = [word for word in _TIE_TOKEN.findall(text) if not word.isdigit()]
+    return any(word in TIE_WORDS for word in words) and all(
+        word in TIE_WORDS or word in _TIE_FILLERS or word in suffixes or (word[-1] == "s" and word[:-1] in suffixes)
+        for word in words)
+
+
 def _read_group(t: AnswerType, value: Any) -> str | None:
-    text = re.sub(r"\s+", " ", str(value)).strip().strip(".\"'\u201c\u201d\u2018\u2019").casefold()  # “” ‘’ too
+    text = " ".join(_text(value).split()).strip(_GROUP_ENDS).casefold()  # quotes (“” ‘’ too), markdown, "!"
     if text.startswith("the "):
         text = text[4:]
-    if text in TIE_WORDS or re.search(r"\btied?\b", text):
-        return "tie"
     if re.search(r"\bor\b", text):
-        return None  # "Nevada or Utah" is not an answer
+        return None  # "Nevada or Utah", "Nevada or tie": not an answer
+    if _is_tie(text, t.suffixes):
+        return "tie"
     if t.suffixes:  # one group word that ends the answer, the longest: "north sea sea area" is "north sea"
         text = re.sub(r"\s+(?:" + "|".join(re.escape(word) for word in t.suffixes) + ")$", "", text)
     return text or None
 
 
 def _read_clock(t: AnswerType, value: Any) -> int | None:
-    clocks = {(int(h), int(m)) for h, m in _CLOCK.findall(str(value))}
+    """Minutes after midnight UTC of the one time an answer gives: 21:47, 21h47, 21:47:59 (seconds dropped),
+    9:47 PM, 2026-01-14T21:47:00Z, 21:47:00+00:00. None for two different times, a time offered with an
+    alternative or as a bound ("21:47 or later", "before 21:47"), or one with an offset other than zero."""
+    text = _text(value)
+    if _CLOCK_HEDGE.search(text):
+        return None
+    clocks = set()
+    for m in _CLOCK.finditer(text):
+        hh, mm, half, sign, offset_h, offset_m = m.groups()
+        hh, mm = int(hh), int(mm)
+        if half:  # a 12-hour clock: 12:05 AM is 00:05, 9:47 PM is 21:47
+            if not 1 <= hh <= 12:
+                return None
+            hh = hh % 12 + (12 if half.lower() == "p" else 0)
+        if sign and (int(offset_h) or int(offset_m or 0)):
+            return None  # a local time, not UTC
+        clocks.add((hh, mm))
     if len(clocks) != 1:
         return None
     hh, mm = clocks.pop()
@@ -207,13 +339,19 @@ def normalize(answer_type: str, value: Any) -> Any:
 
 
 def read_answer(answer_type: AnswerType, value: Any) -> Any:
-    """normalize, for an answer type given as itself (one that need not be registered)."""
-    if value is None:
-        return None
+    """normalize, for an answer type given as itself (one that need not be registered). Several values
+    offered (a list) are an answer only when they all read the same; an object is never one."""
     if isinstance(value, list):
-        if len(value) != 1:
-            return None  # several values offered: ambiguous
-        value = value[0]
+        readings = [_read_one(answer_type, item) for item in value]
+        if not readings or readings[0] is None or any(reading != readings[0] for reading in readings[1:]):
+            return None
+        return readings[0]
+    return _read_one(answer_type, value)
+
+
+def _read_one(answer_type: AnswerType, value: Any) -> Any:
+    if value is None or isinstance(value, (dict, list)):
+        return None
     return _READERS[answer_type.kind](answer_type, value)
 
 

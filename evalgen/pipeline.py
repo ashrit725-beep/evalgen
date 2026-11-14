@@ -40,7 +40,7 @@ import requests
 
 from . import __version__
 from .adapters import DEFAULT_MAX_TOKENS, AdapterError, MissingKey, Task, is_truncated, make_adapter, token_usage
-from .answers import parse_reply
+from .answers import ParsedReply, parse_reply
 from .audit import write_audit_sample
 from .digest import make_chatter, timed_chatter
 from .domains import get_domain
@@ -57,7 +57,7 @@ from .questions import (Context, Template, compose_new_templates, compose_questi
                         reanchor_nearest)
 from .report import code_fingerprint, load_instances, read_forecasts, read_scores, write_report
 from .rules import READING_RULES
-from .scoring import is_correct, normalize, same_answer
+from .scoring import get_answer_type, is_correct, normalize, same_answer
 from .seeds import SeedLog, derive_seed, fresh_nonce, seed_commitment
 from .solver import extract_digest, solve
 from .sources import LIVE, Snapshot, build_domain_snapshot, build_snapshot, frozen_feed, read_frozen_feed, save_snapshot
@@ -849,6 +849,35 @@ def _has_reply(path: Path) -> bool:
 # --------------------------------------------------------------------------------- score
 
 
+def _parsed_reply(text: Any, expected: list[str]) -> ParsedReply:
+    """parse_reply, which never raises; were it to, on this one reply, the reply counts as unread (status
+    "failed") and the rest of the run is scored all the same."""
+    try:
+        return parse_reply(text, expected)
+    except Exception as exc:  # noqa: BLE001 - a reply is untrusted input
+        return ParsedReply(error=f"the reply could not be read ({type(exc).__name__})")
+
+
+def _graded(answer_type: str, key: Any, given: Any, unit: str | None) -> tuple[Any, bool]:
+    """(normalized, correct) of one answer. A reader that fails on an answer (a plugin's own parser) makes
+    it no answer, never a stopped run; an answer type that no domain declares is still an error."""
+    get_answer_type(answer_type)
+    try:
+        return normalize(answer_type, given), is_correct(answer_type, key, given, unit=unit)
+    except Exception:  # noqa: BLE001 - an answer is untrusted input
+        return None, False
+
+
+def _seconds(value: Any) -> float | None:
+    """A stored reply's latency when it is a number of seconds (a hand-edited reply may hold anything)."""
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value < float("inf") else None
+
+
+def _error_text(value: Any) -> str | None:
+    """A stored reply's API error as text (None: the call succeeded), whatever a hand edit left there."""
+    return value if value is None or isinstance(value, str) else str(value)
+
+
 def score_run(run_dir: Path, *, private_config: str | Path | None = None, log: Log = print) -> list[Path]:
     """Grade every stored reply. A run's plugins are loaded first, from its private run config: their
     domains' answer types score the answers.
@@ -879,30 +908,33 @@ def score_run(run_dir: Path, *, private_config: str | Path | None = None, log: L
                                     "stale_prompt": False, "input_tokens": None, "output_tokens": None,
                                     "latency_s": None})
                     parsed = parse_reply(None)
-                else:
-                    model, kind = record.get("model", model), record.get("kind", kind)
+                else:  # a reply is untrusted input, a hand-edited one too: no field of it can stop the run
+                    model = record["model"] if isinstance(record.get("model"), str) else model
+                    kind = record["kind"] if isinstance(record.get("kind"), str) else kind
                     expected = [q.qid for q in inst.questions] + ([inst.forecast["qid"]] if inst.forecast else [])
-                    parsed = parse_reply(record.get("text"), expected)
+                    parsed = _parsed_reply(record.get("text"), expected)
                     input_tokens, output_tokens = token_usage(record)
                     replies.append({"instance_id": inst.instance_id, "variant": rendering.variant,
-                                    "status": parsed.status, "api_error": record.get("error"),
+                                    "status": parsed.status, "api_error": _error_text(record.get("error")),
                                     "parse_error": parsed.error, "truncated": is_truncated(record),
                                     "stale_prompt": record.get("prompt_sha256") != rendering.prompt_sha256,
                                     "input_tokens": input_tokens, "output_tokens": output_tokens,
-                                    "latency_s": record.get("latency_s")})
+                                    "latency_s": _seconds(record.get("latency_s"))})
                 for q in inst.questions:
                     given = parsed.answers.get(q.qid)
                     key = inst.answer_key[q.qid]
+                    normalized, correct = _graded(q.answer_type, key, given, q.unit)
                     rows.append({"instance_id": inst.instance_id, "variant": rendering.variant, "qid": q.qid,
                                  "template_id": q.template_id, "pool": q.pool, "answer_type": q.answer_type,
                                  "unit": q.unit, "key": key, "given": given,
-                                 "normalized": normalize(q.answer_type, given),
-                                 "correct": is_correct(q.answer_type, key, given, unit=q.unit),
+                                 "normalized": normalized,
+                                 "correct": correct,
                                  **_recorded(domain=inst.domain, genre=rendering.genre),
                                  **({"missing": True} if record is None else {})})
                 if inst.forecast:
                     forecasts.append({"instance_id": inst.instance_id, "variant": rendering.variant,
-                                      "probability": normalize("probability", parsed.answers.get(inst.forecast["qid"]))})
+                                      "probability": _graded("probability", None,
+                                                             parsed.answers.get(inst.forecast["qid"]), None)[0]})
         per_instance: dict[str, dict] = {}
         for row in rows:
             entry = per_instance.setdefault(row["instance_id"], {"v0": [], "all": []})
