@@ -29,7 +29,7 @@ from .mix import HELD_OUT
 from .models import Instance
 from .ops import Step, terminal_step
 from .scoring import AnswerType, get_answer_type
-from .seeds import derive_seed
+from .seeds import SeedLog
 from .solver import forecast_estimate, solve
 from .util import sha256_hex
 
@@ -158,7 +158,9 @@ class MockAdapter(Adapter):
                 "inject are smaller than the penalties")
 
     def complete(self, prompt: str, task: Task) -> Completion:
-        rng = random.Random(derive_seed(self.seed, "mock", sha256_hex(prompt)))
+        # Through a SeedLog, as every draw is: the run's "mock" seed (manifest.json) and the prompt's SHA-256
+        # (each stored reply's prompt_sha256) give this generator again.
+        rng = SeedLog(self.seed).rng("mock", sha256_hex(prompt))
         truth = solve(prompt, task.questions, mode="oracle", domain=task.domain, genre=task.genre)
         fallen: dict[str, list] = {}
         if task.hidden is not None:

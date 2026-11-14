@@ -12,7 +12,10 @@ minus held-out domains) and the genre gap (public minus held-out genres), each a
 template gap, and cross-genre consistency; and, per run, its mix, its inventory of domains and genres,
 which of its held-out sets are public code, and the commitment to its private run config. Its examples
 print their glossary, its answer types that 0.2.0 did not have are explained, and it names the run by
-its ID, never by its folder. A legacy report has none of these, so it is exactly the 0.2.0 report.
+its ID, never by its folder. Where 0.2.0's text says more than holds (that every derived seed is listed,
+that *fell* means an exact answer, that the reading rules recover the snapshot from each digest), it
+says what holds; a template gap with an empty pool is n/a rather than 0, and no gap interval passes
+±100 points. A legacy report has none of these, so it is exactly the 0.2.0 report.
 """
 from __future__ import annotations
 
@@ -28,6 +31,7 @@ from typing import Any, Callable, Iterable, Mapping
 from . import domains, genres
 from .audit import audit_status
 from .domains import get_domain
+from .domains.earthquakes import Earthquakes
 from .genres.base import printed_glossary
 from .mix import HELD_OUT, LEGACY, PUBLIC, RANDOM, SPLITS, Inventory, load_run_plugins
 from .models import Instance, Question
@@ -42,6 +46,11 @@ GAP_FLAG = 0.10  # flag a public-minus-new gap above 10 points whose 95% CI excl
 AGREE_TEXT = ("two answers agree when they are equal within the scoring tolerance, or when both are scored right "
               "(scoring accepts an answer on either side of the key, so two right answers can differ by up to twice "
               "the tolerance).")
+# What the template gap's intervals are, in a report off the legacy path (scoring.difference_ci and
+# stratified_difference, cut to ±1 by _bounded); the held-out section says the same of its gaps.
+INTERVALS_TEXT = ("A raw interval has zero width where neither pool's answers vary (each pool all right or all wrong). "
+                  "The adjusted gap's variance adds half a right and half a wrong answer to each pool of each stratum, "
+                  "so its interval never does. Intervals stop at ±100 points.")
 TRAP_KINDS = ("duplicate", "retraction", "conflicting_magnitude")  # the 0.2.0 kinds, in their 0.2.0 order
 ANSWER_TYPE_ORDER = ("count", "event_id", "magnitude", "depth", "distance", "region", "utc_time")
 MODEL_ORDER = {"oracle": 0, "naive": 1, "mock": 2}
@@ -169,6 +178,14 @@ def _flagged(adjusted: tuple[float, float, float, float] | None) -> bool:
     return bool(adjusted is not None and adjusted[0] > GAP_FLAG and adjusted[1] > 0)
 
 
+def _bounded(low: float, high: float) -> tuple[float, float]:
+    """A gap's 95% interval cut to where a difference of two proportions lies, -1 to 1 (±100 points): the
+    normal approximation can pass those bounds with few rows or extreme rates, and so can widening by a design
+    effect. Cutting never moves a bound across 0, so no flag changes. Off the legacy path only: a legacy
+    report keeps 0.2.0's intervals."""
+    return max(-1.0, low), min(1.0, high)
+
+
 # ------------------------------------------------------------------------------- metrics
 
 
@@ -210,8 +227,16 @@ def model_metrics(score: dict, instances: list[Instance], forecasts: list[dict],
         cell[offset] += r["correct"]
         cell[offset + 1] += 1
     adjusted = stratified_difference(list(cells.values()))
+    raw: tuple | None = (gap, lo, hi)
+    legacy = legacy_run(instances)
+    if not legacy:
+        # Off the legacy path a pool without rows leaves no gap (n/a), as in split_gap; 0.2.0 reported a gap of 0
+        # with the interval -1 to 1, which a legacy report keeps. And no interval passes ±1 (_bounded).
+        raw = (gap, *_bounded(lo, hi)) if pools["public"]["n"] and pools["new"]["n"] else None
+        if adjusted is not None:
+            adjusted = (adjusted[0], *_bounded(adjusted[1], adjusted[2]), adjusted[3])
     out["pools"] = pools
-    out["gap"] = {"public_minus_new": gap, "ci95": [lo, hi],
+    out["gap"] = {"public_minus_new": None if raw is None else raw[0], "ci95": None if raw is None else [raw[1], raw[2]],
                   "adjusted": None if adjusted is None else
                   {"public_minus_new": adjusted[0], "ci95": [adjusted[1], adjusted[2]], "coverage": adjusted[3]},
                   "flagged": _flagged(adjusted)}
@@ -234,7 +259,6 @@ def model_metrics(score: dict, instances: list[Instance], forecasts: list[dict],
     # path, whether two of them were both scored right: answers_agree).
     pairs = consistent = 0
     fully: list[bool] = []
-    legacy = legacy_run(instances)
     for inst in instances:
         for q in inst.questions:
             base = index.get((inst.instance_id, "v0", q.qid))
@@ -255,7 +279,8 @@ def model_metrics(score: dict, instances: list[Instance], forecasts: list[dict],
     out["consistency"] = {**_rate(consistent, pairs), "questions_fully_consistent": _rate(sum(fully), len(fully))}
 
     # Trap catch rate over (load-bearing trap, affected question, rendering) triples. "fell" means the
-    # answer is one a reader produces by misreading this trap, alone or together with other traps.
+    # answer equals, within the scoring tolerance (the fallen answer as reference), one a reader produces by
+    # misreading this trap, alone or together with other traps.
     tally = {kind: Counter() for kind in trap_kinds(instances)}
     for inst in instances:
         for trap in inst.traps:
@@ -352,9 +377,11 @@ def held_out_metrics(rows: list[dict], index: Mapping[tuple, dict], instances: l
     twin pair never drifts more than one question apart), but not within each difficulty stratum,
     where a domain's share of public questions differs by chance and by which templates fit its
     records. So for a model with a large template gap a run's adjusted source gap moves by a few points
-    either way, with a bias over designs that is small but not zero: in 40 designs of 40 instances,
-    with the simulated model's 30-point template gap, the expected adjusted source gap ranged from -3.7
-    to +5.1 points (SD 2.1), against intervals of about ±20. A pool stratum would cost more coverage
+    either way, with a bias over designs that is small but not zero: in the final calibration (DESIGN.md,
+    Report additions: 120 designs of 100 instances with one held-out domain of four, the simulated
+    model's 30-point template gap and no held-out effect) the expected adjusted source gap averaged
+    -0.30 points, SD 1.6, against intervals of about ±14, and over the first 40 instances of 40 of them
+    its SD was 4.4, against intervals of about ±29. A pool stratum would cost more coverage
     than that.) The intervals of both gaps treat the instance as the independent unit (split_gap). An
     instance's split is the one it records; a genre's comes from `inventory`."""
     inventory = inventory or Inventory({}, {})
@@ -431,7 +458,7 @@ def split_gap(rows: list[dict], split_of: Callable[[dict], str | None],
     independent unit than with every row independent), and the stratified interval of the adjusted gap
     by the design effect of the rows that it compares. The adjusted gap's strata are too small for a
     cluster-robust variance of their own (a stratum of one row has no residual), so the design effect
-    is taken over its rows as one raw difference.
+    is taken over its rows as one raw difference. Both intervals are then cut to ±1 (_bounded).
 
     A side whose compared rows all come from one instance shows no spread between instances (its rows'
     residuals sum to zero within it), so no design effect widens its interval: one misread digest of a
@@ -457,12 +484,12 @@ def split_gap(rows: list[dict], split_of: Callable[[dict], str | None],
     if not n1 or not n2:
         return None
     gap, lo, hi = difference_ci(k1, n1, k2, n2)
-    lo, hi = widened(gap, lo, hi, math.sqrt(design_effect((iid, public, y) for iid, _, public, y in units)))
+    lo, hi = _bounded(*widened(gap, lo, hi, math.sqrt(design_effect((iid, public, y) for iid, _, public, y in units))))
     adjusted = stratified_difference(list(cells.values()))
     compared: list[tuple] = []
     if adjusted is not None:
         compared = [(iid, public, y) for iid, stratum, public, y in units if all(cells[stratum][1::2])]
-        adjusted = (adjusted[0], *widened(*adjusted[:3], math.sqrt(design_effect(compared))), adjusted[3])
+        adjusted = (adjusted[0], *_bounded(*widened(*adjusted[:3], math.sqrt(design_effect(compared)))), adjusted[3])
     spread = min(len({iid for iid, public, _ in compared if public == side}) for side in (True, False))
     return {"public": _rate(k1, n1), "held_out": _rate(k2, n2), "public_minus_held_out": gap, "ci95": [lo, hi],
             "adjusted": None if adjusted is None else
@@ -773,6 +800,13 @@ def _in_genre(genre: str | None, prefix: str = " ") -> str:
     return "" if genre is None else f"{prefix}in the {genre} genre"
 
 
+def _digest_020(inst: Instance, rendering: Any) -> bool:
+    """Whether a rendering off the legacy path is the 0.2.0 digest: earthquakes in the classic genre, which
+    keeps the 0.2.0 renderer and parser for them (genres.classic) and reads back at the precision it prints."""
+    return (rendering.genre == "classic" and inst.domain is not None
+            and isinstance(get_domain(inst.domain), Earthquakes))
+
+
 def _split_words(split: str | None) -> str:
     return "held out" if split == HELD_OUT else split or PUBLIC
 
@@ -883,10 +917,31 @@ def _listed(names: list[str]) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
+def _no_gap(run: dict, kind: str) -> str:
+    """Why no model has the gap of `kind` ("domains": the source gap, "genres": the genre gap), from the run's
+    inventory: the run holds none out, or drew none of its held-out (or of its public) ones."""
+    entries = (run.get("inventory") or {}).get(kind, {})
+    noun, gap, unit, count = (("domain", "source gap", "instance of", "instances") if kind == "domains" else
+                              ("genre", "genre gap", "rendering in", "renderings"))
+    held_out = [name for name, entry in entries.items() if entry["split"] == HELD_OUT]
+    if not held_out:
+        why = f"this run holds out no {noun}"
+    elif not any(entries[name][count] for name in held_out):
+        why = f"no {unit} the held-out {noun}{'s' if len(held_out) > 1 else ''} {_listed(held_out)} was drawn"
+    elif not any(entry[count] for entry in entries.values() if entry["split"] != HELD_OUT):
+        why = f"no {unit} a public {noun} was drawn"
+    else:
+        why = "no model was scored on both sides"
+    return f"no {gap}, since {why}."
+
+
 def _held_out_section(models: list[dict], run: dict) -> list[str]:
     """The source and genre gaps of a run with held-out domains or genres; nothing otherwise. A run whose
-    held-out sets are public says so (_public_held_out_note)."""
-    if not any(m.get("source_gap") or m.get("genre_gap") for m in models):
+    held-out sets are public says so (_public_held_out_note), and a gap that no model has says why (_no_gap):
+    a config can hold out a domain of which no instance was drawn."""
+    held_out = [name for kind in ("domains", "genres") for name, entry in
+                ((run.get("inventory") or {}).get(kind) or {}).items() if entry["split"] == HELD_OUT]
+    if not any(m.get("source_gap") or m.get("genre_gap") for m in models) and not held_out:
         return []
     md = ["## Public vs held-out domains and genres", "", *_public_held_out_note(run),
           "The private run config holds some domains and genres out. In a real evaluation they are defined in private "
@@ -902,7 +957,9 @@ def _held_out_section(models: list[dict], run: dict) -> list[str]:
           "or the other way round. Rows that no stratum compares are left out of the adjusted gap (the share that is "
           "compared is shown), and where no stratum compares the two sides, the adjusted gap is n/a. Each 95% CI "
           "treats the instance, not the question, as the independent unit: an instance's questions are read in one "
-          "digest and asked again in each rendering, so a model's answers to them go together. A large positive "
+          "digest and asked again in each rendering, so a model's answers to them go together. As with the template "
+          "gap, a raw interval has zero width where neither side's answers vary, an adjusted one never does, and "
+          "intervals stop at ±100 points. A large positive "
           f"adjusted gap flags a model tuned to the public domains or genres (flag: > {int(GAP_FLAG * 100)} points "
           "with a 95% CI that excludes 0, and the compared rows of each side from two instances or more, since the "
           "rows of a single instance show no spread between instances and leave the CI unwidened). It is a flag, "
@@ -911,6 +968,7 @@ def _held_out_section(models: list[dict], run: dict) -> list[str]:
     for key, title, what, rendered in (("source_gap", "Sources", "domains", "original renderings"),
                                        ("genre_gap", "Genres", "genres", "every rendering")):
         if not any(m.get(key) for m in models):
+            md += [f"**{title}:** {_no_gap(run, what)}", ""]
             continue
         rows = []
         for m in models:
@@ -989,10 +1047,15 @@ def render_markdown(data: dict, run_dir: Path) -> str:
           "Every instance in this run was generated fresh from the seed below, every answer key was computed by "
           "code from the frozen snapshot, and every score was computed automatically. No item was labelled by hand.", "",
           "## Run", ""]
+    # 0.2.0's "every derived seed is listed" misses the simulated model's seeds, one per prompt, which it derives
+    # at run time; a legacy report keeps it, word for word.
+    listed = ("every derived seed is listed in `manifest.json`." if legacy else
+              "every seed that generation derives is listed in `manifest.json`, and the simulated model (`mock`) "
+              "derives one per prompt from the listed `mock` seed and the prompt's SHA-256.")
     md += [
         f"- **Generated with:** evalgen {run.get('evalgen_version') or '?'} (the reading rules and templates are "
         "versioned with the code).",
-        f"- **Master seed:** `{run['seed']}` (commitment `{run['seed_commitment'][:24]}…`); every derived seed is listed in `manifest.json`.",
+        f"- **Master seed:** `{run['seed']}` (commitment `{run['seed_commitment'][:24]}…`); {listed}",
     ]
     if run.get("snapshots"):  # a run of several domains: one snapshot each
         md += _sources_lines(run)
@@ -1040,11 +1103,12 @@ def render_markdown(data: dict, run_dir: Path) -> str:
              "`naive` reads each digest with its genre's parser, as the oracle does, so the quoted and read-back "
              "repeats and the message times that the reading rules set aside never reach it; it then treats "
              f"every report as a separate {record} and ignores notices. Its answers depend on which reports a "
-             "digest holds and on what it prints of them. Every rendering of an instance prints the same reports, "
-             "so its consistency across renderings and genres is high by construction, except where a time or value "
-             "that one rendering prints more coarsely than another breaks a tie differently (the classic digest of "
-             "earthquakes prints some times to the minute): it says nothing about how a reader copes with a "
-             "genre's noise.")
+             "digest holds, on what it prints of them and on how its genre's parser reads them back: the classic "
+             "digest of earthquakes prints some times to the minute, and its parser, 0.2.0's, keeps a depth printed "
+             "in miles as converted (6.3 mi as 10.139 km, where every other parser rounds it to the stored 10.1 km). "
+             "Every rendering of an instance prints the same reports, so its consistency across renderings and genres "
+             "is high by construction, except where such a difference breaks a tie or meets a filter's threshold "
+             "differently: it says nothing about how a reader copes with a genre's noise.")
     md += ["`oracle` reads only the digest text and applies the reading rules, so it should score 100%. That shows every "
            f"item is answerable from the text. {naive} `mock` is a *simulated* model with built-in benchmark "
            "contamination, used to exercise the metrics without API keys; it is not a language model.", ""]
@@ -1109,9 +1173,9 @@ def render_markdown(data: dict, run_dir: Path) -> str:
            "run as a twin of one public template: the same final operation and number of filters, but a different "
            f"filter combination, and {balance}. The *adjusted* gap compares the pools like "
            "for like, within strata of equal code-computed difficulty (how many traps change the answer, and whether "
-           "the filters matter), so that the pools' different trap exposure is not mistaken for overfitting. A large "
-           f"positive adjusted gap flags overfitting to the published skeletons (flag: > {int(GAP_FLAG * 100)} points "
-           "with a 95% CI that excludes 0). It is a flag, not proof.", ""]
+           "the filters matter), so that the pools' different trap exposure is not mistaken for overfitting. "
+           f"{'' if legacy else INTERVALS_TEXT + ' '}A large positive adjusted gap flags overfitting to the published "
+           f"skeletons (flag: > {int(GAP_FLAG * 100)} points with a 95% CI that excludes 0). It is a flag, not proof.", ""]
 
     def adjusted(m: dict) -> str:
         a = m["gap"].get("adjusted")
@@ -1121,14 +1185,18 @@ def render_markdown(data: dict, run_dir: Path) -> str:
 
     md += _table(["model", "public (seen)", "new this run", "raw gap (95% CI)", "adjusted gap (95% CI)", "flag"],
                  [[m["model"], _frac(m["pools"]["public"]), _frac(m["pools"]["new"]),
-                   f"{100 * m['gap']['public_minus_new']:+.1f} pts ({100 * m['gap']['ci95'][0]:+.0f} to "
-                   f"{100 * m['gap']['ci95'][1]:+.0f})", adjusted(m),
+                   "n/a" if m["gap"]["public_minus_new"] is None else  # off the legacy path, a pool without rows
+                   _gap_text(m["gap"]["public_minus_new"], m["gap"]["ci95"]), adjusted(m),
                    "⚠ overfitting?" if m["gap"]["flagged"] else "—"] for m in models])
     md += _held_out_section(models, run)
 
+    # 0.2.0 says "gave exactly", but counts an answer equal to a fallen one within the scoring tolerance, as this
+    # code does; a legacy report keeps its words.
+    fell = ("gave exactly an answer a reader produces by missing that trap" if legacy else
+            "gave an answer equal, within the scoring tolerance, to one that a reader produces by missing that trap")
     md += ["## Trap catch rate", "",
            "Counted over (load-bearing trap, affected question, rendering) triples. *Caught* = answered correctly; "
-           "*fell* = gave exactly an answer a reader produces by missing that trap (alone or together with other traps).", ""]
+           f"*fell* = {fell} (alone or together with other traps).", ""]
     kinds = list(t["by_kind"])
     md += _table(["model", "caught (overall)", *(_words(k) for k in kinds), "fell for the trap"],
                  [[m["model"], _frac(m["traps"]["caught"])]
@@ -1144,10 +1212,18 @@ def render_markdown(data: dict, run_dir: Path) -> str:
     md += _by_domain_and_genre_section(models)
 
     sc, sample, verdicts = audit["self_check"], audit["human_sample"], audit["verdicts"]
+    # The resolution invariant is checked on each instance's reports and notices before they are rendered (inject_traps
+    # stops generation where it fails), not on the digest text: read from its text, the 0.2.0 digest of earthquakes
+    # gives the records back at the precision it prints. A legacy report keeps 0.2.0's "to each digest".
+    resolved = f"{sc['resolution_invariant_instances']}/{run['instances']} instances"
+    resolution = (f"Applying the reading rules to each digest recovered the snapshot exactly for {resolved}." if legacy
+                  else "Applying the reading rules to each instance's reports and notices, before they are rendered, "
+                  f"recovered the snapshot exactly for {resolved} (generation stops where they do not)."
+                  + (" The classic digest of earthquakes, 0.2.0's, reads them back at the precision it prints."
+                     if any(_digest_020(inst, r) for inst in instances.values() for r in inst.renderings) else ""))
     md += ["## Generator audit", "",
            f"- **Automated self-check:** for {sc['oracle_agreements']}/{sc['oracle_checks']} question-renderings, the "
-           f"digest-only oracle agreed with the code-computed key. Applying the reading rules to each digest recovered the "
-           f"snapshot exactly for {sc['resolution_invariant_instances']}/{run['instances']} instances."
+           f"digest-only oracle agreed with the code-computed key. {resolution}"
            + (f" Problems: {'; '.join(sc['problems'][:5])}" if sc["problems"] else ""),
            f"- **Human spot-check sample:** {sample['sampled']} of {sample['population']} generated items "
            f"({_pct(sample['sampled'] / sample['population'] if sample['population'] else None)}; target {_pct(sample['rate'])}) → "

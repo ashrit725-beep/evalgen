@@ -1274,11 +1274,14 @@ def test_a_report_says_which_held_out_sets_are_public_code_and_shows_what_the_mo
     assert "the two templates of a twin pair are never more than one question apart" in markdown
     assert "each twin pair is used equally often" not in markdown  # the 0.2.0 sentence, which legacy reports keep
     assert "`naive` reads each digest with its genre's parser" in markdown and "treats every line" not in markdown
-    # Its answers depend on what a rendering prints of its reports, not only on which reports it holds: the classic
-    # digest of earthquakes prints some times to the minute, which can break a tie between two reports of one
-    # magnitude otherwise than a table, printing seconds, does.
-    assert "depend only on which reports" not in markdown and "breaks a tie differently" in markdown
-    assert "Its answers depend on which reports a digest holds and on what it prints of them." in markdown
+    # Its answers depend on what a rendering prints of its reports and on how its genre's parser reads them back,
+    # not only on which reports it holds: the classic digest of earthquakes prints some times to the minute, which
+    # can break a tie between two reports of one magnitude otherwise than a table, printing seconds, does; and its
+    # 0.2.0 parser keeps 6.3 mi as 10.139 km where the others read the stored 10.1 km, which can meet a filter's
+    # threshold otherwise (the final audit's finish3#1).
+    assert "depend only on which reports" not in markdown and "breaks a tie or meets a filter's threshold" in markdown
+    assert ("Its answers depend on which reports a digest holds, on what it prints of them and on how its genre's "
+            "parser reads them back") in markdown
     # The flag of the source and genre gaps is stated whole: it also needs each side's compared rows to come from two
     # instances or more (split_gap), which the template gap's flag does not.
     assert ("adjusted gap flags a model tuned to the public domains or genres (flag: > 10 points with a 95% CI that "

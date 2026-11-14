@@ -3,7 +3,11 @@
 Every random choice in evalgen flows from ONE master seed. A component asks for its own RNG by a
 readable path, e.g. ``seedlog.rng("instance", 3, "traps")``. The child seed is derived with
 SHA-256 (not Python's salted ``hash()``), so it is identical across runs, machines and Python
-versions, and every derived seed is recorded in the run manifest.
+versions. Every seed that generation derives is recorded in the run manifest ("seeds"), the
+simulated model's ("mock") among them. The simulated model answers later, at run time, and derives
+one more seed per prompt through a SeedLog of its own, from the "mock" seed and the prompt's SHA-256
+(``SeedLog(mock).rng("mock", sha256)``). Those are not listed, but they derive again from what is
+recorded: each stored reply records its prompt's SHA-256 (prompt_sha256).
 
 Threat-model note: the method is public, so the *seed* is the only secret, and it must be one that
 nobody can guess. Draw a fresh seed at evaluation time (``fresh_seed``, 64 random bits: what
