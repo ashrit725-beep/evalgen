@@ -211,9 +211,10 @@ def test_no_notice_is_headed_as_a_line_without_data_and_no_such_line_as_a_notice
 # Words that the reading rules or the genres give a meaning of their own, which a duplicate note must not
 # borrow. The rules on messages (rules 6 and 7 of a record domain, 10 and 11 of the earthquake rules) say
 # that a forwarded or relayed report "is not a repeat: it counts, once", so a re-report noted "relay of
-# <ID>" reads as a report that counts on its own, where rule 1 makes it that record; a message's sent time
-# is never a record's; and a radio net's procedure words carry no data.
-MESSAGE_WORDS = ("send", "sent", "forward", "relay", "quote", "read back", "readback", "read-back", "copy",
+# <ID>" reads as a report that counts on its own, where rule 1 makes it that record; that a quoted or
+# read-back "repeat" is no new report, so a re-report noted "repeat filing of <ID>" reads as one that rule 7
+# sets aside; a message's sent time is never a record's; and a radio net's procedure words carry no data.
+MESSAGE_WORDS = ("send", "sent", "forward", "relay", "quote", "repeat", "read back", "readback", "read-back", "copy",
                  "roger", "wilco", "over", "echo")
 
 
@@ -224,9 +225,11 @@ def message_words(note: str) -> list[str]:
 def test_no_duplicate_note_reads_as_a_message_the_rules_count(toys):
     """A duplicate note makes a re-report the record it names (rule 1). Weather's "relay of <ID>" also
     named what rule 7 says "is not a repeat: it counts, once", and so read as the careless split the
-    duplicate trap records. No note of any domain, surface or plugin borrows a word the rules or the
-    genres give another meaning."""
+    duplicate trap records, and the invented domain's "repeat filing of <ID>" named what rule 7 calls a
+    repeat, which is no new report. No note of any domain, surface or plugin borrows a word the rules or
+    the genres give another meaning."""
     assert message_words("relay of") == ["relay"] and message_words("Forwarded from") == ["forward"]
+    assert message_words("repeat filing of") == ["repeat"]
     notes = [(name, note) for name in ("earthquakes", "weather", "neo", "invented")
              for note in get_domain(name).trap_vocab.duplicate_notes]
     notes += [("toy", note) for note in toys.toy.trap_vocab.duplicate_notes]
@@ -235,6 +238,53 @@ def test_no_duplicate_note_reads_as_a_message_the_rules_count(toys):
               for note in Surface.from_dict(INVENTED.draw_surface(random.Random(seed))).trap_vocab.duplicate_notes]
     assert ("weather", "same observation as") in notes and len({name for name, _ in notes}) == 7
     assert [(name, note) for name, note in notes if message_words(note)] == []
+
+
+def test_the_record_rules_quote_every_duplicate_note_a_digest_prints(toys):
+    """Rules 3 and 4 quote the phrases of a domain's corrections and retractions; rule 1 quotes the notes
+    of its re-reports too ("same observation as", "mirror of" ... followed by the ID), so that a note that
+    alone decides an answer ("also logged as QBM/25342", which the invented domain draws per instance) is
+    never a gotcha either. The earthquake rules off the legacy path keep the 0.2.0 rules 1-8, whose rule 1
+    names the note by what it does, as 0.2.0 did."""
+    bound = [INVENTED.bind(INVENTED.draw_surface(random.Random(seed))) for seed in range(40)]
+    dressed = toys.dressed
+    bound += [dressed.bind(dressed.draw_surface(random.Random(seed))) for seed in range(10)]
+    for domain in (get_domain("weather"), get_domain("neo"), toys.toy, toys.flat, *bound):
+        rules = " ".join(domain.rules_text().split())
+        rule_1 = rules[rules.index("1. "):rules.index("2. ")]
+        notes = domain.trap_vocab.duplicate_notes
+        assert notes and all(f'"{note}"' in rule_1 for note in notes), (domain.name, notes)
+        assert f"followed by that {domain.id_label}." in rule_1
+    earthquakes = " ".join(get_domain("earthquakes").rules_text().split())
+    assert RULES[RULES.index("1. "):RULES.index("9. ")] in earthquakes  # 0.2.0 rules 1-8, word for word
+
+
+def test_a_settling_report_settles_a_records_time_and_position_as_well_as_its_values(toys):
+    """A re-report or a second report stands where its slot stands, at a time and a place of its own (traps),
+    so it can fall inside a question's time window or nearer to a point than its record. Rule 2 says that the
+    settling report's time and position (for records that have one) supersede the unsettled report's, not only
+    its values, and so does the glossary's line on statuses, which every prompt off the legacy path prints,
+    earthquakes' included (their rules keep the 0.2.0 rule 2). The glossary of a run generated before the line
+    named them is still read."""
+    for domain in (get_domain("weather"), toys.toy):
+        rules = " ".join(domain.rules_text().split())
+        final, draft = domain.statuses
+        assert (f'use the time, position and values from its "{final}" report: "{draft}" times, positions and '
+                "values are superseded.") in rules, domain.name
+    for domain in (get_domain("neo"), get_domain("invented"), toys.flat):  # records without a position
+        rules = " ".join(domain.rules_text().split())
+        final, draft = domain.statuses
+        assert (f'use the time and values from its "{final}" report: "{draft}" times and values are '
+                "superseded.") in rules, domain.name
+    for name, settled in (("earthquakes", "time, position and values"), ("weather", "time, position and values"),
+                          ("neo", "time and values"), ("invented", "time and values")):
+        domain = get_domain(name)
+        final, draft = domain.statuses
+        text = render_glossary(domain.glossary())
+        line = f'- Statuses: {indefinite(final)} "{final}" report settles a record\'s {settled}; '
+        assert line in text, (name, text)
+        before = text.replace(f"settles a record's {settled};", "settles a record's values;")
+        assert parse_glossary(before) == parse_glossary(text) == domain.glossary()
 
 
 # ------------------------------------------------------------------------- times, articles, definitions
@@ -290,8 +340,8 @@ def test_every_article_in_the_rules_fits_the_word_it_stands_before(toys):
     vowels.noun, vowels.group_label, vowels.statuses = "event", "inlet", ("authoritative", "estimated")
     texts.add(vowels.rules_text())
     glossary = render_glossary(vowels.glossary())  # the glossary words its statuses as the rules do
-    assert ('- Statuses: an "authoritative" report settles a record\'s values; an "estimated" report does not.'
-            in glossary) and parse_glossary(glossary) == vowels.glossary()
+    assert ('- Statuses: an "authoritative" report settles a record\'s time, position and values; an "estimated" '
+            'report does not.' in glossary) and parse_glossary(glossary) == vowels.glossary()
     texts.add(glossary)
     flat = {" ".join(text.split()) for text in texts}
     assert any("An outpost in a question" in text for text in flat)  # the surfaces drew one

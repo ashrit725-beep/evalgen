@@ -306,7 +306,9 @@ class _Boxed(_Frame):
         "id": "{Id_label}", "source": "{Source_label}", "status": "Status", "time": "Date and time of {noun}",
         "group": "{Group_label}", "position": "Position", "value": "{Label}", "qualifier": "{qualifier}",
         "xref": "Cross-reference", "place": "Location note", "sent": "Form sent", "prepared": "Prepared by",
-        "target": "Refers to {id_label}", "original": "Original form no.", "issued": "Issued",
+        # The amendment's own issue time shares a row with the number of the form it amends, so its label says
+        # whose time it is: a bare "Issued" there could be read as when the original form was issued.
+        "target": "Refers to {id_label}", "original": "Original form no.", "issued": "Amendment issued",
         "amended": "Field amended", "old": "Entry as first filed", "new": "Corrected entry",
         "new_qualifier": "Corrected {qualifier}", "reason": "Reason", "action": "Action taken",
     }

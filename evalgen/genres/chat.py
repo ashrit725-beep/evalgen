@@ -373,9 +373,11 @@ def _render_log(ctx: RenderContext, glossary: Glossary) -> str:
     for _ in range(max(1, round(noise["off_topic"] * len(ctx.reports)))):
         nick = rng.choice(people)
         log.append(_Message(rng.randrange(start, end), f"{nick}: {rng.choice(OFF_TOPIC)}", nick))
-    for text in ctx.chatter:
+    for i, text in enumerate(ctx.chatter):  # a line that tells of a window is posted after it (timed_chatter)
         nick = rng.choice([*people, bot])
-        log.append(_Message(rng.randrange(start, end), f"{nick}: {text}", nick))
+        after = ctx.chatter_after[i] if i < len(ctx.chatter_after) else None
+        earliest = start if after is None else min(max(start, after + 60), end - 1)
+        log.append(_Message(rng.randrange(earliest, end), f"{nick}: {text}", nick))
     for nick in rng.sample(people, rng.randint(1, 2)):  # joins, each before the newcomer's first line
         first = min((message.at for message in log if message.nick == nick), default=end)
         joined = min(max(start, first - rng.randint(60, 1800)), first - 1)

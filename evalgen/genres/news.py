@@ -31,7 +31,9 @@ carries no data.
 
 Every word of a paragraph comes from the prompt's glossary (the records' noun, the source label, the
 field labels, units and qualifiers, the status words and the ID pattern) or from the domain's trap
-vocabulary (duplicate notes, retraction phrases), which its reading rules quote. Each value is written
+vocabulary (duplicate notes, retraction phrases), which the record rules of every domain but earthquakes
+quote, and the 0.2.0 earthquake rules name by what they say ("a note naming the event ID it duplicates",
+"withdrawn"). Each value is written
 in a unit the style draws with the exact codec of evalgen.units, times to the second with their UTC
 offset stated, and positions as stored. The parser reads each paragraph back through the glossary
 alone; every free word (a source, a group, a place) sits between typed slots (an ID, a status, a

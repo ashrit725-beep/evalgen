@@ -212,11 +212,14 @@ def _unit_names(field: GlossaryField) -> Mapping[str, Unit]:
 
 def _spoken(field: GlossaryField, value: float, unit: Unit | None, words: bool) -> str:
     """A stored value written in `unit` with the exact codec, then the unit by its words (`words`, where
-    they name it alone) or by its symbol: "54.1 degrees Fahrenheit", "12.3 °C", or "4.27" without units."""
+    they name it alone) or by its symbol: "54.1 degrees Fahrenheit", "12.3 °C", or "4.27" without units. A
+    unit's words are its plural ("knots"), and the glossary a transcript is read through names no singular,
+    so a value of exactly 1 (or -1) takes its symbol instead: "1 kt", never "1 knots"."""
     text = field.encode(value, unit)
     if unit is None:
         return text
-    name = unit.words if words and _unit_names(field).get(unit.words) == unit else unit.symbol
+    plural = text.lstrip("-") != "1"
+    name = unit.words if words and plural and _unit_names(field).get(unit.words) == unit else unit.symbol
     return f"{text} {name}"
 
 

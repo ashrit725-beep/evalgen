@@ -444,8 +444,12 @@ class _Words:
 def _render(ctx: RenderContext, glossary: Glossary) -> str:
     """The thread of `ctx`'s reports, notices and chatter, as `ctx.style` draws it. Every step draws from
     the rendering's own stream, in this order: the items, the people, the messages and their item
-    styles, the notices, the chatter, the replies that only acknowledge, the order, the dates and
-    subjects, and the text. Reports and notices are written in their generic form (generic_items)."""
+    styles, the notices, the replies that only acknowledge (each from someone other than the sender of
+    the message it answers), the order, the dates, the chatter (each line in a message sent after the
+    window it tells of: _remark), the subjects, and the text. A reply that only acknowledges answers the
+    message before it, a forward included, and takes its subject ("Re: Fwd: CORRECTION: ..."); every
+    other reply is titled after the thread. Reports and notices are written in their generic form
+    (generic_items)."""
     rng, style, vocab = ctx.rng, ctx.style, ctx.domain.trap_vocab
     reports: list[RecordReport] = generic_items(ctx.domain, ctx.reports)
     sources = sorted({r.source for r in reports})
@@ -477,20 +481,47 @@ def _render(ctx: RenderContext, glossary: Glossary) -> str:
             rng.choice([m for m in messages if m.kind == "reports"]).forwards.append(forward)
         else:
             messages.append(_Message(rng.choice(coordinators + list(desks.values())), "forward", forwards=[forward]))
-    talkers = [m for m in messages if m.kind != "forward"]
-    for line in ctx.chatter:
-        rng.choice(talkers).chatter.append(line if LABELLED.match(line) else rng.choice(REMARKS) + line)
     acks = [_Message(rng.choice(coordinators + list(desks.values())), "ack")
             for _ in range(rng.randint(1, 2) if style["thread"] == "roundup" else rng.randint(0, 2))]
     messages = _ordered(messages, acks, style["thread"], rng)
+    people = coordinators + list(desks.values())
+    for previous, m in zip(messages, messages[1:]):  # nobody thanks themselves for a message they sent
+        if m.kind == "ack" and m.sender == previous.sender:
+            m.sender = rng.choice([p for p in people if p != previous.sender])
     _date(messages, ctx.compiled_at, rng)
+    _remark(messages, ctx.chatter, ctx.chatter_after, people, rng)
     subject = words.fill(rng.choice(SUBJECTS), date=_day(messages[0].date))
     for k, m in enumerate(messages):
-        m.subject = (f"Fwd: {m.forwards[0].subject}" if m.kind == "forward" else subject if k == 0
-                     else f"Re: {subject}")
+        if m.kind == "forward":
+            m.subject = f"Fwd: {m.forwards[0].subject}"
+        elif k == 0:
+            m.subject = subject
+        elif m.kind == "ack" and messages[k - 1].kind == "forward":  # it answers, and quotes, the forward
+            m.subject = f"Re: {messages[k - 1].subject}"
+        else:
+            m.subject = f"Re: {subject}"
         if rng.random() < 0.3:
             m.cc = rng.choice([p for p in coordinators + list(desks.values()) if p != m.sender])
     return _write(messages, style, rng, words)
+
+
+def _remark(messages: list[_Message], chatter: Sequence[str], after: Sequence[int | None], people: Sequence[_Person],
+            rng: random.Random) -> None:
+    """Each chatter line as a remark of a message other than a forward, drawn among those sent after the window
+    the line tells of (after[i], digest.timed_chatter), so that no message speaks of a station's maintenance
+    before it ended. A line that no such message follows goes in a reply that only acknowledges, sent after
+    the window and after the thread's last message, from someone other than its sender."""
+    for i, line in enumerate(chatter):
+        earliest = after[i] if i < len(after) else None
+        talkers = [m for m in messages if m.kind != "forward" and (earliest is None or m.date >= earliest + 60)]
+        if not talkers:
+            last = messages[-1]
+            ack = _Message(rng.choice([p for p in people if p != last.sender]), "ack")
+            ack.date = max(last.date + rng.randint(2, 50) * 60 + rng.randint(0, 59),
+                           earliest + rng.randint(4, 75) * 60 + rng.randint(0, 59))
+            messages.append(ack)
+            talkers = [ack]
+        rng.choice(talkers).chatter.append(line if LABELLED.match(line) else rng.choice(REMARKS) + line)
 
 
 def _people(rng: random.Random, sources: Sequence[str], zones: Mapping[str, int],
@@ -596,8 +627,10 @@ def _date(messages: Sequence[_Message], compiled_at: int, rng: random.Random) ->
 
 
 def _write(messages: Sequence[_Message], style: Mapping[str, Any], rng: random.Random, words: _Words) -> str:
-    """The thread as text: each message's headers, its own text and, for most replies, a quote of the
-    message before it."""
+    """The thread as text: each message's headers, its own text and, for many replies, a quote of the
+    message before it. A reply that only acknowledges always quotes it, under its subject (_render); a
+    message of reports, titled after the thread, quotes it half the time, and never a forward, whose
+    subject is another."""
     out: list[str] = []
     previous: _Message | None = None
     for m in messages:
@@ -607,7 +640,8 @@ def _write(messages: Sequence[_Message], style: Mapping[str, Any], rng: random.R
         out.append("")
         m.own = _own_text(m, style, rng, words)
         out += m.own
-        if previous is not None and m.kind != "forward" and (m.kind == "ack" or rng.random() < 0.5):
+        if previous is not None and m.kind != "forward" and (
+                m.kind == "ack" or (previous.kind != "forward" and rng.random() < 0.5)):
             out += ["", *_quote(previous, style, rng, words)]
         previous = m
     return "\n".join(out)

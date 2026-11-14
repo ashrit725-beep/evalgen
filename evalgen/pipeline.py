@@ -42,7 +42,7 @@ from . import __version__
 from .adapters import DEFAULT_MAX_TOKENS, AdapterError, MissingKey, Task, is_truncated, make_adapter, token_usage
 from .answers import parse_reply
 from .audit import write_audit_sample
-from .digest import make_chatter
+from .digest import make_chatter, timed_chatter
 from .domains import get_domain
 from .domains.base import Domain
 from .domains.earthquakes import EARTHQUAKES
@@ -342,8 +342,15 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
             "filters_matter": not same_answer(q.answer_type, execute(unfiltered, events, units=units),
                                               answer_key[q.qid], unit=q.unit),
         }
-    chatter = make_chatter(seedlog.rng("instance", index, "chatter"), snapshot.compiled_at,
-                           sorted({e.source for e in events}), domain.chatter, domain.words)
+    chatter_after: list[int | None] | None = None
+    if off_legacy:  # no line about a source's station names a window in which it filed a report, nor is posted early
+        timed = timed_chatter(seedlog.rng("instance", index, "chatter"), snapshot.compiled_at,
+                              sorted({e.source for e in events}), domain.chatter, domain.words,
+                              [(g.source, g.time) for g in map(domain.to_generic, reports)])
+        chatter, chatter_after = [text for text, _ in timed], [after for _, after in timed]
+    else:
+        chatter = make_chatter(seedlog.rng("instance", index, "chatter"), snapshot.compiled_at,
+                               sorted({e.source for e in events}), domain.chatter, domain.words)
     forecaster = domain.forecaster
     forecast = None
     if forecaster is not None and snapshot.source == forecaster.source:
@@ -360,7 +367,7 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
         style = genre.choose_style(rng, domain, avoid=avoid)
         digest = genre.render(RenderContext(reports, notices, chatter, compiled_at=snapshot.compiled_at,
                                             window_hours=snapshot.window_hours, style=style, rng=rng, domain=domain,
-                                            glossary=glossary))
+                                            glossary=glossary, chatter_after=chatter_after or ()))
         texts = {q.qid: phrase_question(q, rng, alt_units=v > 0 and rng.random() < 0.5, domain=domain,
                                         lexicon=lexicon)
                  for q in questions}
@@ -381,7 +388,7 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
         window_hours=snapshot.window_hours, event_ids=[e.id for e in events], reports=reports, notices=notices,
         chatter=chatter, traps=traps, questions=questions, answer_key=answer_key, renderings=renderings,
         forecast=forecast, domain=None if genre_plan is None else domain.name,
-        split=None if genre_plan is None else split, surface=composed.surface,
+        split=None if genre_plan is None else split, surface=composed.surface, chatter_after=chatter_after,
     )
 
 
@@ -965,6 +972,14 @@ def resolve_run(run_dir: Path, *, now: int | None = None, fetch: Callable | None
     return summary
 
 
+def demo_name(cfg: GenerateConfig) -> str:
+    """The default folder of a demo: demo-<run name> (run_name), as in 0.2.0, and demo-heldout-<run name> for a
+    demo with a private run config, so that the demo of the held-out metrics and the same mix without them
+    (`demo --mix random`, with and without --private-config) never write over each other. (The legacy demo's,
+    runs/demo-synthetic-seed42, is 0.2.0's, and the repository keeps the report of a live run there.)"""
+    return f"demo-{'heldout-' if cfg.private_config else ''}{run_name(cfg)}"
+
+
 def demo(seed: int = 42, instances: int = 20, *, source: str = "synthetic", mix: str = LEGACY,
          private_config: str | None = None, run_dir: Path | None = None, force: bool = False,
          log: Log = print) -> Path:
@@ -972,12 +987,12 @@ def demo(seed: int = 42, instances: int = 20, *, source: str = "synthetic", mix:
     source="synthetic" (the default); "usgs" or "live" fetch each domain's live source once (the NWS once per
     station), falling back to synthetic data when it cannot be read.
 
-    `mix` and `private_config` are generate's (GenerateConfig). The default directory
-    runs/demo-<source>-seed<seed> (with the mix first for any mix but legacy) is overwritten on every
+    `mix` and `private_config` are generate's (GenerateConfig). The default directory (demo_name:
+    runs/demo-<source>-seed<seed>, with the mix first for any mix but legacy) is overwritten on every
     demo; an explicit run_dir is only overwritten with force=True (and only if it is an evalgen run
     directory)."""
     cfg = GenerateConfig(seed=seed, instances=instances, source=source, mix=mix, private_config=private_config)
-    default = RUNS_DIR / f"demo-{run_name(cfg)}"
+    default = RUNS_DIR / demo_name(cfg)
     run_dir = Path(run_dir) if run_dir else default
     generate(cfg, run_dir, force=force or run_dir == default, log=log)
     run_models(run_dir, ["mock", "oracle", "naive"], private_config=private_config, log=log)

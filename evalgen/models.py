@@ -169,8 +169,11 @@ class Instance:
     domain: str | None = None
     split: str | None = None  # "public" or "held_out"
     surface: dict[str, Any] | None = None
+    # Off the legacy path, for each chatter line, the time after which a genre may post it: the last minute of the
+    # window it tells of, or None (digest.timed_chatter), so that a rendering can be drawn again from the instance.
+    chatter_after: list[int | None] | None = None
 
-    OPTIONAL_KEYS: ClassVar[tuple[str, ...]] = ("domain", "split", "surface")
+    OPTIONAL_KEYS: ClassVar[tuple[str, ...]] = ("domain", "split", "surface", "chatter_after")
 
     def to_dict(self) -> dict[str, Any]:
         """asdict, without the optional keys that are unset (here and in every notice and rendering)."""
@@ -200,6 +203,7 @@ class Instance:
             domain=d.get("domain"),
             split=d.get("split"),
             surface=d.get("surface"),
+            chatter_after=d.get("chatter_after"),
         )
 
     def question(self, qid: str) -> Question:

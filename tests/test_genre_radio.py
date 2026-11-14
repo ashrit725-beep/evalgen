@@ -162,6 +162,29 @@ def test_awkward_words_read_back_and_unprintable_ones_are_refused(toys):
                                                                                     toys.flat.glossary(), toys.flat)
 
 
+def test_a_value_of_one_is_spoken_with_its_units_symbol_never_a_plural():
+    """A unit's words are its plural, and a transcript's glossary names no singular, so a value of exactly 1
+    (a 1.9 km/h wind is 1 kt) is spoken with the unit's symbol: "wind speed 1 kt", never "1 knots". Any other
+    value keeps the words its style draws, and both read back."""
+    weather = get_domain("weather")
+    glossary = weather.glossary()
+    wind, temperature = (next(f for f in glossary.fields if f.key == key) for key in ("wind", "temp"))
+    knots, celsius = (next(u for u in f.units if u.symbol == symbol)
+                      for f, symbol in ((wind, "kt"), (temperature, "°C")))
+    assert radio._spoken(wind, 1.9, knots, True) == "1 kt" and radio._spoken(wind, 3.7, knots, True) == "2 knots"
+    assert radio._spoken(temperature, -1.0, celsius, True) == "-1 °C"
+    assert radio._spoken(temperature, 1.5, celsius, True) == f"1.5 {celsius.words}"
+    names = radio._unit_names(wind)
+    assert wind.decode("1", names["kt"]) == 1.9 and wind.decode("2", names["knots"]) == 3.7
+    style = {**next(styles(weather)), "unit_names": "words"}
+    for inst in instances_of(weather, seed=12, n=2):
+        for k in range(3):
+            text = RADIO.render(RenderContext(inst.reports, inst.notices, inst.chatter, inst.compiled_at,
+                                              inst.window_hours, style, random.Random(k), weather, glossary))
+            words = {u.words for f in glossary.fields for u in f.units}
+            assert not re.search(rf"(?<![\d.])-?1 (?:{'|'.join(map(re.escape, words))})\b", text)
+
+
 # ------------------------------------------------------------------- what is not a report
 
 

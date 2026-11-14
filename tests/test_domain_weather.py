@@ -800,7 +800,9 @@ def test_the_rules_name_every_notice_wording_and_add_the_weather_rule():
         (notice,) = CLASSIC.parse(line, glossary, WEATHER).notices
         assert replace(notice, time=0) in [replace(n, time=0) for n in notices], line
         phrases = vocab.retraction_notices if notice.kind == "retraction" else vocab.correction_notices
-        assert any(p in line for p in phrases) or line.startswith(("RETRACTION", "CORRECTION", "Revised")), line
+        # Every correction gives its value after a phrase the rules quote ("Revised ...: WX-... temperature now"
+        # did not); a retraction may say RETRACTION and "was not a real weather observation" instead.
+        assert any(p in line for p in phrases) or (notice.kind == "retraction" and line.startswith("RETRACTION")), line
     assert len(wordings) >= 15
 
 

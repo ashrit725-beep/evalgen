@@ -160,9 +160,11 @@ PLACE_WORDS = ("Reach", "Cross", "Gate", "Point", "Landing", "Hollow", "Fork", "
                "Bend", "Hythe", "Staithe")
 AGENCY_WORDS = ("Freight", "Haulage", "Carriers", "Logistics", "Transit", "Lines", "Couriers", "Cartage", "Shipping",
                 "Movers", "Forwarding")
-# No radio procedure words ("copy", "relay", "echo"), which a transcript genre prints as chatter.
-DUPLICATE_NOTES = ("same {noun} as", "duplicate of", "dup of", "re-entry of", "mirror of", "repeat filing of",
-                   "double entry of", "also logged as")
+# No radio procedure words ("copy", "relay", "echo"), which a transcript genre prints as chatter, and no word
+# that the reading rules give a meaning of their own: "repeat filing of" named what rule 7 calls a quoted or
+# read-back repeat, which is no new report.
+DUPLICATE_NOTES = ("same {noun} as", "duplicate of", "dup of", "re-entry of", "mirror of", "double entry of",
+                   "also logged as")
 RETRACTION_REASONS = ("ledger echo", "scanner misread", "test manifest", "phantom tally", "mislabelled crate",
                       "double scan", "dummy entry", "training record", "gate sensor fault", "clerical ghost",
                       "stale import", "barcode collision", "misrouted feed", "keying error")

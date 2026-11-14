@@ -89,7 +89,7 @@ def styles(domain, seed: int):
 
 def render(inst, domain, style, rng) -> str:
     return CHAT.render(RenderContext(inst.reports, inst.notices, inst.chatter, inst.compiled_at, inst.window_hours,
-                                     style, rng, domain, domain.glossary()))
+                                     style, rng, domain, domain.glossary(), inst.chatter_after or ()))
 
 
 def voice_of(body: str, noun: str) -> str | None:
@@ -226,6 +226,24 @@ def test_a_message_is_stamped_when_it_was_posted_never_with_a_records_time(toys)
                         checked += 1
                         differ += at // 60 != item.time // 60
     assert checked > 1000 and differ > 0.6 * checked  # so the stamp is no stand-in for the time a report gives
+
+
+def test_a_chatter_line_about_a_window_is_posted_after_it(toys):
+    """A chatter line that tells of a window ("Sensor KPHL.PDF was offline for maintenance from 00:00 UTC on 4
+    March 2026 until 00:45 UTC") is posted after the window it tells of: posted anywhere in the log, it was
+    posted before the window in most logs (22 of 36 maintenance lines in 120 weather renderings), as though it
+    foretold it. A line that names no time may be posted anywhere."""
+    timed = 0
+    for domain in (get_domain("weather"), EARTHQUAKES, toys.toy):
+        for inst in instances_of(domain, seed=35, n=6):
+            assert inst.chatter_after is not None and len(inst.chatter_after) == len(inst.chatter)
+            for rendering in inst.renderings:
+                posted = {body: at for at, _, body in message_times(rendering.digest)}
+                for line, after in zip(inst.chatter, inst.chatter_after):
+                    if after is not None:
+                        assert posted[line] > after, (line, posted[line], after)
+                        timed += 1
+    assert timed >= 10, timed
 
 
 def test_the_log_is_drawn_from_the_rendering_stream_alone(toys):

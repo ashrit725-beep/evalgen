@@ -399,6 +399,11 @@ def test_every_amendment_is_a_notice_the_reading_rules_name(toys):
                     assert any(f" {phrase}. Disregard it." in block for phrase in vocab.retraction_notices), block
                 else:
                     assert " was revised; use the corrected entry." in block
+                # The amendment's issue time is never labelled as if it were the amended form's: in the boxed
+                # frame it shares a row with "Original form no.", where a bare "Issued" read as the original's.
+                for line in block.split("\n"):
+                    if "Original form no." in line and "ssued" in line:
+                        assert "Amendment issued: " in line and " Issued:" not in line, line
                 seen[notice.kind, frame_of(block)] += 1
         assert set(seen) == {(kind, frame) for kind in ("retraction", "correction") for frame in FRAME_NAMES}
 

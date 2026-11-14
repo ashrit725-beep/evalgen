@@ -1084,18 +1084,29 @@ def numbered_rules(rules: Sequence[str], start: int = 1) -> str:
                    for number, rule in enumerate(rules, start=start))
 
 
+def settled_parts(located: bool) -> tuple[str, str]:
+    """What the settling report of a record settles, as the rules (rule 2) and the glossary's line on statuses
+    word it, singular and plural: its time, its position when records have one, and its values. A re-report
+    or an early report stands where its slot stands, at a time of its own (traps), so a reader must know that
+    its time and position are superseded with its values, not only the values of its fields."""
+    return (("time, position and values", "times, positions and values") if located
+            else ("time and values", "times and values"))
+
+
 def record_rules(domain: Domain) -> str:
     """The reading rules of a domain that prints none of its own, in its words: which report settles a
-    record, how re-reports, corrections and retractions read, units, positions and times, and that
-    nothing else in a digest carries data. They are genre-neutral: they say what a notice, a note, a
-    repeat, a forward and a message time are in any kind of document, and they quote every phrase the
-    domain's notices print (its trap vocabulary), so that no notice is a gotcha. A report's time is
+    record (its time, position and values), how re-reports, corrections and retractions read, units,
+    positions and times, and that nothing else in a digest carries data. They are genre-neutral: they say
+    what a notice, a note, a repeat, a forward and a message time are in any kind of document, and they
+    quote every phrase of the domain's trap vocabulary that a digest prints (the notes of re-reports, and
+    the phrases of corrections and retractions), so that no note or notice is a gotcha. A report's time is
     defined once, as the domain words it (``Domain.report_time``), and every article fits the word it
     stands before, whatever words a domain or a drawn surface gives (``indefinite``)."""
     noun, id_label, source, group = domain.noun, domain.id_label, domain.source_label, domain.group_label
     final, draft = (f'"{status}"' for status in domain.statuses)
     a_final, a_draft = (indefinite(status) for status in domain.statuses)
     vocab = domain.trap_vocab
+    settled, superseded = settled_parts(domain.has_location)
     position = (" Positions are latitude then longitude in decimal degrees; signed values are negative for south "
                 "and west. Distances are great-circle distances on a sphere of radius 6371 km, given in km or in "
                 "miles (1 mile = 1.609344 km)." if domain.has_location else "")
@@ -1103,10 +1114,12 @@ def record_rules(domain: Domain) -> str:
         f"Every {noun} has exactly one {id_label}: the ID printed on its {final} report. "
         f"{indefinite(noun).capitalize()} {noun} may appear in several reports: {a_draft} {draft} report from its "
         f"own {source}, or a re-report from another {source}, either under the same {id_label} or under its own "
-        f"reference with a note naming the {id_label} it duplicates. Reports with the same {id_label}, or that "
-        f"name it in such a note, are the same {noun}. Count each {noun} once and refer to it by its {id_label}.",
-        f"If reports of the same {noun} disagree, use the values from its {final} report: {draft} values are "
-        "superseded.",
+        f"reference with a note naming the {id_label} it duplicates. Such a note reads "
+        f"{_alternatives(vocab.duplicate_notes)}, followed by that {id_label}. Reports with the same {id_label}, or "
+        f"that name it in such a note, are the same {noun}. Count each {noun} once and refer to it by its "
+        f"{id_label}.",
+        f"If reports of the same {noun} disagree, use the {settled} from its {final} report: {draft} {superseded} "
+        "are superseded.",
         f"{NOTICE_RULE} A correction (a CORRECTION notice, a notice saying that a value was revised, or any notice "
         f"saying {_alternatives(vocab.correction_notices)}) replaces the stated value for the named {noun}, even on "
         f"{a_final} {final} report.",

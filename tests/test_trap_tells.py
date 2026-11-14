@@ -27,20 +27,24 @@ import math
 import random
 import re
 from collections import Counter, defaultdict
+from dataclasses import replace
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
-from evalgen.domains.base import Record
+from evalgen import traps as traps_module
+from evalgen.domains.base import Record, RecordReport
 from evalgen.domains.earthquakes import EARTHQUAKES
 from evalgen.domains.invented import INVENTED
 from evalgen.domains.neo import NEO, designation_of
 from evalgen.domains.weather import WEATHER
 from evalgen.genres import get_genre
 from evalgen.geo import haversine_km
+from evalgen.models import Trap
 from evalgen.ops import DigestData, Step, execute, passes, role
 from evalgen.pipeline import GenerateConfig, build_instance
-from evalgen.questions import Context, compose_new_templates
+from evalgen.questions import Context, compose_new_templates, guards_ok
 from evalgen.rules import Mishandle
 from evalgen.scoring import is_correct, normalize
 from evalgen.seeds import SeedLog
@@ -772,13 +776,74 @@ def test_a_digest_holds_the_traps_its_plan_draws(sample):
     assert sum(load_bearing) / len(load_bearing) >= 2.7, sum(load_bearing) / len(load_bearing)
 
 
+def test_a_report_under_its_records_id_records_a_second_reports_readings(sample):
+    """A re-report filed under its record's own ID reads exactly as a second report does (the same ID, the
+    unsettled status, a slot's values, time and place; no genre prints a report's role), so it records the
+    second report's careless readings: counted as a record of its own, or its values taken for the record's.
+    It recorded the first alone, and the answers that taking its values changes were missing from its
+    `affected`, its questions' trap exposure and the attribution of wrong answers (in 18.5% of such re-reports
+    in earthquakes, neo and weather). The second reading names one report only while the record has no other
+    unsettled report, so a record with two (a re-report shares a record only where none is free of traps)
+    records none. Every guarded answer the reading changes is now among the trap's affected questions."""
+    checked = changed = 0
+    for digest in sample:
+        inst, bound = digest["inst"], digest["bound"]
+        data = DigestData(inst.reports, inst.notices)
+        unsettled = Counter((g.same_as or g.ref) for g in map(bound.to_generic, inst.reports)
+                            if g.status != bound.statuses[0])
+        margin = Context(inst.compiled_at, inst.window_hours).time_margin
+        for trap in inst.traps:
+            if trap.form != "same_id":
+                continue
+            readings = [Mishandle.from_dict(m) for m in trap.mishandles]
+            prefer = [m for m in readings if m.prefer_preliminary_for]
+            assert len(readings) == 1 + len(prefer) and readings[-1].split, trap  # the split last, as a second report's
+            assert len(prefer) == (unsettled[trap.target] == 1), (trap, unsettled[trap.target])
+            if not prefer:
+                continue
+            assert prefer[0].prefer_preliminary_for == (trap.target,)
+            checked += 1
+            misread = bound.resolve(inst.reports, inst.notices, prefer[0])
+            for q in inst.questions:
+                answer = execute(q.chain, data, mishandle=prefer[0], units=bound.units, resolver=bound.resolve)
+                if (not is_correct(q.answer_type, inst.answer_key[q.qid], answer, unit=q.unit)
+                        and guards_ok(q.chain, misread, domain=bound, time_margin=margin)):
+                    assert q.qid in trap.affected, (inst.instance_id, trap.trap_id, q.qid)
+                    changed += 1
+    assert checked >= 20 and changed >= 3, (checked, changed)
+
+
+def test_a_record_with_two_unsettled_reports_records_no_reading_of_their_values():
+    """Where two re-reports share a record (only where no record is free of traps), "its values taken for the
+    record's" would name whichever report a digest prints first, so neither records it: a re-report under the
+    record's ID that joins one records none (traps._unsettled), and one that an earlier re-report under the ID
+    recorded it for loses it once another joins (traps._unambiguous). A second report keeps its own."""
+    record = WEATHER.synthetic(random.Random(3), 1, 1_780_000_000, 24)[0]
+    own = RecordReport(ref=record.id, source=record.source, status="verified", time=record.time, lat=record.lat,
+                       lon=record.lon, group=record.group, values=dict(record.values), place=record.place)
+    cross = replace(own, ref="WX-000001", source="MADIS", status="preliminary", same_as=record.id, role="duplicate")
+    site = SimpleNamespace(domain=WEATHER, reports=[own])
+    assert not traps_module._unsettled(site, record.id)
+    site.reports.append(cross)
+    assert traps_module._unsettled(site, record.id) and not traps_module._unsettled(site, "WX-999999")
+    split = Mishandle(split=((record.id, "MADIS", "preliminary"),)).to_dict()
+    prefer = Mishandle(prefer_preliminary_for=(record.id,)).to_dict()
+    earlier = Trap("T1", "duplicate", "same_id", record.id, "", mishandles=[split, prefer])
+    second = Trap("T2", "conflicting_value", "second_report", "WX-123456", "", mishandles=[prefer, split])
+    elsewhere = Trap("T3", "duplicate", "same_id", "WX-654321", "", mishandles=[split, prefer])
+    joined = Trap("T4", "duplicate", "cross_ref", record.id, "", mishandles=[split])
+    traps_module._unambiguous([earlier, second, elsewhere], joined)
+    assert earlier.mishandles == [split] and second.mishandles == [prefer, split]
+    assert elsewhere.mishandles == [split, prefer]
+
+
 def test_how_many_reports_a_digest_plants_varies_widely_and_each_kind_on_its_own():
     """Planted reports were a steady share of a digest (two or three re-reports, a conflict and a retraction
     or more in every one), and lay in questions' scopes as real records do, so that a reader who took that
     share off every count, round(0.84 x the naive count), reading no status, ID, note or notice, was right on
     about 20 points more of the counting questions than the naive reader, and closed a tenth of the gap between
     the naive reader and the oracle, as much on held-out domains and genres. Now how many a digest plants
-    varies widely (none in about one digest in sixteen, up to thirteen), each kind is drawn on its own, and for
+    varies widely (none in about one digest in fifteen, up to thirteen), each kind is drawn on its own, and for
     any share of a digest's records that a counting question's scope holds, the planted reports in it are none
     about as often as any other number: within 5 points for the naive reader (every planted report; none of it
     below a scope of a third of the digest), 3 for a reader who merges reports by ID alone (the
@@ -853,6 +918,44 @@ def test_joint_misreadings_are_those_of_every_combination_of_traps(sample):
                     time_margin=Context(inst.compiled_at, inst.window_hours).time_margin)  # and again, alike
         assert {t.trap_id: {qid: {normalize(inst.question(qid).answer_type, a) for a in answers}
                             for qid, answers in t.fallen.items()} for t in traps} == stored
+
+
+def test_combinations_built_from_summaries_give_what_reading_each_one_gives(sample, monkeypatch):
+    """A question's answer follows from a summary of its rows that each trap's rows add to on their own (how many,
+    or the best for its terminal), so the combinations of the traps' readings are built trap by trap from those
+    summaries rather than read one by one (traps._reduced), which a re-report under its record's ID, with two
+    readings, made slow: three choices for each of up to eight of them in a digest (one digest of a 20-instance
+    demo took 16 s of its 20). Read one by one instead (traps._enumerated), every trap's fallen answers come out
+    the same, and the summaries apply to every terminal."""
+    from evalgen import traps as module
+
+    reduced = Counter()
+    real = module._reduced
+
+    def counting(q, *args, **kwargs):
+        outcome = real(q, *args, **kwargs)
+        reduced[outcome is not None] += 1
+        return outcome
+
+    for digest in sample[::3]:
+        inst, bound = digest["inst"], digest["bound"]
+        margin = Context(inst.compiled_at, inst.window_hours).time_margin
+
+        def fallen() -> dict:
+            return {t.trap_id: {qid: {normalize(inst.question(qid).answer_type, a) for a in answers}
+                                for qid, answers in t.fallen.items()} for t in inst.traps}
+
+        with monkeypatch.context() as patch:
+            patch.setattr(module, "_reduced", counting)
+            module.score_traps(inst.traps, inst.questions, inst.answer_key, inst.reports, inst.notices,
+                               domain=bound, time_margin=margin)
+            summarized = fallen()
+        with monkeypatch.context() as patch:
+            patch.setattr(module, "_reduced", lambda *args, **kwargs: None)  # every combination read one by one
+            module.score_traps(inst.traps, inst.questions, inst.answer_key, inst.reports, inst.notices,
+                               domain=bound, time_margin=margin)
+            assert fallen() == summarized, inst.instance_id
+    assert reduced[True] > 0 and reduced[False] == 0, reduced  # every question of the sample is summarized
 
 
 # --------------------------------------------------------------------------------- shortcut readers

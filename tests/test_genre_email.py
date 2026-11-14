@@ -27,6 +27,7 @@ from evalgen.domains.earthquakes import EARTHQUAKES
 from evalgen.genres import all_genres, detect_genre
 from evalgen.genres.base import TIME_FORMATS, RenderContext, parse_glossary, parse_time
 from evalgen.genres.classic import CLASSIC
+from evalgen.genres import email
 from evalgen.genres.email import COORD_PRESETS, EMAIL, STYLE, TIME_PRESETS, UNIT_PRESETS
 from evalgen.models import Instance, Notice, Report
 from evalgen.ops import DigestData, execute
@@ -91,7 +92,7 @@ def render(inst: Instance, domain, style, rng, glossary="domain") -> str:
     """`inst` rendered in the email genre with `style`, through `domain`'s glossary (or none)."""
     glossary = domain.glossary() if glossary == "domain" else glossary
     return EMAIL.render(RenderContext(inst.reports, inst.notices, inst.chatter, inst.compiled_at, inst.window_hours,
-                                      style, rng, domain, glossary))
+                                      style, rng, domain, glossary, inst.chatter_after or ()))
 
 
 def unquote(line: str, quotes: str) -> str:
@@ -241,6 +242,39 @@ def test_quoted_text_only_repeats_earlier_messages(toys, name):
     assert repeats > 0
 
 
+def _message_parts(message: str) -> tuple[str, str, str, bool]:
+    """A message of a thread: its sender, its subject, the first line of its own text, and whether it quotes."""
+    lines = message.split("\n")
+    blank = lines.index("")
+    headers = dict(line.split(": ", 1) for line in lines[:blank])
+    first = next(line for line in lines[blank:] if line)
+    return headers["From"], headers["Subject"], first, any(line.startswith(">") for line in lines)
+
+
+def test_a_reply_quotes_what_it_answers_under_that_messages_subject(toys):
+    """A reply quotes the message before it. One that only acknowledges always does, whatever it answers,
+    and comes from someone else ("Thanks, received." once quoted its own sender's message); after a forward,
+    which is titled after its notice, it takes the forward's subject ("Re: Fwd: CORRECTION: ..."), where it
+    was titled after the thread above a quote headed by the forward's subject. A message of reports is titled
+    after the thread and never quotes a forward."""
+    after_forward = acks = 0
+    for domain in (toys.toy, EARTHQUAKES):
+        for inst in instances_of(domain, seed=9, n=3):
+            for style, rng in styles(domain, inst.seed):
+                parts = [_message_parts(message) for message in MESSAGE_BREAK.split(render(inst, domain, style, rng))]
+                thread = parts[0][1]
+                for (sender, subject, first, quotes), previous in zip(parts[1:], parts):
+                    forward = previous[1].startswith("Fwd: ")
+                    if first in email.ACKS:
+                        assert quotes and sender != previous[0], (sender, previous[0])
+                        assert subject == f"Re: {previous[1] if forward else thread}", (subject, previous[1])
+                        after_forward += forward
+                        acks += 1
+                    elif not subject.startswith("Fwd: "):  # a message of reports
+                        assert subject == f"Re: {thread}" and not (quotes and forward), (subject, previous[1])
+    assert acks > 10 and after_forward > 0, (acks, after_forward)
+
+
 @pytest.mark.parametrize("name", ["toy-flat", "earthquakes"])
 def test_every_notice_arrives_as_a_forwarded_message(toys, name):
     domain = get_domain(name)
@@ -290,6 +324,25 @@ def test_message_dates_greetings_signatures_and_remarks_change_nothing(toys):
 
 
 MESSAGE_BREAK = re.compile(r"\n\n\n(?:\n|_{32}\n\n)")  # what separates the messages of a thread
+
+
+def test_a_remark_about_a_window_is_sent_after_it(toys):
+    """A chatter line that tells of a window ("... was offline for maintenance from 00:00 UTC on 4 March 2026
+    until 00:45 UTC") is a remark of a message sent after the window, never of one sent before it, which read as
+    though it foretold it; where no message of the thread is sent that late, a reply that only acknowledges
+    carries it, after the window and the thread's last message."""
+    timed = 0
+    for domain in (get_domain("weather"), EARTHQUAKES, toys.toy):
+        for inst in instances_of(domain, seed=36, n=6):
+            for rendering in inst.renderings:
+                for message in MESSAGE_BREAK.split(rendering.digest):
+                    sent = _sent(next(line for line in message.split("\n") if line.startswith("Date: ")))
+                    own = [line for line in message.split("\n") if not line.startswith(">")]
+                    for line, after in zip(inst.chatter, inst.chatter_after):
+                        if after is not None and any(text.endswith(line) for text in own):
+                            assert sent > after, (line, sent, after)
+                            timed += 1
+    assert timed >= 10, timed
 
 
 def _sent(header: str) -> int:

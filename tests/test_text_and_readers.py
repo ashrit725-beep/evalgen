@@ -36,7 +36,7 @@ from evalgen.domains.invented import SECONDARY, drawn_unit
 from evalgen.domains.neo import CHATTER as NEO_CHATTER
 from evalgen.domains.weather import CHATTER as WEATHER_CHATTER
 from evalgen.ops import execute
-from evalgen.pipeline import GenerateConfig, run_name
+from evalgen.pipeline import GenerateConfig, demo_name, run_name
 from evalgen.prompt import ANSWER_SPECS, KIND_SPECS
 from evalgen.questions import strict_answer_ok
 from evalgen.report import load_instances
@@ -96,6 +96,12 @@ def test_a_replay_is_named_as_one_and_whatever_source_it_is_given():
         assert run_name(GenerateConfig(seed=7, mix="neo:news", source=source, snapshot_file="cad.json")) == (
             "neo_news-replay-seed7")
     assert run_name(GenerateConfig(seed=7, mix="neo:news", source="live")) == "neo_news-live-seed7"
+    # A demo's default folder: 0.2.0's for the legacy demo, and one of its own for a demo of the held-out metrics,
+    # which wrote over the demo of the same mix without them.
+    assert demo_name(GenerateConfig(seed=42)) == "demo-synthetic-seed42"
+    assert demo_name(GenerateConfig(seed=42, mix="random")) == "demo-random-synthetic-seed42"
+    assert demo_name(GenerateConfig(seed=42, mix="random", private_config="configs/private.example.json")) == (
+        "demo-heldout-random-synthetic-seed42")
 
 
 def test_a_replay_keeps_the_fetch_time_and_says_when_its_seed_is_another(tmp_path):

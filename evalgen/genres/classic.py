@@ -12,7 +12,7 @@ prompt's glossary: its record noun, field labels (bulletin, prose, wire) or keys
 value in a unit the style draws, with the exact codec of evalgen.units), qualifiers, status words and
 ID pattern. Times are given to the second, in UTC or with their UTC offset stated; positions in
 hemispheres or signed; duplicate notes and notices are worded through the domain's trap vocabulary,
-which its reading rules quote. A prose line gives its time as the time the record was recorded, and
+which its reading rules quote (domains.base.record_rules). A prose line gives its time as the time the record was recorded, and
 places the record in its group with the domain's preposition ("in North Sea", "near Moon":
 Domain.group_preposition). The header and section heads are worded from the domain's words too.
 The parser reads every line back through the glossary alone, and every rendering is checked to read
@@ -279,7 +279,9 @@ def _qualifier(f: GlossaryField, r: RecordReport) -> str | None:
 
 def _notice_line(n: Notice, rng: random.Random, glossary: Glossary, vocab: TrapVocab, units: str) -> str:
     """A notice in one of three wordings of its kind, each using a phrase of the domain's trap vocabulary
-    or a keyword that its reading rules name; a correction gives both values in one drawn unit."""
+    or a keyword that its reading rules name; a correction gives both values in one drawn unit. Every
+    wording of a correction gives its new value after a phrase that the rules quote: the Revised line read
+    "<ID> <field> now <value>", which only the rules' clause on a value that "was revised" covered."""
     form = rng.randrange(3)
     when = format_time(n.time, rng.choice(UTC_TIME_FORMATS))
     if n.kind == "retraction":
@@ -299,7 +301,7 @@ def _notice_line(n: Notice, rng: random.Random, glossary: Glossary, vocab: TrapV
     return (f"CORRECTION [{when}]: the {field.label} of {n.target} is {phrase} {new}{qualifier}; it was first given "
             f"as {old}.",
             f"UPDATE [{when}]: {field.label} for {n.target} {phrase} {new}{qualifier} (it was {old}).",
-            f"Revised [{when}]: {n.target} {field.label} now {new}{qualifier} (was {old}).")[form]
+            f"Revised [{when}]: {n.target} {field.label} {phrase} {new}{qualifier} (was {old}).")[form]
 
 
 _PLAIN_TOKEN = re.compile(r'[^\s"=]+')
@@ -380,7 +382,7 @@ def _grammar(glossary: Glossary) -> _Grammar:
                 ("CORRECTION", rf"the {label} of (?P<ref>{record_id}) is (?P<phrase>.+?) {new}{qualifier}; it was "
                                rf"first given as {old}\."),
                 ("UPDATE", rf"{label} for (?P<ref>{record_id}) (?P<phrase>.+?) {new}{qualifier} \(it was {old}\)\."),
-                ("Revised", rf"(?P<ref>{record_id}) {label} now {new}{qualifier} \(was {old}\)\.")):
+                ("Revised", rf"(?P<ref>{record_id}) {label} (?P<phrase>.+?) {new}{qualifier} \(was {old}\)\.")):
             notices[keyword].append((re.compile(body), f))
     for keyword, body in retractions.items():
         notices[keyword].append((re.compile(body), None))

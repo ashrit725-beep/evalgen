@@ -137,7 +137,8 @@ def _parser() -> argparse.ArgumentParser:
     d.add_argument("--mix", default="legacy", help=MIX_HELP)
     d.add_argument("--private-config", help=CONFIG_HELP)
     d.add_argument("--out", help="run directory (default: runs/demo-<source>-seed<seed>, with the mix before the "
-                                 "source for any mix but legacy; overwritten each time)")
+                                 "source for any mix but legacy, and heldout before the mix with --private-config; "
+                                 "overwritten each time)")
     d.add_argument("--force", action="store_true", help="overwrite an existing --out run directory")
 
     v = sub.add_parser("verify-config", help="check a revealed private run config against a run's commitment")

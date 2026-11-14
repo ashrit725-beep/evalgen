@@ -3,7 +3,11 @@ report.split_gap): an instance's rows are read in one digest and asked again in 
 they are not independent draws, and the intervals treat the instance as the independent unit."""
 from __future__ import annotations
 
+import functools
 import math
+import operator
+import random
+from fractions import Fraction
 
 import pytest
 
@@ -91,3 +95,29 @@ def test_a_gap_whose_side_holds_one_instance_is_never_flagged():
     assert one["adjusted"]["ci95"][0] > 0 and not one["flagged"]  # the interval excludes 0, but rests on one instance
     three = split_gap(rows([[False] * 5] * 3), lambda row: row["side"], lambda row: ())
     assert three["flagged"]  # three digests misread alike are flagged
+
+
+def test_the_design_effect_sums_exactly_on_every_python_version():
+    """The design effect widens the source and genre gaps' intervals, which report.json gives to the last digit.
+    It summed its clusters' squared residuals with the built-in sum(), which adds floats one by one up to
+    Python 3.11 and with compensation from 3.12, so a run's report.json differed in its last digits between
+    Python 3.9 and 3.14. It sums them exactly rounded (math.fsum): here, where adding one by one gives another
+    design effect, it gives the exact sum's."""
+    rng = random.Random(0)
+    rows = []
+    for i in range(60):
+        rate, side = rng.random(), rng.random() < 0.5
+        rows += [(f"inst-{i:03d}", side if rng.random() < 0.8 else not side, rng.random() < rate)
+                 for _ in range(rng.randint(3, 15))]
+    (k1, n1), (k2, n2) = ((sum(c for _, f, c in rows if f == side), sum(1 for _, f, _ in rows if f == side))
+                          for side in (True, False))
+    p1, p2 = k1 / n1, k2 / n2
+    totals: dict[str, float] = {}
+    for cluster, first, correct in rows:  # the residual totals, formed as design_effect forms them
+        totals[cluster] = totals.get(cluster, 0.0) + ((correct - p1) / n1 if first else -(correct - p2) / n2)
+    squares = [t * t for t in totals.values()]
+    independent, g = p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2, len(totals)
+    one_by_one = functools.reduce(operator.add, squares, 0.0)  # what sum() gave up to Python 3.11
+    exact = float(sum(map(Fraction, squares)))
+    assert one_by_one != exact and g / (g - 1) * one_by_one / independent != g / (g - 1) * exact / independent
+    assert design_effect(rows) == g / (g - 1) * exact / independent > 1.0

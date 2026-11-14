@@ -275,3 +275,46 @@ def make_chatter(rng: random.Random, compiled_at: int, networks: Sequence[str], 
         station = f"{rng.choice(networks).upper()}.{''.join(rng.choice('ABCDEFGHKLMNPRSTW') for _ in range(3))}"
         out.append(lines[i].format(station=station, h1=h1, h2=h2, date=date, **(words or {})))
     return out
+
+
+CHATTER_ATTEMPTS = 100  # windows a line about a source's station may draw before it is left out (timed_chatter)
+
+
+def timed_chatter(rng: random.Random, compiled_at: int, networks: Sequence[str], lines: Sequence[str],
+                  words: Mapping[str, str] | None, filed: Sequence[tuple[str, int]]) -> list[tuple[str, int | None]]:
+    """The chatter of a digest off the legacy path: one to three of `lines`, drawn as make_chatter draws them,
+    each with the time after which a genre that posts it at a time of its own (a chat message, an email) may post
+    it: the last minute of the window it names ("offline from 22:00 to 22:45 UTC": 22:45), or the first minute
+    of a window whose end it does not give, or None for a line that names no time. A line posted before the
+    window it tells of read as though it foretold it.
+
+    A line about a station of one of the records' sources (`networks`) names a window in which that source
+    filed no report of the digest (`filed`: each report's source and time): "Sensor KPHL.PDF was offline from
+    00:00 to 00:45 UTC" beside a report that KPHL filed at 00:20 reads as a reason to doubt or drop it, a
+    distractor that no trap records, though the rules say that status lines change nothing. Such a line draws
+    its window and station again until one is clear, and is left out when none is after CHATTER_ATTEMPTS
+    draws. Lines that name no station, and a first draw that is clear, cost the draws that make_chatter's
+    lines cost."""
+    picks = rng.sample(range(len(lines)), rng.randint(1, 3))
+    out: list[tuple[str, int | None]] = []
+    for i in sorted(picks):
+        template = lines[i]
+        about_station = "{station}" in template and ("{h1}" in template or "{h2}" in template)
+        for _ in range(CHATTER_ATTEMPTS):
+            start = compiled_at - rng.randrange(2, 20) * 3600
+            end = start + rng.randrange(20, 120) * 60
+            network = rng.choice(networks)
+            station = f"{network.upper()}.{''.join(rng.choice('ABCDEFGHKLMNPRSTW') for _ in range(3))}"
+            # the window as the line prints it, to the minute: from its first minute to the end of its last
+            first, last = start - start % 60, end - end % 60
+            if not about_station or not any(source == network and first <= t < last + 60 for source, t in filed):
+                break
+        else:
+            continue  # every window drawn held a report of the station's source: the line is left out
+        opened, closed = (datetime.fromtimestamp(t, tz=timezone.utc) for t in (start, end))
+        date = f"{opened.day} {MONTHS_LONG[opened.month - 1]} {opened.year}"
+        text = template.format(station=station, h1=opened.strftime("%H:%M"), h2=closed.strftime("%H:%M"), date=date,
+                               **(words or {}))
+        after = last if "{h2}" in template else first if ("{h1}" in template or "{date}" in template) else None
+        out.append((text, after))
+    return out

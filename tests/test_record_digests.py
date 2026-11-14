@@ -210,7 +210,11 @@ def test_record_traps_are_planted_and_read_as_earthquake_traps_are(toys, name):
                 assert (dup.same_as is None) == (trap.form == "same_id")
                 if dup.same_as is not None:  # under an ID of its own, a real record's
                     assert dup.ref in by_id and dup.ref not in inst.event_ids
-                assert readings == [Mishandle(split=((dup.ref, dup.source, "preliminary"),))]
+                # Under its record's own ID it reads as a second report does, and records both its readings
+                # while the record has no other unsettled report (traps._slot_duplicate).
+                prefer = [Mishandle(prefer_preliminary_for=(trap.target,))] if trap.form == "same_id" and sum(
+                    r.status == "preliminary" and (r.same_as or r.ref) == trap.target for r in inst.reports) == 1 else []
+                assert readings == [*prefer, Mishandle(split=((dup.ref, dup.source, "preliminary"),))]
             elif trap.kind == "retraction":
                 (notice,) = [n for n in inst.notices if n.trap_id == trap.trap_id]
                 assert notice.reason in vocab.retraction_reasons and planted[0].role == "phantom"
@@ -422,6 +426,8 @@ def test_every_notice_wording_is_named_by_the_reading_rules(toys):
             (notice,) = CLASSIC.parse(line, glossary, domain).notices  # each wording reads back on its own
             assert replace(notice, time=0) in [replace(n, time=0) for n in notices], line
             assert any(phrase.lower() in line.lower() for phrase in words[notice.kind]), line
+            if notice.kind == "correction":  # every correction wording gives its value after a quoted phrase
+                assert any(f" {phrase} " in line for phrase in vocab.correction_notices), line
             forms.add((notice.kind, NOTICE_LINE.match(line)["keyword"]))
         assert forms == {("retraction", "NOTICE"), ("retraction", "RETRACTION"), ("retraction", "UPDATE"),
                          ("correction", "CORRECTION"), ("correction", "UPDATE"), ("correction", "Revised")}

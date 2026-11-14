@@ -21,11 +21,14 @@ Without the new options, 0.3.0 writes the 0.2.0 run byte for byte.
 python3 -m pip install -r requirements.txt     # requests + pytest (Python 3.10+)
 python3 cli.py demo --seed 42 --instances 20  # fully offline, no API keys, ~1 second
 python3 cli.py demo --mix random               # 0.3.0: every domain and genre, offline, ~3 seconds
-python3 -m pytest -q                           # 854 tests, ~4 minutes
+python3 -m pytest -q                           # 865 tests, ~3 minutes
 ```
 
-The demo writes `runs/demo-synthetic-seed42/report.md` (and `report.json`); with `--mix random` it
-writes `runs/demo-random-synthetic-seed42/`.
+The demo writes `runs/demo-synthetic-seed42/report.md` (and `report.json`), as 0.2.0 did, which replaces
+the report committed there, of a run that Claude Opus 5.5 answered through the API (`git checkout
+runs/demo-synthetic-seed42` restores it; give `--out` to write elsewhere). With `--mix random` it writes
+`runs/demo-random-synthetic-seed42/`, and with `--private-config` too
+`runs/demo-heldout-random-synthetic-seed42/`. Each demo replaces its own folder every time.
 
 ---
 
@@ -273,7 +276,10 @@ Off the legacy path (0.3.0) the cycle is the same, step for step, in every domai
   report of the digest, a real or a planted one (`instance/<i>/anchors`; see Traps).
 - Step 2 renders each rendering in its genre.
 - The prompt prints the domain's glossary between the reading rules and the digest.
-- The oracle of step 5 reads each prompt with the parser of the genre that recognises its digest.
+- In step 5 the oracle, the naive reader and the mock are given each rendering's genre and its
+  instance's domain by name, and read the prompt with that genre's parser. The generator's self-check
+  instead sniffs the genre that recognises each digest, and requires it to be the genre the rendering
+  was written in, so the two readings pick the same parser.
 
 ---
 
@@ -281,7 +287,8 @@ Off the legacy path (0.3.0) the cycle is the same, step for step, in every domai
 
 ```bash
 # full cycle, offline, with the reference solvers and the simulated model
-python3 cli.py demo --seed 42 --instances 20       # overwrites runs/demo-synthetic-seed42 each time
+python3 cli.py demo --seed 42 --instances 20       # overwrites runs/demo-synthetic-seed42 each time, a
+                                                   # committed run's report included (--out writes elsewhere)
 
 # step by step
 python3 cli.py generate --seed 7 --instances 20            # -> runs/synthetic-seed7/
@@ -289,10 +296,12 @@ python3 cli.py run runs/synthetic-seed7 --models mock,oracle,naive
 python3 cli.py score runs/synthetic-seed7
 python3 cli.py report runs/synthetic-seed7
 
-# real models (keys from the environment). Replies are cached; a re-run asks again only for
-# prompts whose API call failed or whose reply hit the output-token limit, so re-running is
-# free and safe.
-export ANTHROPIC_API_KEY=...   OPENAI_API_KEY=...
+# real models (keys from the environment, read without echoing them, which keeps them out of your
+# shell history, as the README shows; in zsh: read -s "ANTHROPIC_API_KEY?Anthropic API key: ").
+# Replies are cached; a re-run asks again only for prompts whose API call failed or whose reply hit
+# the output-token limit, so re-running is free and safe.
+read -rs -p "Anthropic API key: " ANTHROPIC_API_KEY && export ANTHROPIC_API_KEY
+read -rs -p "OpenAI API key: " OPENAI_API_KEY && export OPENAI_API_KEY
 python3 cli.py run runs/synthetic-seed7 --models anthropic,openai:gpt-4.1 --workers 4
 python3 cli.py score runs/synthetic-seed7 && python3 cli.py report runs/synthetic-seed7
 
@@ -308,6 +317,7 @@ python3 cli.py resolve runs/usgs-seed7      # after the 24 h window (+2 h grace)
 ```bash
 python3 cli.py demo --mix random                                    # every built-in domain and genre, all public
 python3 cli.py demo --mix random --private-config configs/private.example.json   # held-out metrics, offline
+                                                    # (-> runs/demo-heldout-random-synthetic-seed42)
 python3 cli.py generate --seed 7 --mix weather,neo:email,invented:table         # an explicit mix
 python3 cli.py generate --seed 7 --mix random --private-config private.json     # the evaluator's held-out sets
 # (an evaluation leaves --seed out, and a fresh 64-bit seed is drawn: the small seeds here are for examples)
@@ -347,7 +357,7 @@ whatever text it returned (usually none), flagged in the report, and asked again
 
 | model spec | what it is |
 |---|---|
-| `oracle` | rule-based solver that reads **only the digest text**, applies the reading rules and runs each question's operation chain; must score 100% |
+| `oracle` | rule-based solver that reads **only the digest text**, applies the reading rules and runs each question's operation chain; must score 100%. Off the legacy path `run` also gives it the rendering's genre and the instance's domain by name (see the oracle under Genres) |
 | `naive` | the same parser, but every report counts as a separate quake and notices are ignored; it loses points only where traps (alone or combined) change the answer, apart from rare display-rounding effects. Off the legacy path it reads each digest with its genre's parser, as the oracle does, which has already set aside the quoted and read-back repeats and the message times that the rules say are no reports. So it never meets a genre's noise, and its consistency across renderings and genres is high by construction |
 | `mock` | a **simulated** contaminated model, not a language model. It answers public-template questions correctly 92% of the time (80% when paraphrased) and new-template questions 62% of the time; its errors are seeded by the prompt text and usually fall into the traps. It exists to exercise every metric without API keys. `mock:held_out=P` (0.3.0) also lowers each of those chances by P on an instance from a held-out domain and by P on a rendering in a held-out genre, as a model tuned to the public ones would be (`held_out_domains=P` or `held_out_genres=P` for one kind, joined with `+` for different penalties). A chance stops at 0, so where the penalties that apply add up to more than 0.62, the chance on a new template, they lower accuracy by less than they say, and a gap they inject is smaller than the penalty; `run` prints a note for such a mock |
 | `anthropic[:model]` | Anthropic Messages API (`ANTHROPIC_API_KEY`; default model `claude-opus-5-5`, override with `:model` or `EVALGEN_ANTHROPIC_MODEL`) |
@@ -355,7 +365,8 @@ whatever text it returned (usually none), flagged in the report, and asked again
 
 API models receive only the prompt text. The oracle and naive solvers also receive each question's
 operation chain (its machine-readable meaning), because the goal is to verify the *digest*, not to
-build a parser for English questions.
+build a parser for English questions, and off the legacy path the names of the instance's domain and
+of the rendering's genre.
 
 ---
 
@@ -449,8 +460,11 @@ and may restate thresholds in the other unit, which the guards make safe.
 New `N01–N12` are composed each run, one twin per public template: the same terminal and number of
 filters, a different filter set, and never a public skeleton. Questions are balanced between the
 two pools: each instance asks as many public as new questions, give or take one (an odd number of
-questions draws the pool of its last one at random), or rarely two, when no template of one pool fits
-an instance's records (2 instances in 300). And once a template's twin has been used, the
+questions draws the pool of its last one at random), or rarely more, when no template of one pool fits
+an instance's records: two apart in 2 instances of 300 in the built-in domains, and three apart in 3 of
+the 300 instances of a random mix with the example config, all three of the toy plugin domain, whose
+records fewer templates fit. Twin pairs stay within one question in every run. And once a template's
+twin has been used, the
 template never runs more than one question ahead of it. That matters when run-wide uniqueness
 exhausts a template with few possible parameters: a region-only template cannot run out while its
 twin keeps going. Under the 0.2.0 rule, which legacy runs keep, a template can run ahead freely until
@@ -574,12 +588,12 @@ A domain module exports `DOMAIN`, an instance of a `Domain` subclass. The regist
 | `spatial` | radii, distance guards and the precision of positions, for records with a location. A domain without one drops the spatial templates (P02, P07, P09, P12) and their twins as a pair |
 | groups and sources | every record belongs to a group (a region, a body, a depot), which `in_group` and `compare_groups` ask about and digests focus on (3–4 per digest), and has a source that filed it (a network, a feed, a catalogue, an agency) |
 | `synthetic(rng, n, compiled_at, window_hours)` | the seeded generator, which never reads the clock |
-| `live` | an optional live source. `fetch` downloads it once, and the raw bytes are frozen in the run and SHA-256 hashed. `parse` reads them without the clock or the network, so a replay rebuilds the snapshot exactly. A source that cannot be reached, that answers with bytes its parser cannot read, or that gives too few usable records, falls back to synthetic data, with a note. The note names the failure without what changes from one moment to the next (a URL's query, such as the start time of an NWS request, and an object's address), so two offline runs of one seed write the same files |
+| `live` | an optional live source. `fetch` downloads it once, and the raw bytes are frozen in the run and SHA-256 hashed. `parse` reads them without the clock or the network, so a replay rebuilds the snapshot exactly. A source that cannot be reached, that answers with bytes its parser cannot read, or that gives too few usable records (`min_records`), falls back to synthetic data, with a note. The minimum applies to a fetch only: a replay cannot fall back, and reads its frozen bytes whatever number of records they give (none is refused), so a frozen feed smaller than the minimum, which a live run never freezes but a hand-made one can be, gives digests of fewer records than usual (the 4 observations of the NWS fixture `tests/fixtures/weather/raw_feed.json` give digests of 1 or 2 records). The note names the failure without what changes from one moment to the next (a URL's query, such as the start time of an NWS request, and an object's address), so two offline runs of one seed write the same files |
 | IDs | `id_pattern` (the scorer also reads ID answers with it), `new_id` and `mimic_id`, so that a planted report that stands in for no record (the 0.2.0 placement, or when no slot is left) carries an ID shaped like real ones; `id_place`, for IDs that number their records in time order (a close approach's `-ca1`, `-ca2`), and `ids_name_place`, for IDs that name their record's place, so that a report filed under a record's ID never contradicts what the ID says (see Traps) |
 | `statuses` | the status of the report that settles a record's values, then the one that does not ("reviewed", "preliminary") |
 | `trap_vocab` | re-reporting sources (those of the 0.2.0 placement; off the legacy path a re-report may come from any source), duplicate notes, retraction reasons, and the phrases of retraction and correction notices |
 | near twins, planted values | `twin_seconds`, `twin_share` and `twin_key`: which real records lie as close together as a re-report and its record, and how often a digest draws them together; `twin_fields`: the fields whose values a record shares, give or take, with its twins (a station's temperature and pressure, an object's distance, speed and H), so that a corrected value agrees with them as a real one does (`validate` refuses a field it does not have, or twin fields without twins); `planted_value` and `rereport_values`: how a value planted on a real record's report is written, and what a report filed in a slot's place gives for a record (a close approach's own H, under its ID: see Traps) |
-| `chatter`, `lexicon` | lines without data, which never say what a digest holds (a status line says when a station was offline, with its date, not that its reports were left out, which the digest's own reports could contradict), and the wording of questions (`standard_lexicon` words any domain from its own words) |
+| `chatter`, `lexicon` | lines without data, which never say what a digest holds (a status line says when a station was offline, with its date, not that its reports were left out, which the digest's own reports could contradict; off the legacy path its window never holds a report of the station's source, and genres that post lines at times of their own post it after the window: `digest.timed_chatter`), and the wording of questions (`standard_lexicon` words any domain from its own words) |
 | `rules_text()`, `report_time()`, `glossary(surface)` | the reading rules (in which `report_time` says what a report's time is) and the glossary its prompts print |
 | `draw_surface(rng)`, `bind(surface)`, `surface_group_labels` | per-instance surface words, for a domain that draws them, and every group label they can draw: the scorer, which reads answers by the types registered when the domain was loaded, lets a group answer end in any of them ("Nerm Halt berth" is "Nerm Halt"), and `bind` refuses a surface that calls its groups anything else, names a group with one, or names one that the scorer would not read alike with its label after it (with "area" and "sea area" both group words, "Kessel Sea area" reads as "kessel") |
 | `resolve`, `to_generic`, `from_generic` | the reading rules in code, and the map between a domain's own record types and the generic ones that genres write and read (every genre but classic, through `genres.base.generic_items` and `domain_items`) |
@@ -704,14 +718,16 @@ note naming one, the status, and the notices. Nine more things make that hold:
   were a steady share of a digest, about a sixth, and of any question's scope, and a reader who took
   that share off every count (round(0.84 x the naive count)) closed a tenth of the gap between the naive
   reader and the oracle without reading a status, an ID, a note or a notice, as much on held-out domains
-  and genres. Now a digest holds none to thirteen planted reports (4.8 on average, none in one digest in
+  and genres. Now a digest holds none to thirteen planted reports (5 on average, none in one digest in
   fifteen), and for any share of a digest's records that a counting question's scope holds, the planted
   reports in it are none about as often as any other number (for the naive reader, within 5 points at
   most; exactly for the status rule), so neither a share nor a number taken off a count does much better
   than the count. The digest keeps a record less for each report its plan adds, so that it prints 20 to
-  28 reports however many are planted, and the traps that add a report are planted first (a re-report
-  shares its record with another re-report where no record is left free of traps), so that it prints
-  every one. Corrections, which change no count, make up the traps that change answers (two a digest).
+  28 reports however many are planted (from a pool of that many records at least: see `live` in the
+  domain table for a replayed feed of fewer), and the traps that add a report are planted first (a
+  re-report shares its record with another re-report where no record is left free of traps), so that it
+  prints every one. Corrections, which change no count, make up the traps that change answers (two a
+  digest).
 - *Tied values.* A record's values are sometimes tied to its near twins': a station's temperature to its
   observations an hour away, an object's speed and distance past the Moon to its speed and distance
   past Earth (`Domain.twin_fields`). A correction's wrong value of such a field, where the record has a
@@ -726,13 +742,41 @@ note naming one, the status, and the notices. Nine more things make that hold:
   sends a planted report sooner because a notice about it follows. A phantom therefore lies at least
   93 minutes before the compilation.
 
+*Readings.* Each trap records its careless readings (`Trap.mishandles`): a re-report counted as a record
+of its own, a phantom kept (its retraction ignored), a correction ignored, and a second report's values
+taken for its record's or the report counted as a record of its own. A re-report under its record's own
+ID reads exactly as a second report does (the same ID, the unsettled status, a slot's values, time and
+place; no genre prints a report's role), so it records both of a second report's readings. It recorded
+the first alone, and the answers that taking its values changed (in 18.5% of such re-reports in
+earthquakes, neo and weather) were missing from its affected questions, from their trap exposure and
+from the attribution of wrong answers to traps. "Its values" names one report only while the record has
+no other unsettled report, so where two re-reports share a record (only where no record is free of
+traps) neither records that reading (`traps._unambiguous`).
+
 A careless reader's joint misreadings (`Trap.fallen`) are enumerated, off the legacy path, per question
 and over only the traps that change the rows it reads, which gives exactly what every combination of
-every trap gives at a cost that no longer doubles with every trap a digest holds.
+every trap gives at a cost that no longer doubles with every trap a digest holds. A trap acts on records
+of its own, and every terminal's answer follows from a summary of its rows to which each trap's rows add
+on their own (how many there are, how many in each group compared, or the best of them in the terminal's
+order), so the combinations are built trap by trap from those summaries, each kept once with every trap
+misread in reaching it (`traps._reduced`), rather than read one by one: with two readings for a re-report
+under its record's ID, one question of a digest with eight such re-reports and five other traps that
+change its rows had 3^8 x 2^5 = 209,952 combinations, which took 16 of the 20 seconds of a 20-instance
+demo. Read one by one instead, they give the
+same answers (`tests/test_trap_tells.py`).
 
 When no slot is left, as can happen with a live pool little larger than a digest, a builder makes one
 beside a real record (`traps._virtual_slot`), with values drawn from its group's and folded into
 their range; none of the runs measured below needed one.
+
+The measurements in the four paragraphs that follow (*Measured*, *Measured again*, *Measured a third
+time* and *Reviewed*), and the simulated readers of the Limitations, were made with red-team and
+simulation scripts that are not part of the repository, so their figures cannot be reproduced from it
+alone; each was measured on the code of its round, and every later change of placement (the last: a
+re-report under its record's ID records a second report's readings, see *Readings* above) draws other
+instances. `tests/test_trap_tells.py` checks the same properties, from the prompt text, on a small
+sample of its own: four instances of each built-in domain in each genre, with the toy plugin, where it
+holds an AUC to the looser band [0.3, 0.7] that a sample of that size needs.
 
 *Measured.* A red team read every report of fresh runs from the prompt text alone (each built-in domain
 in each genre, 1,008 instances a sample; the toy plugin domain in classic and in the toy-telex genre,
@@ -751,8 +795,8 @@ cells (feature, kind of planted report, all reports or one domain) that measure 
 never mention, 535 had an AUC outside [0.35, 0.65] with a 95% interval excluding 1/2; none has now, on
 two independent samples. The cells of single genres hold about 150 instances each, and about 3% of
 them cross the band by chance and by the weak effects of the Limitations (before, 20%); what an
-instance holds is drawn alike in every genre. `tests/test_trap_tells.py` pins this on a small sample of every domain in every
-genre and of the toy plugin.
+instance holds is drawn alike in every genre. `tests/test_trap_tells.py` checks this on its small sample
+(above).
 
 *Measured again.* A second red team found what that placement left, and the IDs, scopes and
 retractions above remove it. On two more independent samples of each kind (seeds 61001–61084 and
@@ -793,7 +837,7 @@ records is reproduced from the text (32,793), and every rendering reads back to 
 *Measured a third time.* A third red team, with question-aware readers and features of their own,
 found what the second round left, and *The plan*, *Leads*, *Places*, *Tied values* and *Notices* above
 remove most of it. On three independent samples (seeds 3001–3084, 4001–4084 and 6001–6084, each with
-the toy plugin and the CAD replay; `traps-measure/measure3.sh`):
+the toy plugin and the CAD replay):
 
 - Planted reports were a steady share of every digest, so one factor off every naive count
   (round(0.84 x the naive count)) closed about a tenth of the gap between the naive reader and the
@@ -815,11 +859,11 @@ the toy plugin and the CAD replay; `traps-measure/measure3.sh`):
   reports asked about, once a place could lie near any report). Now 0.41 to 0.47 in weather (0.39 to
   0.43 for re-reports), 0.48 to 0.56 for earthquake phantoms and 0.47 to 0.56 on the CAD replay;
   planted reports decide questions about a place half as often as their share in weather and four
-  fifths as often in earthquakes (`traps-measure/nearest_share.py`), and the report that decides one
+  fifths as often in earthquakes, and the report that decides one
   lies in the band of a drawn place, whether planted or real (see Limitations); no label names a
   source any more (see Question wording).
 - A phantom's form was sent sooner than a real one (0.29; 0.36 for a correction). Now 0.55 [0.51, 0.58]
-  and 0.51 (`traps-measure/form_sent.py`).
+  and 0.51.
 
 Of the cells of all reports or one domain (about 3,830 a sample, 1,350 of the CAD replay's and 1,076 of
 the toy plugin's), 1, 1 and 2 fail on the three samples and none on two (a decider's lead in weather,
@@ -847,11 +891,14 @@ against real ones, before and after:
 | built-in domains | 0.508 → 0.514 | 0.332 → 0.477 | 0.61, 0.31 → 0.35, 0.33 |
 | CAD replay | 0.489 → 0.507 | 0.360 → 0.485 | 0.50, 0.25 → 0.32, 0.28 |
 
-Without any matching the ratio is 0.48 but the lead 0.45 (weather 0.41). Of the questions about a
-place, the next report now stands clear of the one after it as often whoever decides (*Places*; the
-four seeds of `tests/test_trap_tells.py`: 1.00 of 25 planted deciders and 0.88 of 128 real ones,
-against 0.93 and 0.65), and how far the decider leads keeps an AUC of 0.50 in earthquakes and 0.47
-in weather (16 seeds). What the review left is under Limitations.
+Without any matching the ratio is 0.48 but the lead 0.45 (weather 0.41). (Recomputed from the same
+seeds with the helpers of `tests/test_trap_tells.py`, the ratio's AUC and the shares within a factor of
+two come out the same, and the decider's lead 0.533 rather than 0.514: the review's script, which is
+not published, read the leads its own way.) Of the questions about a place, the next report now stands
+clear of the one after it as often whoever decides (*Places*; the four seeds of
+`tests/test_trap_tells.py`: 1.00 of 25 planted deciders and 0.88 of 128 real ones, against 0.93 and
+0.65), and how far the decider leads keeps an AUC of 0.50 in earthquakes and 0.47 in weather (16
+seeds). What the review left is under Limitations.
 
 Off the legacy path, placement is also *guarded*. A careless reading counts only where the misread
 digest passes the key's own guards: margins that hold with the planted values, rank and nearest
@@ -861,12 +908,15 @@ answer is then the one the printed text gives, not one decided by a last digit o
 **Rules text.** `record_rules` writes the reading rules of any domain in its own words. They are
 genre-neutral and say:
 
-- which report settles a record, and that unsettled values are superseded;
+- which report settles a record, and that an unsettled report's time, position (for records that have
+  one) and values are superseded, not its values alone: a re-report stands where its slot stands, at a
+  time and a place of its own, which can lie inside a question's window when its record's does not;
 - what a notice is (a message about a report, not a report), and that it applies wherever in the
   digest it is printed, before or after that report: most genres print some notices first;
 - how re-reports, corrections and retractions read, quoting every phrase of the domain's trap
-  vocabulary (a re-report carries a note naming the ID it *duplicates*: the rules keep "repeat" for
-  quotes and read-backs);
+  vocabulary that a digest prints: the notes of re-reports, each followed by the ID it names, and the
+  phrases of corrections and retractions (a re-report carries a note naming the ID it *duplicates*:
+  the rules keep "repeat" for quotes and read-backs);
 - that values are converted as the glossary says, and, for records with a location, that distances
   are great-circle distances given in km or in miles (1 mile = 1.609344 km);
 - that times are given in UTC or with their offset, what a report's time is (when its record was
@@ -885,15 +935,24 @@ statuses. A plugin's words get theirs from `domains.base.indefinite`, which goes
 with a short list of exceptions ("an hour", "a unit"), and can miss others (it gives "a" before
 "MRI"). No duplicate note borrows a word that the rules give a meaning of their own: weather's notes
 are "same observation as", "duplicate of" and "mirror of", since a re-report noted "relay of" an ID
-would read as the relayed report that rule 7 counts on its own.
+would read as the relayed report that rule 7 counts on its own, and the invented domain no longer
+draws "repeat filing of", which named what rule 7 calls a repeat (`tests/test_reading_rules.py`
+checks the notes of every domain, of the toy plugin and of 200 drawn surfaces against those words).
 
-Weather, neo and invented add rules of their own. Earthquake prompts off the legacy path print the
-0.2.0 rules 1–8 word for word, followed by three rules: rule 9, which now opens with what a notice
-is, in the words of every domain's rules, and also names the section titles, greetings and
-signatures that the other genres print among the lines without data, and the rules on message times
-(with the WIRE line's time) and repeats (rules 10 and 11). They are headed `Reading rules:`, as every
-domain's are, since the 0.2.0 heading ("identical for every digest") is not true of a run whose
-domains print different rules. Legacy prompts print the 0.2.0 rules alone, heading included.
+The glossary's line on statuses says the same as rule 2, in every domain ('a "verified" report
+settles a record's time, position and values', or 'time and values' for records without a position),
+so it says it in earthquake prompts too, whose rules keep the 0.2.0 rule 2 ("use the values from its
+REVIEWED report").
+
+Weather, neo and invented add rules of their own. Earthquake prompts off the legacy path print the 0.2.0
+rules 1–8 word for word (whose rule 1 names a re-report's note by what it does, "a note naming the event
+ID it duplicates", and quotes none of the three: "same event as", "same earthquake as", "Dup of"),
+followed by three rules: rule 9, which now opens with what a notice is, in the words of every domain's
+rules, and also names the section titles, greetings and signatures that the other genres print among the
+lines without data, and the rules on message times (with the WIRE line's time) and repeats (rules 10 and
+11). They are headed `Reading rules:`, as every domain's are, since the 0.2.0 heading ("identical for
+every digest") is not true of a run whose domains print different rules. Legacy prompts print the 0.2.0
+rules alone, heading included.
 
 **Question wording.** Off the legacy path, a radius is worded "within 40 km of …" or "at a distance
 of no more than 40 km from …", in every domain with a location. The 0.2.0 wording "no more than 40 km
@@ -909,7 +968,10 @@ that an HH:MM answer drops the seconds rather than rounding them, as the key doe
 path, too:
 
 - a quantity of exactly 1 takes its unit's singular ("colder than 1 degree Celsius", "1 mile";
-  `Unit.one`, which an invented unit takes from its coined name), where 0.2.0 wrote "1 degrees";
+  `Unit.one`, which an invented unit takes from its coined name), where 0.2.0 wrote "1 degrees". A
+  radio transcript, which may speak a report's units by their words, speaks a value of exactly 1 with
+  the unit's symbol ("wind speed 1 kt", not "1 knots"), as the glossary it is read through names no
+  singular;
 - the two groups of a comparison are quoted ('which region has more of them: "Honshu, Japan" or
   "Southern Alaska"?'), so that a name with a comma reads as one choice, as an answer must give it;
 - a question's point is named by its number alone, its position right after it ("station 34 at
@@ -943,7 +1005,8 @@ even to 17.08. The legacy path keeps the 0.2.0 guards (see Limitations).
 rules and the digest, in `<glossary>` tags. It gives:
 
 - what the records, IDs, sources and groups are called, and the ID pattern;
-- the two statuses, and the precision of positions;
+- the two statuses (the first settles a record's time, its position if it has one, and its values), and
+  the precision of positions;
 - each field's key, label, stored unit and decimals, with every unit and its exact conversion, and the
   qualifier given with each value, named in words too where digests print it without its key (an
   earthquake's "mag_type" ("magnitude type"), which the 0.2.0 lines print as "(md)", "MD 3.2" or
@@ -962,7 +1025,7 @@ Glossary: what the records in the digest are, and how their values are written.
 - Records: each is one "crate" (plural "crates"), identified by its "tally number"; IDs match the pattern [a-z]{2,3}[-/.]\d{5}, ignoring letter case.
 - Sources: each report is filed by one "carrier".
 - Groups: each record belongs to one "warehouse".
-- Statuses: a "verified" report settles a record's values; a "provisional" report does not.
+- Statuses: a "verified" report settles a record's time and values; a "provisional" report does not.
 - Field "f1": "tal bulk", stored in "lg" to 1 decimal place.
   - "lg" ("ligs"): the stored unit.
   - "bl" ("bals"): a value in "lg" is the value in "bl" × 50.
@@ -1096,15 +1159,17 @@ exact inverse of `render`).
 |---|---|---|---|
 | `classic` | the 0.2.0 bulletin, prose, wire and log lines, and their version for every other domain | NOTICE, RETRACTION, UPDATE, CORRECTION and Revised lines | header, section heads, chatter lines |
 | `news` | an article: headline, byline and dateline, then one paragraph per report, in five sentence forms | "Update", "Correction", "Retraction notice" and "Correction notice" paragraphs, at the top, among the paragraphs or at the end | quotes from officials, a background paragraph, subheads, a sign-off, editor's notes |
-| `email` | a thread of messages with From, To, Date and Subject headers; reports as bullets, sentences or pasted blocks | a forwarded message, every one | greetings, sign-offs, signatures, remarks; replies that quote earlier messages with ">" |
+| `email` | a thread of messages with From, To, Date and Subject headers; reports as bullets, sentences or pasted blocks | a forwarded message, every one | greetings, sign-offs, signatures, remarks; replies that quote the message before them with ">": a reply that only acknowledges always does, from someone other than its sender and under its subject ("Re: Fwd: CORRECTION: ..." after a forward), and a message of reports, titled after the thread, never quotes a forward |
 | `chat` | a channel log of `[HH:MM] user: message` lines; reports in four voices | messages, pinned messages, or the pinned board above the log; the casual ones open with their keyword and time ("heads up: RETRACTION issued …: …") | joins, greetings, acknowledgements, off-topic remarks; quotes and read-backs of earlier messages |
 | `table` | CSV or markdown, one row per report, columns named in the glossary's words | numbered footnotes | a caption, comment lines |
-| `form` | one field or incident report form per report, in four frames (boxed, ruled, numbered, dotted) | amendment forms, which cite the number of the form they amend as its "Original form no." in every frame | form codes and serial numbers (in filing order, so an amendment's number is always above the original's, wherever the batch prints it), sent and relayed times, preparers, blank checker and signature fields (a blank field that shares a boxed row with another shows a line, `________`, so the row cannot be misread) |
+| `form` | one field or incident report form per report, in four frames (boxed, ruled, numbered, dotted) | amendment forms, which cite the number of the form they amend as its "Original form no." in every frame (in the boxed frame, beside "Amendment issued", the amendment's own time) | form codes and serial numbers (in filing order, so an amendment's number is always above the original's, wherever the batch prints it), sent and relayed times, preparers, blank checker and signature fields (a blank field that shares a boxed row with another shows a line, `________`, so the row cannot be misread) |
 | `radio` | the transcript of a reporting net: stations call in and read out their reports; the session line says which window the reports are about (every transmission is sent after it) | broadcasts by net control to all stations, in words that name no station ("Net broadcast"), whatever the control's call sign | call signs, procedure words, radio checks, acknowledgements; Control's read-backs |
 
 - **The rules settle every line.** A notice names itself with words every domain's rules name:
   RETRACTION, CORRECTION, "revised", or a phrase of the domain's trap vocabulary, which its rules
-  quote. Every notice is worded as the notice itself, never as a pointer to another notice, and none
+  quote, and every correction gives its new value after such a phrase (a classic Revised line gave it
+  after "now", which only the rules' clause on a value that "was revised" covered). Every notice is
+  worded as the notice itself, never as a pointer to another notice, and none
   is headed as a kind of line that the rules say carries no data (an editor's note, a reminder). A
   test per genre checks every wording that genre can print.
   - Quotes (email, chat) repeat an earlier report or notice word for word, and read-backs (chat,
@@ -1112,15 +1177,20 @@ exact inverse of `render`).
     notice. Forwarded and relayed messages count, once: every email notice is forwarded, and chat
     users and bots relay what each source files. In every genre, a reader who strikes out every
     repeat still reads each notice exactly once.
-  - A message's own time (an email's Date header, a chat time stamp, a transmission time, a form's
-    sent time) is never a record's time, and every report states its record's time in full, to the
-    second. A classic wire line prints it in brackets after its source ("KPHL WIRE [05:55:26
-    (UTC-05:00) 18 Feb 2026] ..."), where a chat log prints a message's stamp, so the rules say that
-    a WIRE line is a report and its bracketed time the report's. A classic prose line of a domain
-    other than earthquakes says that its record was recorded at its time, and names its source last
-    ("06:12:19 UTC on 12 April 2026 — reading by-12345 (reviewed) was recorded in North Sea, at (56.512,
-    3.104): … Listed by ukmo."), where its earlier form ("… — ukmo lists reading by-12345 …") read as
-    the time of the listing.
+  - A message's own time (an email's Date header, a chat time stamp, a transmission time, a form's sent
+    time) is never a record's time, and every report states its record's time in full, to the second. A
+    chatter line that tells of a window ("Sensor KPHL.PDF was offline for maintenance from 00:00 UTC on
+    4 March 2026 until 00:45 UTC") is posted after the window, in a chat log, and is a remark of a
+    message sent after it, in an email thread (of a reply that only acknowledges, sent last, when no
+    other is); chat posted it anywhere in the log, before the window it told of in 22 of 36 such lines
+    of 120 weather renderings. And its window never holds a report of the station's source, which the
+    line would set a reader to doubt, a distractor that no trap records. A classic wire line prints it
+    in brackets after its source ("KPHL WIRE [05:55:26 (UTC-05:00) 18 Feb 2026] ..."), where a chat log
+    prints a message's stamp, so the rules say that a WIRE line is a report and its bracketed time the
+    report's. A classic prose line of a domain other than earthquakes says that its record was recorded
+    at its time, and names its source last ("06:12:19 UTC on 12 April 2026 — reading by-12345 (reviewed)
+    was recorded in North Sea, at (56.512, 3.104): … Listed by ukmo."), where its earlier form ("… —
+    ukmo lists reading by-12345 …") read as the time of the listing.
   - A form's sent time is drawn alike for every form of a batch, up to one shared limit below the
     shortest time from any record to a notice about it, so that no form is sent after a notice about
     its record, and no form's delay tells whether a notice names its record. Capping only the forms
@@ -1139,21 +1209,25 @@ exact inverse of `render`).
   `check_round_trip` refuses, at render time, any rendering that does not read back to exactly its
   reports and notices. The one exception is deliberate: earthquakes in the classic genre are the
   0.2.0 digest, at 0.2.0 precision (see Limitations).
-- **The oracle stays text-only.** It reads the glossary from the prompt (`parse_glossary`), picks
-  the parser by sniffing the digest (`detect_genre`: the first genre other than classic that
-  recognises it, else classic, so a legacy digest is read as 0.2.0 read it) and parses it. Besides
-  the text it gets each question's chain, as in 0.2.0, and the name of the instance's domain, which
-  picks the reading rules in code and the record types. Sniffing is exclusive: each genre's digests
-  are claimed by that genre alone, in every domain. The generator's self-check confirms that every
-  rendering is recognised as the genre it was written in. It sniffs among the run's own genres (the
+- **The oracle stays text-only.** It reads the glossary from the prompt (`parse_glossary`) and parses
+  the digest with its genre's parser. Besides the text it gets each question's chain, as in 0.2.0,
+  and, in `run`, the names of the instance's domain, which picks the reading rules in code and the
+  record types, and of the rendering's genre, which picks the parser; the naive reader and the mock,
+  which starts from the oracle's answers, get the same. The generator's self-check is given no genre:
+  it picks the parser by sniffing the digest (`detect_genre`: the first genre other than classic that
+  recognises it, else classic, so a legacy digest is read as 0.2.0 read it). Sniffing is exclusive:
+  each genre's digests are claimed by that genre alone, in every domain, and the self-check confirms
+  that every rendering is recognised as the genre it was written in, so the genre a reader is given
+  and the one the text names are the same. It sniffs among the run's own genres (the
   built-in ones, then those of its config's plugins, and any other genre its mix names), so a genre
   that the process loaded for an earlier run, such as another config's held-out plugin, never changes
   a later run's self-check or appears in it.
 - **Every domain in every genre.** `tests/test_matrix.py` runs all 28 built-in cells (domain ×
   genre). In each cell, every rendering reads back exactly from its prompt, the oracle scores 100%,
-  no question repeats, every instance plants all three kinds of trap, every recorded careless
-  reading is reproduced from the text of every rendering, and the naive reader errs only where a
-  trap explains it.
+  no question repeats, the cell plants re-reports and conflicts and each instance the traps its plan
+  draws (none or more of each kind: see *The plan* under Traps), every recorded careless reading is
+  reproduced from the text of every rendering, and the naive reader errs only where a trap explains
+  it.
 
 ### Mixes (`--mix`, `evalgen/mix.py`)
 
@@ -1199,7 +1273,7 @@ recorded as `neo,weather`, but in the folders `weather_neo-synthetic-seed7` and
 | `--private-config PATH` | generate, demo | the private run config: the held-out domains and genres and the plugins that define them, checked whole and committed in the manifest. A legacy run refuses one |
 | `--private-config PATH` | run, score, report, resolve | loads a run's plugins from its config, after checking the config against the run's commitment. A run with plugins needs it in every new process |
 | `--source live` | generate, demo | off the legacy path, each domain's own live source: USGS, NWS or JPL, and synthetic data, with a note, for a domain without one. `--source usgs` still names the USGS feed (off the legacy path, only for a mix of earthquakes alone), and `--feed hour` is for legacy runs only |
-| `--snapshot-file PATH` | generate | replays one frozen live feed: the USGS GeoJSON of a legacy run, as in 0.2.0, or the frozen feed of the one domain of a mix |
+| `--snapshot-file PATH` | generate | replays one frozen live feed: the USGS GeoJSON of a legacy run, as in 0.2.0, or the frozen feed of the one domain of a mix, whatever number of records it gives (the live source's minimum applies to a fetch only) |
 | `--snapshot-dir DIR` | generate | replays an earlier run's snapshot folder, off the legacy path. A domain that run read live is rebuilt from its frozen bytes, whatever the seed (and keeps the time they were fetched); a domain it drew synthetic records for, by choice or after a fallback, is drawn again from `--seed`, so it is that run's only with that run's seed (the manifest's `replay.same_seed` says which, and `generate` warns when the seeds differ). A live run of several domains thus regenerates byte for byte, offline. A replay reads its snapshots whatever `--source` says, and its default folder is named for a replay (`runs/random-replay-seed7`) |
 | `mock:held_out=P` | run `--models` | the simulated model with a penalty for held-out sets: `held_out=P` (domains and genres), `held_out_domains=P` or `held_out_genres=P`, joined with `+` for two penalties (see the model table above). Without a penalty it draws exactly as before |
 | `verify-config RUN CONFIG` | its own command | checks a revealed config against a run's commitment: `ok` (exit status 0), `MISMATCH` (1, also for a file that is not JSON), or `error:` (2: no commitment to check, a config that gives a key twice, or arguments that are not a run and a config) |
@@ -1303,28 +1377,27 @@ points:
 | the same | 43 | 300 | ±6–7, 84% | ±3, 98% | each flagged by its own gap only |
 | random; invented; radio | 44 | 300 | ±7, 82% | ±5, 88% | each flagged by its own gap only |
 | random; toy; toy-telex (the example config) | 45 | 300 | ±6–7, 89% | ±3, 99% | each flagged by its own gap only |
-| the same (the demo, 0.3 penalties only) | 42 | 20 | ±35, 41% | ±17, 60% | the genre penalty flagged; the domain penalty missed |
+| the same (the demo, 0.3 penalties only; measured again with the final code) | 42 | 20 | ±47–48, 29% | ±17–19, 50% | the genre penalty flagged (+26 ± 17); the domain penalty missed (+20 ± 48). With the code just before, the reverse (the domain penalty flagged at +67 ± 44, the genre penalty missed at +14 ± 24): at 20 instances either is chance |
 | `earthquakes,toy:toy-telex`; toy; toy-telex | 46 | 100 | ±14–16, 60% | ±8–9, 49% | each flagged by its own gap only |
 | `earthquakes:classic,toy:toy-telex`; toy; toy-telex | 47 | 60 | n/a | n/a | neither: the raw gaps move together |
 
 (The half-widths are those of the penalised mocks, measured with the code of the merged threat,
-registry, rules and stats fixes. A reworded prompt reseeds the mock's errors, so each row is a new
-draw of the same experiment: rewording the
-reading rules moved the first row's source intervals from ±13–15 to ±12, caught the domain penalty
-of 0.2 that the earlier draw missed (+12 ± 13), and flagged the mock without a penalty (below).
-Before each gap was compared within the other kind's names and its intervals counted instances, the
-first row read ±10, 87% and ±6, 97%, and every penalty was flagged by its own gap. The random mixes
-of several domains and genres lost coverage to the finer strata. In the mixes of the example config,
-whose names and splits coincide, only the design effect changed anything: the source intervals of
-the mocks penalised on genres widened by up to a seventh, since a genre penalty costs all of an
-original's questions at once, so their rows go together. The later rewordings of the rules, the
-chatter and the questions, by the fixes of misleading text and of what blind readers found, make a
-run of today another such draw.) The oracle and the naive reader were
-flagged by neither gap in any of these runs, and the mock without a penalty in all but the first,
-where its source gap read +12 ± 12: a chance excess of about two standard errors, which the
-simulated readers below show in 2–3% of 100-instance runs per gap. In the partly tied mix, a penalty
-on held-out domains also raised the raw genre gap (by 12 to 18 points), and a penalty on held-out
-genres the raw source gap (by 10 to 14); the adjusted gaps kept each penalty on its own gap.
+registry, rules and stats fixes, but for the demo's row, measured with the final code. A reworded prompt
+reseeds the mock's errors, so each row is a new draw of the same experiment: rewording the reading rules
+moved the first row's source intervals from ±13–15 to ±12, caught the domain penalty of 0.2 that the
+earlier draw missed (+12 ± 13), and flagged the mock without a penalty (below). Before each gap was
+compared within the other kind's names and its intervals counted instances, the first row read ±10, 87%
+and ±6, 97%, and every penalty was flagged by its own gap. The random mixes of several domains and
+genres lost coverage to the finer strata. In the mixes of the example config, whose names and splits
+coincide, only the design effect changed anything: the source intervals of the mocks penalised on genres
+widened by up to a seventh, since a genre penalty costs all of an original's questions at once, so their
+rows go together. The later rewordings of the rules, the chatter and the questions, by the fixes of
+misleading text and of what blind readers found, make a run of today another such draw.) The oracle and
+the naive reader were flagged by neither gap in any of these runs, and the mock without a penalty in all
+but the first, where its source gap read +12 ± 12: a chance excess of about two standard errors, which
+the simulated readers below show in 2–3% of 100-instance runs per gap. In the partly tied mix, a penalty
+on held-out domains also raised the raw genre gap (by 12 to 18 points), and a penalty on held-out genres
+the raw source gap (by 10 to 14); the adjusted gaps kept each penalty on its own gap.
 
 Simulated readers on the same kind of design (random mixes of 40 or 100 instances, neo and invented
 held out, and table, form and radio), 600 to 2,000 runs per cell, measured the intervals and the
@@ -1372,8 +1445,10 @@ So the 0.2.0 study in the README regenerates byte for byte under 0.3.0.
 * One master seed. Child seeds are `SHA-256("<seed>/<path>")` (never Python's salted `hash()`),
   and all of them are listed in `manifest.json`.
 * The same seed gives byte-identical instances, prompts, snapshot, audit sample and metrics. This
-  is tested. The code targets Python 3.10+ and also runs on 3.9; outputs were byte-identical
-  between Python 3.9 and 3.14.
+  is tested. The code targets Python 3.10+ and also runs on 3.9; outputs, reports included, are
+  byte-identical between Python 3.9 and 3.14. (The design effect that widens the held-out gaps' intervals
+  sums its terms exactly, with `math.fsum`: Python 3.12 changed how the built-in `sum()` adds floats, and
+  the last digits of those intervals in `report.json` differed between the two.)
 * Synthetic runs never read the clock. USGS runs are reproducible from the frozen
   `raw_feed.geojson` with `--snapshot-file`. The replay verifies the recorded SHA-256 and warns
   when the source run was generated with different code.
@@ -1407,14 +1482,22 @@ So the 0.2.0 study in the README regenerates byte for byte under 0.3.0.
   nearest to one (`instance/<i>/anchors`) and when a notice is issued. The review that followed
   changed them again: the leads that traps are matched to (another question's), which places the
   questions about the nearest record are asked about (the next report clear of the one after it),
-  which questions the guard on the time of the largest value keeps, and a form header's wording.
-  Legacy runs from every one of those versions do regenerate.
+  which questions the guard on the time of the largest value keeps, and a form header's wording. The
+  final checks changed them once more: the reading rules (rule 1 quotes the duplicate notes, rule 2
+  names the time and position) and the glossary's line on statuses, the invented domain's duplicate
+  notes (and so its surfaces), the classic Revised notices, the readings that a re-report under its
+  record's ID records (and so where traps are placed, and the trap exposure of questions), the trap
+  descriptions of the audit sample, which window a chatter line names and when chat and email post
+  it (instances record that time, `chatter_after`), email acknowledgements and their subjects, the
+  boxed amendment's issue label and how radio speaks a value of 1. Legacy runs from every one of
+  those versions do regenerate.
 * Python 3.9 for 0.3.0 was checked by script, because pytest is not installed for the system
   Python 3.9 of the machine that built it. `tests/test_python39.py` scans the code for what 3.9
   cannot run. Under Python 3.9.6, the 0.2.0 regression run matches the hashes its test pins, and
   three runs off the legacy path match the same runs under 3.14 file for file: a random mix that
-  renders every built-in domain in every genre, a random mix with the example config's plugins, and
-  an explicit list.
+  renders every built-in domain in every genre, a random mix with the example config's plugins
+  answered by the oracle, the naive reader, the mock and a penalised mock, scored and reported (its
+  `report.json`, with the held-out gaps, included), and an explicit list.
 
 ## Repository layout
 
@@ -1445,7 +1528,7 @@ evalgen/
   forecast.py           delayed-resolution questions and resolution (USGS FDSN)
   audit.py report.py    audit sample; report.md / report.json
   pipeline.py           one cycle end to end
-tests/                  854 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
+tests/                  865 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
                         digest parsing, reply parsing and scoring, USGS and forecasts, adapters, report,
                         gap intervals, head to head, reading-rules coverage, CLI and its errors, received
                         runs that try to reach outside their folder; each domain and genre, every domain in
@@ -1541,14 +1624,16 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
 
 **The source and genre gaps**
 
-* **Power.** The validation table above gives the scale. About 100 instances with two held-out
-  domains and three held-out genres put the adjusted source gap within about ±12–15 points (the width
-  moves a little with the mock's draws) and the genre gap within ±6; 300 instances within ±6–7 and
-  ±3. With 20 instances, a 30-point penalty on held-out domains went unflagged. Fewer rows on the
+* **Power.** The validation table above gives the scale. About 100 instances with two held-out domains
+  and three held-out genres put the adjusted source gap within about ±12–15 points (the width moves a
+  little with the mock's draws) and the genre gap within ±6; 300 instances within ±6–7 and ±3. With 20
+  instances, which 30-point penalty is flagged is a matter of the draw: the demo of the example config
+  flags the penalty on held-out genres and misses the one on held-out domains, whose adjusted interval
+  is about ±48 points at 29% coverage, and the code just before did the reverse. Fewer rows on the
   held-out side widen the interval: one held-out genre out of seven gave ±5 at 300 instances, where
   three gave ±3. In simulated 100-instance runs of that design, with answers independent, a reader 20
-  points worse on the held-out domains was flagged in 93% of runs, 15 points worse in 72% and 10
-  points in 38%; one 15 points worse in the held-out genres in 95% and 10 points in 50%.
+  points worse on the held-out domains was flagged in 93% of runs, 15 points worse in 72% and 10 points
+  in 38%; one 15 points worse in the held-out genres in 95% and 10 points in 50%.
 * **Comparing within names costs a random mix power.** Each gap compares within the names of the
   other kind (see Report additions), which a list mix needs and a random mix, which draws every genre
   alike for every domain, does not; there the finer strata compare fewer rows. When this was
@@ -1604,18 +1689,23 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
 * **Invented words.** Coined names of four or five letters, and their unit words, can still be English
   words (a unit called "halls"), and the list of offensive parts that no coined word may contain is a
   list: it is not a filter of every word that gives offence.
-* **Live sources: USGS, NWS and JPL only.** The invented domain has none, by design. The NWS and
-  JPL CAD adapters have one run against the real APIs behind them, besides the recorded API responses
+* **Live sources: USGS, NWS and JPL only.** The invented domain has none, by design. The NWS and JPL
+  CAD adapters have one run against the real APIs behind them, besides the recorded API responses
   and fake transports that the tests use. On 2026-11-12 (at 8ef8657), `generate --mix
-  "weather:classic,neo:table,earthquakes:news" --source live --instances 6` fetched 532 observations
-  from the 24 NWS stations (a 24-hour window), 69 close approaches from the JPL CAD API (1,344 hours)
-  and 240 events from the USGS day feed, none falling back to synthetic data; the oracle's
-  self-check passed 56 of 56 questions. Replayed with `--snapshot-dir` while every request went to an
-  unusable proxy, each frozen feed's SHA-256 checked, and every instance, prompt and audit file came
-  out byte-identical; only the snapshots' metadata differed (the time of the fetch, which a replay
-  has kept since, and a note that says it is a replay), with the manifest's volatile and replay keys.
-  One run is not a record of how the APIs behave over time: their formats or limits may still change,
-  which the frozen bytes and the fallback to synthetic data are there for.
+  "weather:classic,neo:table,earthquakes:news" --source live --seed 8435451682288510821 --instances
+  6 --variants 1` fetched 532 observations from the 24 NWS stations (a 24-hour window), 69 close
+  approaches from the JPL CAD API (1,344 hours) and 240 events from the USGS day feed, none falling
+  back to synthetic data; the oracle's self-check reproduced the key in 56 of 56 checks (28
+  questions, each in its original rendering and one variant). That run's manifest, which records
+  these counts, each feed's SHA-256 and the self-check, is
+  `runs/live-smoke-2026-11-12/manifest.json` (its run ID, `run`, is the scratch folder it was
+  written to); as for every committed run, the frozen feeds, instances and prompts are not
+  committed. Replayed with `--snapshot-dir` while every request went to an unusable proxy, each
+  frozen feed's SHA-256 checked, and every instance, prompt and audit file came out byte-identical;
+  only the snapshots' metadata differed (the time of the fetch, which a replay has kept since, and a
+  note that says it is a replay), with the manifest's volatile and replay keys. One run is not a
+  record of how the APIs behave over time: their formats or limits may still change, which the
+  frozen bytes and the fallback to synthetic data are there for.
 * **What is left of the trap tells off the legacy path.** A planted report is a record drawn with the
   digest (see Traps), so it is told apart only by what the rules name, and by what follows from them or
   from placing traps where they change answers (AUCs within [0.35, 0.65] in every domain, on the
@@ -1693,6 +1783,24 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   (KJFK, KORD, KDEN, KSEA, KLAX), the names and positions of the 24 stations are a hand-made table
   in the NWS style. In a live run an observation takes its position from the API whenever it gives
   one, and its station's name always from the table.
+* **A re-report stands where its slot stands.** A planted report keeps its slot's time, place and
+  source (see Traps), so a re-report or a second report can lie hours and hundreds of km from the
+  record it names, and seconds and a fraction of a km from another printed record (its slot's
+  aftershock, or its twin), and at a fixed site it stands at a station of the record's region, not
+  the record's own (a Phoenix report noted as a duplicate of a Denver observation). Only its ID or
+  its note says which record it is, as the rules say. That is deliberate: placed beside its record,
+  or kept clear of every printed one, it would stand where no real record does, a tell that the red
+  teams measured (an AUC of about 0.6 for the gap to the nearest report of its group, and up to 0.66
+  for the reports at a weather re-report's station, before slots). Blind readers flagged such reports
+  as odd, and every one of them answered by the rules; reading one by its place instead breaks rule 1.
+* **neo's renderings say a catalogue "recorded" an approach.** Every genre prints a close approach's
+  time beside the words of every record domain ("the catalogue jpl recorded close approach
+  2026dk15-ca1 near Venus at ...", "Recorded:"), which a reader could take for when a catalogue
+  logged it. Rule 6 says what that time is (the moment the object passed closest to the body), each
+  report prints one time only, and the rule on message times says that no message's time is a
+  record's, so no answer depends on the wording; but the words were not made the domain's own (a
+  phrase such as "passed closest" in each of the four genres that write "recorded" and in their
+  parsers).
 * **Nominal local times of earthquakes.** Every genre writes a located record's local time with its
   offset stated. A weather observation takes its station's real zone, but an earthquake (like any
   located record of a domain that knows no zones) takes the whole hour nearest the solar time of its
@@ -1703,11 +1811,12 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
 * **neo has five bodies.** Templates whose only parameter is the body (P03 and P08, and their
   twins) run out after about five questions per run. In a 60-instance neo run, P03 and P08 asked
   five questions each and their twins six.
-* **The invented domain's realism.** It is a synthetic world of fixed shape: eight depots, five
-  agencies, two log-normal quantities per depot. Its surface words are drawn per instance, but its
-  status words ("verified", "provisional") and field keys ("f1", "f2"), which every glossary prints,
-  are fixed for the domain, as are its ID shape and its distributions. An adversary can practise on
-  it like any public domain. It tests reading through a glossary, not the reading of a real source.
+* **The invented domain's realism.** It is a synthetic world of fixed shape: eight depots, seven
+  agencies (five depot agencies and two clearing agencies), two log-normal quantities per depot. Its
+  surface words are drawn per instance, but its status words ("verified", "provisional") and field keys
+  ("f1", "f2"), which every glossary prints, are fixed for the domain, as are its ID shape and its
+  distributions. An adversary can practise on it like any public domain. It tests reading through a
+  glossary, not the reading of a real source.
 * **Earthquakes in the classic genre off the legacy path are the 0.2.0 digest.** It rounds depths to
   0.1 km or mi, positions to 0.001° or a hundredth of an arc-minute and some times to the minute,
   and the 0.2.0 parser does not read back place notes, retraction reasons or the magnitude that a

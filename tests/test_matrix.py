@@ -9,9 +9,10 @@ The run is answered by the oracle and the naive reader, scored and reported. The
     the genre that wrote the digest), to exactly the reports and notices it was rendered from;
   - the oracle scores 100% on every rendering;
   - no question is asked twice in the run;
-  - every instance plants every kind of trap, every careless reading a trap records gives, from the text
-    of every rendering, the wrong answer recorded for it, and holds at the printed precision (the misread
-    digest passes the key's guards), and the naive reader is wrong only where a trap explains it;
+  - every cell plants re-reports and conflicts, and each instance the traps its plan draws (none or more of
+    each kind: traps.draw_plan); every careless reading a trap records gives, from the text of every
+    rendering, the wrong answer recorded for it, and holds at the printed precision (the misread digest
+    passes the key's guards), and the naive reader is wrong only where a trap explains it;
   - sniffing is exclusive: a genre's digests are claimed by that genre and by no other.
 
 Only classic claims a legacy (0.2.0) digest. Last, a random mix that draws every domain in every genre is

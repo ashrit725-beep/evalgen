@@ -11,13 +11,14 @@ import random
 import re
 from collections import Counter
 from dataclasses import asdict, replace
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import requests
 
 from evalgen import pipeline, scoring, traps
 from evalgen.audit import write_audit_sample
-from evalgen.digest import make_chatter
+from evalgen.digest import make_chatter, timed_chatter
 from evalgen.domains import Registry, all_domains, get_domain
 from evalgen.domains.base import GENERIC_CHATTER, Lexicon, Record, RecordReport, Surface, TrapVocab, standard_lexicon
 from evalgen.domains.earthquakes import EARTHQUAKES
@@ -678,8 +679,51 @@ def test_chatter_speaks_the_domains_words(toys):
     assert toys.flat.chatter is GENERIC_CHATTER and EARTHQUAKES.chatter != GENERIC_CHATTER
 
 
+WINDOW = re.compile(r"from (?P<h1>\d{2}:\d{2}) UTC on (?P<date>\d{1,2} \w+ \d{4}) until (?P<h2>\d{2}:\d{2}) UTC")
+
+
+def _window(line: str) -> tuple[int, int]:
+    """The start and end (Unix seconds) of the window a station line tells of."""
+    found = WINDOW.search(line)
+    day = datetime.strptime(found["date"], "%d %B %Y").replace(tzinfo=timezone.utc)
+    start, end = (day + timedelta(hours=int(found[h][:2]), minutes=int(found[h][3:])) for h in ("h1", "h2"))
+    return int(start.timestamp()), int((end + timedelta(days=end < start)).timestamp())
+
+
+def test_chatter_off_the_legacy_path_names_no_window_its_stations_source_filed_in():
+    """Off the legacy path a line about a station of a source ("Sensor KPHL.PDF was offline for maintenance from
+    00:00 UTC on 4 March 2026 until 00:45 UTC") names a window in which that source filed no report of the digest,
+    which would make the line a distractor that no trap records, and gives the end of that window: a genre that
+    posts its lines at times of their own posts it later (digest.timed_chatter). A line about no station, and a
+    first draw that is clear, draw exactly as make_chatter does; a line whose every draw holds a report of its
+    station's source is left out."""
+    station_lines = tuple(f"{what} {{station}} was offline for maintenance from {{h1}} UTC on {{date}} until {{h2}} UTC."
+                          for what in ("Sensor", "Gauge", "Probe"))
+    sources = ["KPHL", "KJFK", "MADIS"]
+    filed = [(source, COMPILED_AT - minutes * 60) for source in ("KPHL", "KJFK") for minutes in range(0, 20 * 60, 50)]
+    clear = redrawn = 0
+    for seed in range(60):
+        plain = make_chatter(random.Random(seed), COMPILED_AT, sources, station_lines)
+        timed = timed_chatter(random.Random(seed), COMPILED_AT, sources, station_lines, None, filed)
+        assert len(timed) == len(plain)  # every line drawn finds a clear window here
+        for (text, after), first in zip(timed, plain):
+            start, end = _window(text)
+            network = _station(text).split(".")[0]
+            assert after == end and not any(source == network and start <= t < end + 60 for source, t in filed), text
+            clear += text == first
+            redrawn += text != first
+    assert clear and redrawn  # many first draws were clear; the others drew again
+    for seed in range(20):  # a line that names no station draws as make_chatter's lines do, with or without times
+        weather = get_domain("weather")
+        plain = make_chatter(random.Random(seed), COMPILED_AT, sources, weather.chatter[1:], weather.words)
+        timed = timed_chatter(random.Random(seed), COMPILED_AT, sources, weather.chatter[1:], weather.words, filed)
+        assert [text for text, _ in timed] == plain and {after for _, after in timed} == {None}
+    always = [(source, t) for source in sources for t in range(COMPILED_AT - 21 * 3600, COMPILED_AT, 600)]
+    assert timed_chatter(random.Random(1), COMPILED_AT, sources, station_lines, None, always) == []
+
+
 def _station(line: str) -> str:
-    match = re.search(r"[A-Z]{2,4}\.[A-Z]{3}", line)
+    match = re.search(r"[A-Z]{2,5}\.[A-Z]{3}", line)
     return match.group(0) if match else ""
 
 

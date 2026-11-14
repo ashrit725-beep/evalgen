@@ -1,0 +1,876 @@
+{
+  "evalgen_version": "0.3.0",
+  "code_sha256": "c281a51ae725456d3588c98e838e037d542b3d9cfe24fc0af160532da20b4ce4",
+  "run_id": "run",
+  "seed": 8435451682288510821,
+  "seed_commitment": "79f20fe88ca05471bbf3e10cec01b1078830e85ea5543140f717659880dd7cf7",
+  "seed_nonce": "b652b5cb540cc098f8532e884b7a5f21",
+  "config": {
+    "seed": 8435451682288510821,
+    "instances": 6,
+    "source": "live",
+    "feed": "day",
+    "snapshot_file": null,
+    "variants": 1,
+    "pool_size": 360,
+    "events_min": 20,
+    "events_max": 28,
+    "questions_min": 3,
+    "questions_max": 5,
+    "audit_rate": 0.02,
+    "mix": "weather:classic,neo:table,earthquakes:news"
+  },
+  "inventory": {
+    "domains": {
+      "public": [
+        "weather",
+        "neo",
+        "earthquakes"
+      ],
+      "held_out": []
+    },
+    "genres": {
+      "public": [
+        "classic",
+        "table",
+        "news"
+      ],
+      "held_out": []
+    }
+  },
+  "snapshots": {
+    "weather": {
+      "source": "nws",
+      "seed": 8435451682288510821,
+      "compiled_at": 1794511987,
+      "window_hours": 24,
+      "events_sha256": "2ab416ef3807dcc4aa77eef03867fa09f869252f2317c19356314d6250f39a83",
+      "raw_sha256": "0d2b55df583e9fe3fc051391982ac44cd7dd39992b26e1f1c98546891e50d7f1",
+      "url": "https://api.weather.gov/stations/{station}/observations?start=2026-11-11T19:33:07Z&limit=500",
+      "fetched_at": "2026-11-12T19:33:27Z",
+      "note": null,
+      "domain": "weather",
+      "n_events": 532
+    },
+    "neo": {
+      "source": "jpl",
+      "seed": 8435451682288510821,
+      "compiled_at": 1799280000,
+      "window_hours": 1344,
+      "events_sha256": "4fa7a2e2ee6377814d65a6bbbe9a800640b6172428306f4d8153372d86162475",
+      "raw_sha256": "21fb6b3dee90f0cf885298f9af5e73dc5b6af31352eb9129725ace7257bcbfd6",
+      "url": "https://ssd-api.jpl.nasa.gov/cad.api?date-min=now&date-max=%2B60&dist-max=0.05&body=ALL&fullname=true",
+      "fetched_at": "2026-11-12T19:33:27Z",
+      "note": null,
+      "domain": "neo",
+      "n_events": 69
+    },
+    "earthquakes": {
+      "source": "usgs",
+      "seed": 8435451682288510821,
+      "compiled_at": 1794511980,
+      "window_hours": 24,
+      "events_sha256": "cfd7c2b01ed73762d6b488413909115bc70c20df54c1dbdd41f381af36832989",
+      "raw_sha256": "43c2f05d895dc64830143678aa2f8867c561ae566bce7a6a04e14677e1280ed0",
+      "url": "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson",
+      "fetched_at": "2026-11-12T19:33:28Z",
+      "note": null,
+      "domain": "earthquakes",
+      "n_events": 240
+    }
+  },
+  "replay": null,
+  "templates": {
+    "public": [
+      {
+        "template_id": "P01",
+        "pool": "public",
+        "filters": [
+          "at_least(temp)"
+        ],
+        "terminal": "count",
+        "twin_of": null,
+        "skeleton": "dedupe → at_least(temp) → count",
+        "domain": "weather"
+      },
+      {
+        "template_id": "P02",
+        "pool": "public",
+        "filters": [
+          "within_distance"
+        ],
+        "terminal": "count",
+        "twin_of": null,
+        "skeleton": "dedupe → within_distance → count",
+        "domain": "weather"
+      },
+      {
+        "template_id": "P03",
+        "pool": "public",
+        "filters": [
+          "in_group"
+        ],
+        "terminal": "argmax(temp)",
+        "twin_of": null,
+        "skeleton": "dedupe → in_group → argmax(temp)",
+        "domain": "weather"
+      },
+      {
+        "template_id": "P04",
+        "pool": "public",
+        "filters": [
+          "at_least(temp)"
+        ],
+        "terminal": "max(wind)",
+        "twin_of": null,
+        "skeleton": "dedupe → at_least(temp) → max(wind)",
+        "domain": "weather"
+      },
+      {
+        "template_id": "P05",
+        "pool": "public",
+        "filters": [
+          "at_least(temp)"
+        ],
+        "terminal": "compare_groups",
+        "twin_of": null,
+        "skeleton": "dedupe → at_least(temp) → compare_groups",
+        "domain": "weather"
+      },
+      {
+        "template_id": "P06",
+        "pool": "public",
+        "filters": [
+          "below(wind)",
+          "time_between"
+        ],
+        "terminal": "count",
+        "twin_of": null,
+        "skeleton": "dedupe → below(wind) → time_between → count",
+        "domain": "weather"
+      },
+      {
+        "template_id": "P07",
+        "pool": "public",
+        "filters": [
+          "in_group"
+        ],
+        "terminal": "nearest_to",
+        "twin_of": null,
+        "skeleton": "dedupe → in_group → nearest_to",
+        "domain": "weather"
+      },
+      {
+        "template_id": "P08",
+        "pool": "public",
+        "filters": [
+          "in_group"
+        ],
+        "terminal": "time_of_max(temp)",
+        "twin_of": null,
+        "skeleton": "dedupe → in_group → time_of_max(temp)",
+        "domain": "weather"
+      },
+      {
+        "template_id": "P09",
+        "pool": "public",
+        "filters": [
+          "within_distance"
+        ],
+        "terminal": "rank(temp)",
+        "twin_of": null,
+        "skeleton": "dedupe → within_distance → rank(temp)",
+        "domain": "weather"
+      },
+      {
+        "template_id": "P10",
+        "pool": "public",
+        "filters": [
+          "at_least(wind)"
+        ],
+        "terminal": "max(temp)",
+        "twin_of": null,
+        "skeleton": "dedupe → at_least(wind) → max(temp)",
+        "domain": "weather"
+      },
+      {
+        "template_id": "P11",
+        "pool": "public",
+        "filters": [
+          "time_between"
+        ],
+        "terminal": "min(wind)",
+        "twin_of": null,
+        "skeleton": "dedupe → time_between → min(wind)",
+        "domain": "weather"
+      },
+      {
+        "template_id": "P12",
+        "pool": "public",
+        "filters": [
+          "below(temp)"
+        ],
+        "terminal": "nearest_distance",
+        "twin_of": null,
+        "skeleton": "dedupe → below(temp) → nearest_distance",
+        "domain": "weather"
+      },
+      {
+        "template_id": "P01",
+        "pool": "public",
+        "filters": [
+          "at_least(v_rel)"
+        ],
+        "terminal": "count",
+        "twin_of": null,
+        "skeleton": "dedupe → at_least(v_rel) → count",
+        "domain": "neo"
+      },
+      {
+        "template_id": "P03",
+        "pool": "public",
+        "filters": [
+          "in_group"
+        ],
+        "terminal": "argmax(v_rel)",
+        "twin_of": null,
+        "skeleton": "dedupe → in_group → argmax(v_rel)",
+        "domain": "neo"
+      },
+      {
+        "template_id": "P04",
+        "pool": "public",
+        "filters": [
+          "at_least(v_rel)"
+        ],
+        "terminal": "max(dist)",
+        "twin_of": null,
+        "skeleton": "dedupe → at_least(v_rel) → max(dist)",
+        "domain": "neo"
+      },
+      {
+        "template_id": "P05",
+        "pool": "public",
+        "filters": [
+          "at_least(v_rel)"
+        ],
+        "terminal": "compare_groups",
+        "twin_of": null,
+        "skeleton": "dedupe → at_least(v_rel) → compare_groups",
+        "domain": "neo"
+      },
+      {
+        "template_id": "P06",
+        "pool": "public",
+        "filters": [
+          "below(dist)",
+          "time_between"
+        ],
+        "terminal": "count",
+        "twin_of": null,
+        "skeleton": "dedupe → below(dist) → time_between → count",
+        "domain": "neo"
+      },
+      {
+        "template_id": "P08",
+        "pool": "public",
+        "filters": [
+          "in_group"
+        ],
+        "terminal": "time_of_max(v_rel)",
+        "twin_of": null,
+        "skeleton": "dedupe → in_group → time_of_max(v_rel)",
+        "domain": "neo"
+      },
+      {
+        "template_id": "P10",
+        "pool": "public",
+        "filters": [
+          "at_least(dist)"
+        ],
+        "terminal": "max(v_rel)",
+        "twin_of": null,
+        "skeleton": "dedupe → at_least(dist) → max(v_rel)",
+        "domain": "neo"
+      },
+      {
+        "template_id": "P11",
+        "pool": "public",
+        "filters": [
+          "time_between"
+        ],
+        "terminal": "min(dist)",
+        "twin_of": null,
+        "skeleton": "dedupe → time_between → min(dist)",
+        "domain": "neo"
+      },
+      {
+        "template_id": "P01",
+        "pool": "public",
+        "filters": [
+          "mag_at_least"
+        ],
+        "terminal": "count",
+        "twin_of": null,
+        "skeleton": "dedupe → mag_at_least → count",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "P02",
+        "pool": "public",
+        "filters": [
+          "within_distance"
+        ],
+        "terminal": "count",
+        "twin_of": null,
+        "skeleton": "dedupe → within_distance → count",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "P03",
+        "pool": "public",
+        "filters": [
+          "in_region"
+        ],
+        "terminal": "argmax_mag",
+        "twin_of": null,
+        "skeleton": "dedupe → in_region → argmax_mag",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "P04",
+        "pool": "public",
+        "filters": [
+          "mag_at_least"
+        ],
+        "terminal": "max_depth",
+        "twin_of": null,
+        "skeleton": "dedupe → mag_at_least → max_depth",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "P05",
+        "pool": "public",
+        "filters": [
+          "mag_at_least"
+        ],
+        "terminal": "compare_regions",
+        "twin_of": null,
+        "skeleton": "dedupe → mag_at_least → compare_regions",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "P06",
+        "pool": "public",
+        "filters": [
+          "depth_shallower_than",
+          "time_between"
+        ],
+        "terminal": "count",
+        "twin_of": null,
+        "skeleton": "dedupe → depth_shallower_than → time_between → count",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "P07",
+        "pool": "public",
+        "filters": [
+          "in_region"
+        ],
+        "terminal": "nearest_to",
+        "twin_of": null,
+        "skeleton": "dedupe → in_region → nearest_to",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "P08",
+        "pool": "public",
+        "filters": [
+          "in_region"
+        ],
+        "terminal": "time_of_largest",
+        "twin_of": null,
+        "skeleton": "dedupe → in_region → time_of_largest",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "P09",
+        "pool": "public",
+        "filters": [
+          "within_distance"
+        ],
+        "terminal": "rank_mag",
+        "twin_of": null,
+        "skeleton": "dedupe → within_distance → rank_mag",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "P10",
+        "pool": "public",
+        "filters": [
+          "depth_at_least"
+        ],
+        "terminal": "max_mag",
+        "twin_of": null,
+        "skeleton": "dedupe → depth_at_least → max_mag",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "P11",
+        "pool": "public",
+        "filters": [
+          "time_between"
+        ],
+        "terminal": "min_depth",
+        "twin_of": null,
+        "skeleton": "dedupe → time_between → min_depth",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "P12",
+        "pool": "public",
+        "filters": [
+          "mag_below"
+        ],
+        "terminal": "nearest_distance",
+        "twin_of": null,
+        "skeleton": "dedupe → mag_below → nearest_distance",
+        "domain": "earthquakes"
+      }
+    ],
+    "new": [
+      {
+        "template_id": "N01",
+        "pool": "new",
+        "filters": [
+          "time_between"
+        ],
+        "terminal": "count",
+        "twin_of": "P01",
+        "skeleton": "dedupe → time_between → count",
+        "domain": "weather"
+      },
+      {
+        "template_id": "N02",
+        "pool": "new",
+        "filters": [
+          "at_least(wind)"
+        ],
+        "terminal": "count",
+        "twin_of": "P02",
+        "skeleton": "dedupe → at_least(wind) → count",
+        "domain": "weather"
+      },
+      {
+        "template_id": "N03",
+        "pool": "new",
+        "filters": [
+          "at_least(wind)"
+        ],
+        "terminal": "argmax(temp)",
+        "twin_of": "P03",
+        "skeleton": "dedupe → at_least(wind) → argmax(temp)",
+        "domain": "weather"
+      },
+      {
+        "template_id": "N04",
+        "pool": "new",
+        "filters": [
+          "below(wind)"
+        ],
+        "terminal": "max(wind)",
+        "twin_of": "P04",
+        "skeleton": "dedupe → below(wind) → max(wind)",
+        "domain": "weather"
+      },
+      {
+        "template_id": "N05",
+        "pool": "new",
+        "filters": [
+          "at_least(wind)"
+        ],
+        "terminal": "compare_groups",
+        "twin_of": "P05",
+        "skeleton": "dedupe → at_least(wind) → compare_groups",
+        "domain": "weather"
+      },
+      {
+        "template_id": "N06",
+        "pool": "new",
+        "filters": [
+          "below(pressure)",
+          "time_between"
+        ],
+        "terminal": "count",
+        "twin_of": "P06",
+        "skeleton": "dedupe → below(pressure) → time_between → count",
+        "domain": "weather"
+      },
+      {
+        "template_id": "N07",
+        "pool": "new",
+        "filters": [
+          "below(temp)"
+        ],
+        "terminal": "nearest_to",
+        "twin_of": "P07",
+        "skeleton": "dedupe → below(temp) → nearest_to",
+        "domain": "weather"
+      },
+      {
+        "template_id": "N08",
+        "pool": "new",
+        "filters": [
+          "below(pressure)"
+        ],
+        "terminal": "time_of_max(temp)",
+        "twin_of": "P08",
+        "skeleton": "dedupe → below(pressure) → time_of_max(temp)",
+        "domain": "weather"
+      },
+      {
+        "template_id": "N09",
+        "pool": "new",
+        "filters": [
+          "below(wind)"
+        ],
+        "terminal": "rank(temp)",
+        "twin_of": "P09",
+        "skeleton": "dedupe → below(wind) → rank(temp)",
+        "domain": "weather"
+      },
+      {
+        "template_id": "N10",
+        "pool": "new",
+        "filters": [
+          "below(temp)"
+        ],
+        "terminal": "max(temp)",
+        "twin_of": "P10",
+        "skeleton": "dedupe → below(temp) → max(temp)",
+        "domain": "weather"
+      },
+      {
+        "template_id": "N11",
+        "pool": "new",
+        "filters": [
+          "below(pressure)"
+        ],
+        "terminal": "min(wind)",
+        "twin_of": "P11",
+        "skeleton": "dedupe → below(pressure) → min(wind)",
+        "domain": "weather"
+      },
+      {
+        "template_id": "N12",
+        "pool": "new",
+        "filters": [
+          "in_group"
+        ],
+        "terminal": "nearest_distance",
+        "twin_of": "P12",
+        "skeleton": "dedupe → in_group → nearest_distance",
+        "domain": "weather"
+      },
+      {
+        "template_id": "N01",
+        "pool": "new",
+        "filters": [
+          "at_least(h)"
+        ],
+        "terminal": "count",
+        "twin_of": "P01",
+        "skeleton": "dedupe → at_least(h) → count",
+        "domain": "neo"
+      },
+      {
+        "template_id": "N03",
+        "pool": "new",
+        "filters": [
+          "below(h)"
+        ],
+        "terminal": "argmax(v_rel)",
+        "twin_of": "P03",
+        "skeleton": "dedupe → below(h) → argmax(v_rel)",
+        "domain": "neo"
+      },
+      {
+        "template_id": "N04",
+        "pool": "new",
+        "filters": [
+          "below(v_rel)"
+        ],
+        "terminal": "max(dist)",
+        "twin_of": "P04",
+        "skeleton": "dedupe → below(v_rel) → max(dist)",
+        "domain": "neo"
+      },
+      {
+        "template_id": "N05",
+        "pool": "new",
+        "filters": [
+          "time_between"
+        ],
+        "terminal": "compare_groups",
+        "twin_of": "P05",
+        "skeleton": "dedupe → time_between → compare_groups",
+        "domain": "neo"
+      },
+      {
+        "template_id": "N06",
+        "pool": "new",
+        "filters": [
+          "at_least(v_rel)",
+          "below(h)"
+        ],
+        "terminal": "count",
+        "twin_of": "P06",
+        "skeleton": "dedupe → at_least(v_rel) → below(h) → count",
+        "domain": "neo"
+      },
+      {
+        "template_id": "N08",
+        "pool": "new",
+        "filters": [
+          "time_between"
+        ],
+        "terminal": "time_of_max(v_rel)",
+        "twin_of": "P08",
+        "skeleton": "dedupe → time_between → time_of_max(v_rel)",
+        "domain": "neo"
+      },
+      {
+        "template_id": "N10",
+        "pool": "new",
+        "filters": [
+          "below(h)"
+        ],
+        "terminal": "max(v_rel)",
+        "twin_of": "P10",
+        "skeleton": "dedupe → below(h) → max(v_rel)",
+        "domain": "neo"
+      },
+      {
+        "template_id": "N11",
+        "pool": "new",
+        "filters": [
+          "in_group"
+        ],
+        "terminal": "min(dist)",
+        "twin_of": "P11",
+        "skeleton": "dedupe → in_group → min(dist)",
+        "domain": "neo"
+      },
+      {
+        "template_id": "N01",
+        "pool": "new",
+        "filters": [
+          "time_between"
+        ],
+        "terminal": "count",
+        "twin_of": "P01",
+        "skeleton": "dedupe → time_between → count",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "N02",
+        "pool": "new",
+        "filters": [
+          "mag_below"
+        ],
+        "terminal": "count",
+        "twin_of": "P02",
+        "skeleton": "dedupe → mag_below → count",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "N03",
+        "pool": "new",
+        "filters": [
+          "depth_shallower_than"
+        ],
+        "terminal": "argmax_mag",
+        "twin_of": "P03",
+        "skeleton": "dedupe → depth_shallower_than → argmax_mag",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "N04",
+        "pool": "new",
+        "filters": [
+          "in_region"
+        ],
+        "terminal": "max_depth",
+        "twin_of": "P04",
+        "skeleton": "dedupe → in_region → max_depth",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "N05",
+        "pool": "new",
+        "filters": [
+          "within_distance"
+        ],
+        "terminal": "compare_regions",
+        "twin_of": "P05",
+        "skeleton": "dedupe → within_distance → compare_regions",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "N06",
+        "pool": "new",
+        "filters": [
+          "depth_at_least",
+          "in_region"
+        ],
+        "terminal": "count",
+        "twin_of": "P06",
+        "skeleton": "dedupe → depth_at_least → in_region → count",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "N07",
+        "pool": "new",
+        "filters": [
+          "mag_below"
+        ],
+        "terminal": "nearest_to",
+        "twin_of": "P07",
+        "skeleton": "dedupe → mag_below → nearest_to",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "N08",
+        "pool": "new",
+        "filters": [
+          "mag_below"
+        ],
+        "terminal": "time_of_largest",
+        "twin_of": "P08",
+        "skeleton": "dedupe → mag_below → time_of_largest",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "N09",
+        "pool": "new",
+        "filters": [
+          "in_region"
+        ],
+        "terminal": "rank_mag",
+        "twin_of": "P09",
+        "skeleton": "dedupe → in_region → rank_mag",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "N10",
+        "pool": "new",
+        "filters": [
+          "mag_below"
+        ],
+        "terminal": "max_mag",
+        "twin_of": "P10",
+        "skeleton": "dedupe → mag_below → max_mag",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "N11",
+        "pool": "new",
+        "filters": [
+          "mag_below"
+        ],
+        "terminal": "min_depth",
+        "twin_of": "P11",
+        "skeleton": "dedupe → mag_below → min_depth",
+        "domain": "earthquakes"
+      },
+      {
+        "template_id": "N12",
+        "pool": "new",
+        "filters": [
+          "depth_shallower_than"
+        ],
+        "terminal": "nearest_distance",
+        "twin_of": "P12",
+        "skeleton": "dedupe → depth_shallower_than → nearest_distance",
+        "domain": "earthquakes"
+      }
+    ]
+  },
+  "instances": [
+    "inst-000",
+    "inst-001",
+    "inst-002",
+    "inst-003",
+    "inst-004",
+    "inst-005"
+  ],
+  "self_check": {
+    "oracle_checks": 56,
+    "oracle_agreements": 56,
+    "resolution_invariant_instances": 6,
+    "problems": []
+  },
+  "audit": {
+    "population": 28,
+    "sampled": 1,
+    "rate": 0.02,
+    "file": "audit/audit_sample.jsonl"
+  },
+  "seeds": {
+    "templates/new/weather": 17022465416483783240,
+    "templates/new/neo": 381018053727262839,
+    "templates/new/earthquakes": 10392671472148332939,
+    "instance/0/mix": 15966452938241165102,
+    "instance/0/events": 10836218284016796185,
+    "instance/0/questions": 11268086061760562015,
+    "instance/0/traps": 12037586777038643736,
+    "instance/0/chatter": 1035731207455795792,
+    "instance/0/render/0": 6327409998461360471,
+    "instance/0/render/1": 9930375307195509847,
+    "instance/0": 8259313975898595746,
+    "instance/1/mix": 4712478038297941492,
+    "instance/1/events": 8918997233145301297,
+    "instance/1/questions": 3947765854383481519,
+    "instance/1/traps": 3055081844595840927,
+    "instance/1/chatter": 12496131974192754228,
+    "instance/1/forecast": 15908921021698281109,
+    "instance/1/render/0": 654097376987673295,
+    "instance/1/render/1": 6165066118073317382,
+    "instance/1": 13647542184616523256,
+    "instance/2/mix": 3115298408603600728,
+    "instance/2/events": 10934411578973569760,
+    "instance/2/questions": 15021494207585314586,
+    "instance/2/traps": 12280485136858649129,
+    "instance/2/chatter": 17792548973063010539,
+    "instance/2/render/0": 17423890409892306226,
+    "instance/2/render/1": 9475686543450374195,
+    "instance/2": 16497426987526034572,
+    "instance/3/mix": 13914652654068308809,
+    "instance/3/events": 4995574594048405540,
+    "instance/3/questions": 1368226683599943244,
+    "instance/3/traps": 6523712813596185310,
+    "instance/3/chatter": 383770796179325922,
+    "instance/3/render/0": 13189628240390653021,
+    "instance/3/render/1": 15084518649478020706,
+    "instance/3": 12213580303984285604,
+    "instance/4/mix": 17130770173041514782,
+    "instance/4/events": 10009644057476637208,
+    "instance/4/questions": 10165751346419612063,
+    "instance/4/traps": 8209182675813932774,
+    "instance/4/chatter": 78638486446472875,
+    "instance/4/render/0": 98480157767254785,
+    "instance/4/render/1": 6587037958830873863,
+    "instance/4": 7352001927603711614,
+    "instance/5/mix": 14189614546672406271,
+    "instance/5/events": 15063030250868096581,
+    "instance/5/questions": 10915894561868946989,
+    "instance/5/traps": 14258147183247988868,
+    "instance/5/chatter": 14300949073839991109,
+    "instance/5/render/0": 3471413686568088616,
+    "instance/5/render/1": 7809960703382158337,
+    "instance/5": 13145103685504017911,
+    "audit": 15021989738211434630,
+    "mock": 7934449121177059305
+  },
+  "generated_at_utc": "2026-11-12T19:33:29Z"
+}

@@ -39,7 +39,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
 from ..digest import MONTHS, MONTHS_LONG, WEEKDAYS
-from ..domains.base import GROUP_PREPOSITIONS, Domain, Glossary, GlossaryField, RecordReport, indefinite
+from ..domains.base import (GROUP_PREPOSITIONS, Domain, Glossary, GlossaryField, RecordReport, indefinite,
+                            settled_parts)
 from ..models import Notice, Report
 from ..ops import DigestData
 from ..units import Unit, decode, encode, find_unit
@@ -62,6 +63,10 @@ class RenderContext:
     rng: random.Random  # the rendering's own stream, continued from choose_style
     domain: Domain
     glossary: Glossary | None = None  # what the prompt prints about the records; None on the legacy path
+    # Off the legacy path, for each chatter line, the time after which a genre that posts lines at times of their own
+    # (a chat log, an email thread) may post it: the last minute of the window it tells of, or None
+    # (digest.timed_chatter).
+    chatter_after: Sequence[int | None] = ()
 
 
 class Genre(ABC):
@@ -328,8 +333,9 @@ def render_glossary(glossary: Glossary) -> str:
              f"{_quote(glossary.id_label)}; IDs match the pattern {glossary.id_pattern}, {ID_CASE}.",
              f"- Sources: each report is filed by one {_quote(glossary.source_label)}.",
              f"- Groups: each record belongs to one {_quote(glossary.group_label)}.",
-             f"- Statuses: {indefinite(final)} {_quote(final)} report settles a record's values; {indefinite(draft)} "
-             f"{_quote(draft)} report does not."]
+             f"- Statuses: {indefinite(final)} {_quote(final)} report settles a record's "
+             f"{settled_parts(glossary.coord_decimals is not None)[0]}; {indefinite(draft)} {_quote(draft)} report "
+             "does not."]
     if glossary.coord_decimals is not None:
         lines.append(f"- Positions: latitude and longitude, stored to {_places(glossary.coord_decimals)} of a degree.")
     for f in glossary.fields:
@@ -357,8 +363,10 @@ _RECORDS = re.compile(rf"- Records: each is one (?P<noun>{_QUOTED}) \(plural (?P
                       rf"its (?P<id_label>{_QUOTED}); IDs match the pattern (?P<pattern>.+), {ID_CASE}\.")
 _SOURCES = re.compile(rf"- Sources: each report is filed by one (?P<label>{_QUOTED})\.")
 _GROUPS = re.compile(rf"- Groups: each record belongs to one (?P<label>{_QUOTED})\.")
-_STATUSES = re.compile(rf"- Statuses: an? (?P<final>{_QUOTED}) report settles a record's values; an? "
-                       rf"(?P<draft>{_QUOTED}) report does not\.")
+# A record's time, position and values (settled_parts), or, as prompts printed it before the line named them, its
+# values alone: a run generated then is still read.
+_STATUSES = re.compile(rf"- Statuses: an? (?P<final>{_QUOTED}) report settles a record's (?:time(?:, position)? and )?"
+                       rf"values; an? (?P<draft>{_QUOTED}) report does not\.")
 _POSITIONS = re.compile(r"- Positions: latitude and longitude, stored to (?P<decimals>\d+) decimal places? of a "
                         r"degree\.")
 _FIELD = re.compile(rf"- Field (?P<key>{_QUOTED}): (?P<label>{_QUOTED}), (?:a plain number, stored|stored in "

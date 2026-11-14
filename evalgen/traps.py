@@ -66,7 +66,9 @@ domain's trap vocabulary (retraction reasons), statuses, reading rules and recor
 the legacy path. Every domain off it, and every plugin domain, gets the same three traps, with the same
 careless readings:
   duplicate          a slot repeats a record (its ID, or the slot's own with a note naming the ID), with
-                     the slot's values and the domain's second status
+                     the slot's values and the domain's second status; counted as a record of its own, or,
+                     under the record's own ID, which reads exactly as a second report, taken for the
+                     record's values as a second report is
   retraction         a phantom report, a slot, that a later notice retracts
   conflicting_value  a wrong value of a field (a correctable one when there is one), settled by a
                      correction notice or by the settling report next to an unsettled one, a slot's
@@ -86,13 +88,14 @@ from .domains.base import Domain, FieldSpec, Record, RecordReport, folded, store
 from .domains.earthquakes import EARTHQUAKES, Earthquakes
 from .geo import COMPASS16, compass_point, destination, haversine_km, initial_bearing
 from .models import Event, Notice, Question, Report, Trap
-from .ops import EPS, DigestData, Step, canonical_threshold, distance_km, execute, passes, role, rows_after_filters
+from .ops import (EPS, DigestData, Step, canonical_threshold, distance_km, execute, passes, role,
+                  rows_after_filters, terminal)
 from .questions import Context, guards_ok
 from .rules import Mishandle
 from .scoring import get_answer_type, normalize, same_answer
 from .sources import COORD_DECIMALS
 from .units import Unit
-from .util import plain_number
+from .util import plain_number, utc_iso
 
 _PLACE = re.compile(r"^(\d+(?:\.\d+)?) km ([NSEW]{1,3}) of (.+)$")
 
@@ -118,7 +121,7 @@ _PLACE = re.compile(r"^(\d+(?:\.\d+)?) km ([NSEW]{1,3}) of (.+)$")
 #   same-ID lines   reports under their records' own IDs: none in 30% of the digests, else one to eight alike
 #                   (SAME_ID_WEIGHTS), each a second report (a conflict) one time in five and else a re-report;
 #   corrections     none to three (CORRECTION_WEIGHTS), which add no report.
-# A digest then holds no planted report about one time in sixteen, and up to thirteen, and the planted reports in
+# A digest then holds no planted report about one time in fifteen, and up to thirteen, and the planted reports in
 # a question's scope number none about as often as any other number, whatever its scope (and so do the phantoms
 # and cross-refs that a reader who merges reports by ID alone still counts): neither a share nor a number taken
 # off a count does much better than the count (exactly: by at most 5 points of the counting questions whose
@@ -542,30 +545,216 @@ def _fallen_by_question(traps: list[Trap], questions: list[Question], key: Mappi
                         domain: Domain) -> None:
     """Trap.fallen off the legacy path (see score_traps): for each question, every combination of the
     careless readings of the traps that change the rows it reads, each wrong answer given to every trap
-    misread in it and to every trap that changes none of those rows."""
+    misread in it and to every trap that changes none of those rows.
+
+    A trap acts on records of its own, so a reading of it that changes none of the rows a question reads
+    changes none of them beside any other reading either, and two of its readings that change them alike
+    change them alike beside any other: the combinations need only each trap's readings that change the
+    rows, one of each alike. A trap with a reading that changes none of them gets the wrong answers of the
+    combinations in which it is read correctly too, as it gets them misread so.
+
+    The combinations multiply with the readings that change something (a re-report under its record's ID
+    records two, as a second report does: three choices for each of up to eight such re-reports in a digest),
+    so they are not read one by one where the question's answer follows from a summary of its rows that the
+    rows of each trap add to on their own (_Summary: how many rows, or the best of them for its terminal). The
+    summaries of every combination are then built trap by trap, each kept once with every trap misread in a
+    combination that reaches it (_reduced), which gives, answer for answer, what reading every combination
+    gives (_enumerated, still used where no summary applies)."""
     units, resolver = domain.units, domain.resolve
+    readings = [[Mishandle.from_dict(m) for m in t.mishandles] for t in traps]
     for q in questions:
         def rows(mishandle: Mishandle | None) -> list[Any]:
             return rows_after_filters(q.chain, data, mishandle=mishandle, units=units, resolver=resolver)
 
         read = rows(None)
-        relevant = [i for i, t in enumerate(traps)
-                    if any(rows(Mishandle.from_dict(m)) != read for m in t.mishandles)]
+        wanted = normalize(q.answer_type, key[q.qid])
+        relevant: list[int] = []
+        changing: list[list[tuple[Mishandle, list[Any]]]] = []  # per relevant trap: its readings that change rows
+        idle: set[int] = set()  # relevant traps with a reading that changes none of them
+        for i, trap_readings in enumerate(readings):
+            mine: list[tuple[Mishandle, list[Any]]] = []
+            unchanged = False
+            for m in trap_readings:
+                after = rows(m)
+                if after == read:
+                    unchanged = True
+                elif all(after != seen for _, seen in mine):
+                    mine.append((m, after))
+            if mine:
+                relevant.append(i)
+                changing.append(mine)
+                if unchanged:
+                    idle.add(i)
         bystanders = [i for i in range(len(traps)) if i not in relevant]
-        choices = [[None] + list(range(len(traps[i].mishandles))) for i in relevant]  # None = read correctly
-        for combo in itertools.product(*choices):
-            misread = [(i, c) for i, c in zip(relevant, combo) if c is not None]
-            if not misread:
-                continue
-            mishandle = Mishandle.merged(traps[i].mishandles[c] for i, c in misread)
-            answer = execute(q.chain, data, mishandle=mishandle, units=units, resolver=resolver)
+        outcomes = _reduced(q, read, relevant, changing, idle, units, rows)
+        if outcomes is None:
+            outcomes = _enumerated(q, data, relevant, changing, idle, units, resolver)
+        given: dict[int, set[Any]] = {}
+        for answer, misread in outcomes:
             normal = normalize(q.answer_type, answer)
-            if normal == normalize(q.answer_type, key[q.qid]):
+            if normal == wanted:
                 continue
-            for i in [i for i, _ in misread] + bystanders:
-                bucket = traps[i].fallen.setdefault(q.qid, [])
-                if all(normalize(q.answer_type, seen) != normal for seen in bucket):
-                    bucket.append(answer)
+            for i in [*misread, *bystanders]:
+                known = given.setdefault(i, {normalize(q.answer_type, a) for a in traps[i].fallen.get(q.qid, [])})
+                if normal not in known:
+                    known.add(normal)
+                    traps[i].fallen.setdefault(q.qid, []).append(answer)
+
+
+def _enumerated(q: Question, data: DigestData, relevant: Sequence[int],
+                changing: Sequence[Sequence[tuple[Mishandle, list[Any]]]], idle: set[int], units: Any,
+                resolver: Any) -> list[tuple[Any, list[int]]]:
+    """Every combination of the relevant traps' readings that change the question's rows, one by one: its
+    answer, and the traps misread in it (with every idle trap read correctly in it, see _fallen_by_question)."""
+    out = []
+    for combo in itertools.product(*[[None, *(m for m, _ in mine)] for mine in changing]):
+        misread = [i for i, m in zip(relevant, combo) if m is not None]
+        if not misread:
+            continue
+        mishandle = _joined([m for m in combo if m is not None])
+        answer = execute(q.chain, data, mishandle=mishandle, units=units, resolver=resolver)
+        out.append((answer, [*misread, *(j for j in sorted(idle) if j not in misread)]))
+    return out
+
+
+def _joined(parts: Sequence[Mishandle]) -> Mishandle:
+    """Several careless readings at once (Mishandle.merged, for readings already read from their dicts)."""
+    return Mishandle(keep_retracted=tuple(x for p in parts for x in p.keep_retracted),
+                     ignore_correction_for=tuple(x for p in parts for x in p.ignore_correction_for),
+                     split=tuple(x for p in parts for x in p.split),
+                     prefer_preliminary_for=tuple(x for p in parts for x in p.prefer_preliminary_for))
+
+
+class _Group:
+    """A stand-in row of a group, from which compare_groups reads a count (_Summary.answer)."""
+
+    def __init__(self, group: str) -> None:
+        self.group = group
+
+
+@dataclass(frozen=True)
+class _Summary:
+    """What a question's answer follows from, of a set of its rows, for a terminal whose answer any order of
+    the rows gives alike (ops: every terminal sorts or counts): how many rows (count), how many in each group
+    asked about (compare_groups), or the indices of the k best rows by the terminal's own order (the first k of
+    ops.by_field for argmax, time_of_max and rank; the nearest for nearest_to; the largest or the smallest value
+    for max, min and nearest_distance). The summary of two disjoint sets of rows follows from theirs (add). Rows
+    that tie in such an order give the same answer in either order: the order holds everything the answer reads
+    (the record's ID, and its time for time_of_max, or the value itself)."""
+
+    kind: str
+    k: int = 0
+    order: Callable[[Any], Any] | None = None
+
+    @classmethod
+    def of(cls, q: Question, units: Any) -> "_Summary | None":
+        raw = next(r for r in q.chain if role(r["op"]) == "terminal")
+        term = Step(raw, units)
+        posts = [r for r in q.chain if role(r["op"]) == "post"]
+        if term.kind in ("count", "compare_groups"):
+            return None if posts else cls(term.kind)
+        field = term.field
+        orders: dict[str, Callable[[Any], Any]] = {
+            "argmax": lambda r: (-r.values[field], r.time, r.id),
+            "time_of_max": lambda r: (-r.values[field], r.time, r.id),
+            "rank": lambda r: (-r.values[field], r.time, r.id),
+            "max": lambda r: -r.values[field],
+            "min": lambda r: r.values[field],
+            "nearest_to": lambda r: (distance_km(raw, r), r.id),
+            "nearest_distance": lambda r: distance_km(raw, r),
+        }
+        if term.kind not in orders:
+            return None
+        return cls(term.kind, k=term["k"] if term.kind == "rank" else 1, order=orders[term.kind])
+
+    def of_rows(self, indices: Sequence[int], rows: Sequence[Any], q: Question) -> Any:
+        """The summary of rows[i] for i in `indices`."""
+        if self.kind == "count":
+            return len(indices)
+        if self.kind == "compare_groups":
+            raw = next(r for r in q.chain if role(r["op"]) == "terminal")
+            return (sum(rows[i].group == raw["a"] for i in indices), sum(rows[i].group == raw["b"] for i in indices))
+        return tuple(sorted(indices, key=lambda i: self.order(rows[i]))[:self.k])
+
+    def add(self, a: Any, b: Any, rows: Sequence[Any]) -> Any:
+        if self.kind == "count":
+            return a + b
+        if self.kind == "compare_groups":
+            return (a[0] + b[0], a[1] + b[1])
+        return tuple(sorted((*a, *b), key=lambda i: self.order(rows[i]))[:self.k])
+
+    def answer(self, summary: Any, rows: Sequence[Any], q: Question, units: Any) -> Any:
+        """The question's answer over rows of this summary, as execute gives it over all of them."""
+        raw = next(r for r in q.chain if role(r["op"]) == "terminal")
+        if self.kind == "count":
+            return terminal(raw, [None] * summary)
+        if self.kind == "compare_groups":
+            return terminal(raw, [_Group(raw["a"])] * summary[0] + [_Group(raw["b"])] * summary[1])
+        return execute(q.chain, [rows[i] for i in summary], units=units)
+
+
+def _matched(base: Sequence[Any], after: Sequence[Any]) -> tuple[set[int], list[Any]]:
+    """The rows of `base` (by index) missing from `after`, and the rows of `after` not in `base`, each row of
+    `after` matched to one equal row of `base`."""
+    unmatched = list(range(len(base)))
+    added = []
+    for r in after:
+        k = next((k for k in unmatched if base[k] == r), None)
+        if k is None:
+            added.append(r)
+        else:
+            unmatched.remove(k)
+    return set(unmatched), added
+
+
+def _reduced(q: Question, read: list[Any], relevant: Sequence[int],
+             changing: Sequence[Sequence[tuple[Mishandle, list[Any]]]], idle: set[int], units: Any,
+             rows_of: Callable[[Mishandle], list[Any]]) -> list[tuple[Any, list[int]]] | None:
+    """Every combination's answer, with the traps misread in a combination that gives it (idle traps read
+    correctly in it included), from the summaries of the rows each trap adds (see _fallen_by_question); None
+    where no summary applies, or where the traps' rows are not their own (two traps touch one row, or the
+    rows of every trap misread at once are not the untouched rows and each trap's: `rows_of` reads them).
+
+    Each trap's readings remove rows of the correct reading (`read`) and add rows of their own: the rows the
+    trap can touch are those some reading removes, and each of its choices (reading it correctly, or each
+    reading) leaves of them, and adds, rows of its own. Traps act on records of their own, so no two touch
+    one row, and a combination's rows are the untouched rows and each trap's choice's. The summaries of the
+    combinations are built trap by trap, each kept once with the traps misread in reaching it."""
+    summary = _Summary.of(q, units)
+    if summary is None:
+        return None
+    rows: list[Any] = list(read)  # every row: the correct reading's, then those the readings add
+    touched: list[set[int]] = []
+    choices: list[list[tuple[bool, list[int]]]] = []  # per trap: (misread?, the indices of the rows it leaves)
+    for i, mine in zip(relevant, changing):
+        effects = []
+        for _, after in mine:
+            removed, added = _matched(read, after)
+            effects.append((removed, list(range(len(rows), len(rows) + len(added)))))
+            rows.extend(added)
+        reach = set().union(*(removed for removed, _ in effects))
+        if any(reach & other for other in touched):
+            return None  # two traps touch one row: their effects are not their own
+        touched.append(reach)
+        options = [(False, sorted(reach))] + [(True, sorted(reach - removed) + added) for removed, added in effects]
+        if i in idle:
+            options.append((True, sorted(reach)))  # a reading that changes nothing: misread, the rows read correctly
+        choices.append(options)
+    untouched = [k for k in range(len(read)) if not any(k in reach for reach in touched)]
+    if relevant:  # each trap misread at once, by its first reading that changes the rows: as they add up?
+        together = rows_of(_joined([mine[0][0] for mine in changing]))
+        expected = [rows[k] for k in untouched] + [rows[k] for options in choices for k in options[1][1]]
+        if _matched(together, expected) != (set(), []):
+            return None
+    states: dict[Any, set[int]] = {summary.of_rows(untouched, rows, q): set()}
+    for i, options in zip(relevant, choices):
+        reached: dict[Any, set[int]] = {}
+        for state, misread in states.items():
+            for flag, indices in options:
+                after = summary.add(state, summary.of_rows(indices, rows, q), rows)
+                reached.setdefault(after, set()).update(misread | ({i} if flag else set()))
+        states = reached
+    return [(summary.answer(state, rows, q, units), sorted(misread)) for state, misread in states.items() if misread]
 
 
 def threshold_values(questions: Sequence[Question], field: str) -> list[float]:
@@ -1025,23 +1214,51 @@ def _filed_as(slot: Record, record: Record, site: _Site, *, ref: str, same_as: s
 
 
 def _slot_duplicate(trap_id: str, site: _Site) -> _Candidate | None:
-    """A re-report in the form its trap was planned in (_Site.form; drawn for each placement without a plan)."""
+    """A re-report in the form its trap was planned in (_Site.form; drawn for each placement without a plan).
+
+    A careless reader counts it as a record of its own. One filed under its record's own ID reads exactly as a
+    second report does (_slot_conflict: the same ID, the unsettled status, a slot's values, time and place; no
+    genre prints a report's role), so it records the second report's other careless reading too, before its own
+    as a second report does: its values, time and place taken for the record's. That reading names one report
+    only while the record has no other
+    unsettled report, so it is left out when the record already has one, and taken back from this trap when a
+    later re-report joins it (_unambiguous)."""
     rng, domain = site.rng, site.domain
     form = site.form or rng.choice(("same_id", "cross_ref"))
     pair = _slot_pair(site, same_id=form == "same_id") or _virtual_pair(site, same_id=form == "same_id")
     if pair is None:
         return None
     slot, e = pair
-    status = domain.statuses[1]
+    final, status = domain.statuses
     ref = e.id if form == "same_id" else slot.id  # a cross-reference: the slot's own ID, with a note naming the record
     dup = _filed_as(slot, e, site, ref=ref, same_as=None if form == "same_id" else e.id, status=status,
                     role="duplicate", trap_id=trap_id)
     how = f"under the same {domain.id_label}" if form == "same_id" else f"as {ref} with a note naming it"
-    description = (f"{slot.source} re-reported {e.id} {how}: {status} {_shown(dup.values, domain)} "
-                   f"({domain.statuses[0]}: {_shown(e.values, domain)})")
-    trap = Trap(trap_id, "duplicate", form, e.id, description,
-                mishandles=[Mishandle(split=((ref, slot.source, status),)).to_dict()])
+    description = (f"{slot.source} re-reported {e.id} {how}: {status}, at {utc_iso(dup.time)}, "
+                   f"{_shown(dup.values, domain)} ({final}: at {utc_iso(e.time)}, {_shown(e.values, domain)})")
+    readings = [Mishandle(split=((ref, slot.source, status),)).to_dict()]  # last, as a second report's
+    if form == "same_id" and not _unsettled(site, e.id):
+        readings.insert(0, Mishandle(prefer_preliminary_for=(e.id,)).to_dict())
+    trap = Trap(trap_id, "duplicate", form, e.id, description, mishandles=readings)
     return _Candidate(trap, [domain.from_generic(dup)], [], slot=slot.id)
+
+
+def _unsettled(site: _Site, record_id: str) -> bool:
+    """Whether the digest so far holds an unsettled report of the record `record_id`: one under its ID, or one
+    whose note names it, under the domain's second status."""
+    domain = site.domain
+    return any(g.status != domain.statuses[0] and (g.same_as or g.ref) == record_id
+               for g in map(domain.to_generic, site.reports))
+
+
+def _unambiguous(traps: Sequence[Trap], chosen: Trap) -> None:
+    """Take the reading "its values taken for the record's" (Mishandle.prefer_preliminary_for) back from an
+    earlier re-report under the ID of the record that the re-report `chosen` has just joined: the record now
+    has two unsettled reports, and the reading would name whichever a digest happens to print first. (A
+    conflict is never planted beside a re-report, so a second report keeps its reading.)"""
+    for trap in traps:
+        if trap is not chosen and trap.kind == "duplicate" and trap.target == chosen.target:
+            trap.mishandles = [m for m in trap.mishandles if not Mishandle.from_dict(m).prefer_preliminary_for]
 
 
 def _virtual_phantom(site: _Site) -> Record:
@@ -1258,8 +1475,10 @@ def _slot_conflict(trap_id: str, site: _Site) -> _Candidate | None:
     wrong = second.values[spec.key]
     if abs(wrong - value) <= max(spec.tolerance[0], spec.tolerance[1] * abs(value)):
         return None  # a careless reader would still be right
-    description = (f"{e.id} also reported with {spec.label} {plain_number(wrong)}{unit} ({draft}, {slot.source}) "
-                   f"beside the {final} {plain_number(value)}{unit}")
+    description = (f"{e.id} also reported ({draft}, {slot.source}) at {utc_iso(second.time)}: "
+                   f"{_shown(second.values, domain)}, beside the {final} report at {utc_iso(e.time)}: "
+                   f"{_shown(e.values, domain)} (its {spec.label}, {plain_number(wrong)}{unit} against "
+                   f"{plain_number(value)}{unit}, conflicts)")
     trap = Trap(trap_id, kind, "second_report", e.id, description,
                 mishandles=[Mishandle(prefer_preliminary_for=(e.id,)).to_dict(),
                             Mishandle(split=((e.id, slot.source, draft),)).to_dict()])
@@ -1364,6 +1583,8 @@ def inject_traps(events: list[Event], questions: list[Question], rng: random.Ran
         if leads is not None and lead:
             leads.planted.append((planted_at(chosen), lead))
         site.reports, notices = _apply(site.reports, notices, chosen)
+        if kind == "duplicate":
+            _unambiguous(traps, chosen.trap)
         traps.append(chosen.trap)
         site.used.add(chosen.trap.target)
         if kind == "conflict":

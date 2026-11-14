@@ -312,7 +312,9 @@ def design_effect(rows: Iterable[tuple[Hashable, bool, bool]]) -> float:
     g = len(totals)
     if g < 2 or independent <= 0:
         return 1.0
-    return max(1.0, g / (g - 1) * sum(t * t for t in totals.values()) / independent)
+    # math.fsum, exactly rounded: the built-in sum() of floats adds them one by one up to Python 3.11 and with
+    # compensation from 3.12, so the last digits of every gap interval that this widens differed between the two.
+    return max(1.0, g / (g - 1) * math.fsum(t * t for t in totals.values()) / independent)
 
 
 def widened(estimate: float, low: float, high: float, factor: float) -> tuple[float, float]:

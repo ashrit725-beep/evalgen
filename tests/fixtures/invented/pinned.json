@@ -1,5 +1,5 @@
 {
-  "about": "What seed 20261108 draws in the invented domain alone: its synthetic snapshot (360 records) and the surfaces of the first three instances of a run (seed path instance/i/surface). tests/test_domain_invented.py checks that the same seed still draws exactly these. The surfaces were pinned again when common English words of two and three letters joined the words no surface may coin (invented.COMMON_WORDS), when the chatter's reminder about units was reworded (units vary from entry to entry, not by source), and when each unit gained its words for one of it (Unit.one, which questions write after a 1); the snapshot and the surfaces were pinned again when clearing agencies (invented.RELAYS) and batches of lots (invented.BATCH_SHARE) joined the world.",
+  "about": "What seed 20261108 draws in the invented domain alone: its synthetic snapshot (360 records) and the surfaces of the first three instances of a run (seed path instance/i/surface). tests/test_domain_invented.py checks that the same seed still draws exactly these. The surfaces were pinned again when common English words of two and three letters joined the words no surface may coin (invented.COMMON_WORDS), when the chatter's reminder about units was reworded (units vary from entry to entry, not by source), and when each unit gained its words for one of it (Unit.one, which questions write after a 1); the snapshot and the surfaces were pinned again when clearing agencies (invented.RELAYS) and batches of lots (invented.BATCH_SHARE) joined the world. The surfaces were pinned again when \"repeat filing of\" left the duplicate notes (invented.DUPLICATE_NOTES), since the reading rules call a quoted or read-back copy a repeat.",
   "seed": 20261108,
   "pool_size": 360,
   "compiled_at": 1787378400,
@@ -106,11 +106,11 @@
           "Tumert"
         ],
         "duplicate_notes": [
-          "re-entry of",
-          "also logged as"
+          "mirror of",
+          "duplicate of"
         ],
         "retraction_reasons": [
-          "keying error",
+          "training record",
           "stale import",
           "double scan"
         ],
@@ -216,13 +216,13 @@
           "Glirk Lines"
         ],
         "duplicate_notes": [
-          "same drum as",
-          "double entry of"
+          "also logged as",
+          "same drum as"
         ],
         "retraction_reasons": [
+          "misrouted feed",
           "scanner misread",
-          "barcode collision",
-          "gate sensor fault"
+          "barcode collision"
         ],
         "retraction_notices": [
           "cancelled",
@@ -318,16 +318,16 @@
           "Wil"
         ],
         "duplicate_notes": [
-          "dup of",
-          "also logged as"
+          "also logged as",
+          "duplicate of"
         ],
         "retraction_reasons": [
-          "dummy entry",
           "mislabelled crate",
-          "phantom tally"
+          "dummy entry",
+          "keying error"
         ],
         "retraction_notices": [
-          "cancelled",
+          "RETRACTED",
           "expunged"
         ],
         "correction_notices": [

@@ -300,7 +300,9 @@ def test_the_seed_pins_the_world_and_every_surface():
     were pinned again, deliberately, when common English words joined the words no surface may coin,
     when the chatter's reminder about units was reworded, when each unit gained its words for one of it,
     and with the world, when clearing agencies and batches of lots joined the world, so that the agencies
-    that re-report lots file lots too and real lots are sometimes as close as a re-report.)"""
+    that re-report lots file lots too and real lots are sometimes as close as a re-report; and once more
+    when "repeat filing of", a word the rules give to quoted and read-back copies, left the duplicate
+    notes.)"""
     pinned = read_json(FIXTURES / "pinned.json")
     log = SeedLog(pinned["seed"])
     snapshot, raw = build_domain_snapshot(INVENTED, "synthetic", log, pool_size=pinned["pool_size"])
@@ -517,7 +519,11 @@ def test_traps_are_planted_and_their_careless_readings_give_their_wrong_answers(
                 # Filed by the agency of a lot drawn with the digest but not kept: an agency that files lots.
                 assert dup.status == "provisional" and dup.source in bound.surface.sources.values()
                 assert (dup.same_as is None) == (trap.form == "same_id")
-                assert readings == [Mishandle(split=((dup.ref, dup.source, "provisional"),))]
+                # Under its record's own ID it reads as a second report does, and records both its readings
+                # while the record has no other unsettled report (traps._slot_duplicate).
+                prefer = [Mishandle(prefer_preliminary_for=(trap.target,))] if trap.form == "same_id" and sum(
+                    r.status == "provisional" and (r.same_as or r.ref) == trap.target for r in inst.reports) == 1 else []
+                assert readings == [*prefer, Mishandle(split=((dup.ref, dup.source, "provisional"),))]
             elif trap.kind == "retraction":
                 (notice,) = [n for n in inst.notices if n.trap_id == trap.trap_id]
                 assert notice.reason in vocab.retraction_reasons and planted[0].role == "phantom"

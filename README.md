@@ -111,7 +111,7 @@ details are in each run's miss analysis: [0.1.0](runs/compare-100/miss_analysis.
 
 ## Reproduce it
 
-Install the dependencies (requests and pytest; Python 3.10 or later), run the 854 tests (about 4
+Install the dependencies (requests and pytest; Python 3.10 or later), run the 865 tests (about 3
 minutes), and run a full cycle offline, with no API key and no cost:
 
 ```bash
@@ -160,15 +160,16 @@ or about 25 with one `run` command per model in parallel.
 ## 0.3.0: multiple sources and genres
 
 The study above used evalgen 0.2.0, in which every test is about earthquakes and is written in one
-family of digest styles. A review pointed out that an adversary who knows that one source, the
-USGS feed, could tune a model to it. evalgen 0.3.0 therefore draws the source and the kind of
-document too. It adds three domains (weather observations from NWS stations, close approaches of
-near-Earth objects from JPL, and an invented domain whose names, labels and units are drawn afresh
-for each instance) and six genres (news articles, email threads, chat logs, tables, report forms
-and radio transcripts). An evaluator can hold domains and genres out in private plugins, listed, each
-with the SHA-256 of its bytes, in a private config that the run commits to by hash. The report then
-compares accuracy on the public and the held-out sets (the source gap and the genre gap) and checks
-that answers agree across genres.
+family of digest styles. A review pointed out that an adversary who knows that one source, the USGS
+feed, could tune a model to it. evalgen 0.3.0 therefore draws the source and the kind of document
+too. It adds three domains (weather observations from NWS stations, close approaches of near-Earth
+objects from JPL, and an invented domain whose names, labels and units are drawn afresh for each
+instance) and six genres (news articles, email threads, chat logs, tables, report forms and radio
+transcripts). An evaluator can hold domains and genres out in private plugins, listed by path in a
+private config that the run commits to by hash; a plugin listed with the SHA-256 of its bytes too is
+pinned by that commitment, and one listed by path alone is not, so give every real plugin its
+SHA-256. The report then compares accuracy on the public and the held-out sets (the source gap and
+the genre gap) and checks that answers agree across genres.
 Answer keys are still computed by code, and the text-only oracle still scores 100% on every domain
 in every genre.
 
@@ -183,9 +184,11 @@ python3 cli.py demo --mix random
 ```
 
 Adding `--private-config configs/private.example.json` shows the held-out metrics, with the
-test-only toy domain and genre held out. Those are public code, so the gaps exercise the metrics
-and test nothing held out, and the report says so, as it does whenever a held-out set is built in or
-defined by a test plugin published in this repository, whatever nonce the config draws.
+test-only toy domain and genre held out (in `runs/demo-heldout-random-synthetic-seed42`, beside the
+demo without them). Those are public code, so the gaps exercise the metrics and test nothing held
+out, and the report says so, as it does whenever a held-out set is built in or defined by a plugin
+loaded from evalgen's own `tests/` folder, whatever nonce the config draws (a copy of such a plugin
+elsewhere is not recognised).
 Without the new options nothing changes: the 0.2.0 comparison above regenerates byte for byte, which
 `tests/test_regression_020.py` checks.
 [`docs/DESIGN.md`](docs/DESIGN.md) describes the threat model, the domains and genres, the new
@@ -198,12 +201,14 @@ metrics and their limitations.
   `verify-config`).
 - `configs/private.example.json`: the format of a private run config (an example only: real
   held-out sets must stay private).
-- `tests/`: 854 tests.
+- `tests/`: 865 tests.
 - `runs/compare-100/` and `runs/compare-100-v2/`: each comparison's report (`report.md` and
   `report.json`), miss analysis and `manifest.json` (seed, settings, code fingerprint). The raw
   prompts and replies are not committed. The 0.1.0 run cannot be regenerated with the current code,
   because the rules text is part of every prompt.
 - `runs/demo-synthetic-seed42/`, `runs/usgs-live-seed5/`: smaller demo runs (reports only).
+- `runs/live-smoke-2026-11-12/`: the manifest of the one 0.3.0 run that read the live NWS, JPL and USGS
+  sources (see the design doc's limitations).
 - [`docs/DESIGN.md`](docs/DESIGN.md): how evalgen works, including the threat model, the question
   grammar, traps, scoring, reproducibility and the method's limitations, and the domains, genres,
   mixes and held-out sets of 0.3.0. [`docs/PLAN-0.3.md`](docs/PLAN-0.3.md) is the plan of 0.3.0.
