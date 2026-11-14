@@ -21,7 +21,6 @@ legacy path the day feed is this domain's live source (``UsgsFeed``), used by th
 """
 from __future__ import annotations
 
-import json
 import random
 import re
 from dataclasses import replace
@@ -34,7 +33,7 @@ from ..models import EVENT_ID_PATTERN, Event, Notice, Report
 from ..ops import ALIASES
 from ..rules import READING_RULES, Mishandle, resolve
 from ..sources import (COORD_DECIMALS, MIN_POOL_EVENTS, USER_AGENT, fetch_usgs, generate_synthetic, mimic_event_id,
-                       new_event_id, parse_usgs_geojson, synthetic_mag_type)
+                       new_event_id, parse_usgs_document, synthetic_mag_type, usgs_document, usgs_window)
 from ..units import LENGTH
 from .base import (DISTANCE_WORDINGS, NOTICE_RULE, REPEAT_RULE, Domain, FieldSpec, Forecaster, Lexicon, Record,
                    RecordReport, Spatial, TrapVocab, message_time_rule, numbered_rules)
@@ -271,11 +270,21 @@ class UsgsFeed:
         return fetch_usgs("day")
 
     def parse(self, raw: bytes) -> tuple[list[Event], int, int]:
-        """One Event per earthquake (duplicate solutions collapsed), the feed's generation time, and its
-        window: an hour for the hour feed (as its metadata names it), else a day."""
-        events, generated, _ = parse_usgs_geojson(raw)
-        url = str((json.loads(raw.decode("utf-8")).get("metadata") or {}).get("url") or "")
-        return events, generated, 1 if "_hour" in url else 24
+        """One Event per earthquake (sources.parse_usgs_geojson: duplicate solutions collapsed, and no
+        earthquake that no real feed lists), the feed's generation time, and its window: the period that
+        its metadata.url names, an hour, a day, a week or a month of 30 days, and a day when it names none
+        (sources.usgs_window). An earthquake timed outside that window (before it, or after the feed was
+        generated), whose digests say they cover it, is left out, and so is a second earthquake under an
+        event ID already read (the earlier is kept): a real feed lists neither."""
+        data = usgs_document(raw)
+        events, generated, _ = parse_usgs_document(data)
+        window = usgs_window(data)
+        start, kept, seen = generated - window * 3600, [], set()
+        for e in events:  # in time order
+            if start <= e.time <= generated and e.id not in seen:
+                seen.add(e.id)
+                kept.append(e)
+        return kept, generated, window
 
 
 class Earthquakes(Domain):

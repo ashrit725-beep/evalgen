@@ -42,7 +42,6 @@ reached or read (sources.build_domain_snapshot). CAD times are TDB; records keep
 """
 from __future__ import annotations
 
-import json
 import math
 import random
 import re
@@ -52,9 +51,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
-import requests
-
-from ..sources import USER_AGENT
+from .. import sources
+from ..sources import EARLIEST_TIME, LATEST_TIME, USER_AGENT, read_feed_json
 from ..units import Unit
 from .base import RULES_WIDTH, Domain, FieldSpec, Lexicon, Record, TrapVocab, folded, record_rules, stored_places
 
@@ -283,7 +281,9 @@ class Approach:
 
 def numbered(approaches: Sequence[Approach]) -> list[Record]:
     """Records of the approaches, each object's approaches numbered in time order (2026vk2-ca1, -ca2, ...),
-    in time order and then ID order. An object can make at most nine approaches in a snapshot."""
+    in time order and then ID order. An approach ID has one digit, so an object makes at most nine
+    approaches in a snapshot: its tenth and later are left out. (No real object makes ten close approaches
+    within 0.05 au in the 60 days that the live query covers, and a synthetic object makes one or two.)"""
     seen: Counter[str] = Counter()
     records = []
     for a in sorted(approaches, key=lambda a: (a.time, a.designation, a.body)):
@@ -408,12 +408,15 @@ def parse_cad(raw: bytes) -> tuple[list[Record], int, int]:
     """A frozen CAD response as (records, compiled_at, window_hours), without the clock or the network.
 
     Every row with a designation, a time, a miss distance, a relative velocity, a body and an H becomes
-    a record of the catalogue "jpl" (a row without one, such as a comet's, which has no H, is left out:
-    no value is ever invented). Times are converted from TDB to UTC and kept to the second, miss
-    distances from au to the whole km, and velocities to 2 decimals. The window is the whole UTC days
+    a record of the catalogue "jpl" (_cad_approach), but an object's tenth approach and later (numbered).
+    A row without one of these values, such as a comet's, which has no H, is left out (no value is ever
+    invented), and so is a row with a value that cannot be right: a designation or a body that is not
+    text, a time outside the years 1800 to 2200, a miss distance outside (0, 1) au, a velocity outside
+    (0, 1000) km/s, or an H outside H_RANGE. Times are converted from TDB to UTC and kept to the second,
+    miss distances from au to the whole km, and velocities to 2 decimals. The window is the whole UTC days
     the approaches fall in: it starts at midnight before the first and is compiled at midnight after the
     last. A response that is not a list of close approaches, or that has none usable, raises ValueError."""
-    doc = json.loads(raw.decode("utf-8"))
+    doc = read_feed_json(raw, "the close-approach response")
     if not isinstance(doc, dict) or not isinstance(doc.get("fields"), list):
         raise ValueError("not a close-approach response: it has no list of fields")
     fields = doc["fields"]
@@ -433,18 +436,26 @@ def parse_cad(raw: bytes) -> tuple[list[Record], int, int]:
     return records, end, (end - start) // 3600
 
 
+H_RANGE = (-5.0, 40.0)  # absolute magnitudes of real bodies: Ceres's is 3.3, the faintest known NEOs' about 34
+
+
 def _cad_approach(row: Mapping[str, Any]) -> Approach | None:
-    """One CAD row as an approach, or None when it lacks a value or holds one that cannot be right."""
-    try:
-        designation = pack(str(row["des"]))
-        jd, dist, velocity, h = (float(row[name]) for name in ("jd", "dist", "v_rel", "h"))
-        body = str(row["body"]).strip()
-    except (KeyError, TypeError, ValueError):
+    """One CAD row as an approach, or None when it lacks a value or holds one that cannot be right (see
+    parse_cad). The designation and the body must be text: a null names nothing (not an object "NONE")."""
+    if not isinstance(row.get("des"), str) or not isinstance(row.get("body"), str):
         return None
-    if not (2 <= len(designation) <= 12 and body and math.isfinite(jd) and math.isfinite(h)
+    try:
+        designation = pack(row["des"])
+        jd, dist, velocity, h = (float(row[name]) for name in ("jd", "dist", "v_rel", "h"))
+        body = row["body"].strip()
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if not (2 <= len(designation) <= 12 and body and math.isfinite(jd) and H_RANGE[0] <= h <= H_RANGE[1]
             and 0 < dist < 1 and 0 < velocity < 1000):
         return None
     time = round((jd - JD_UNIX_EPOCH) * DAY_S - TDB_MINUS_UTC_S)
+    if not EARLIEST_TIME <= time <= LATEST_TIME:
+        return None
     return Approach(designation, time, BODY_NAMES.get(body, body), "jpl", _values(dist, velocity, round(h, 3)))
 
 
@@ -459,8 +470,10 @@ class CadFeed:
     url = CAD_URL
 
     def fetch(self, timeout: float = 30.0) -> tuple[bytes, str]:
-        response = requests.get(self.url, timeout=timeout,
-                                headers={"User-Agent": self.user_agent, "Accept": "application/json"})
+        """The CAD response, requested as every live source is (sources.http_get: nothing from the
+        environment but its proxies, and a deadline for the whole answer)."""
+        response = sources.http_get(self.url, timeout=timeout,
+                                    headers={"User-Agent": self.user_agent, "Accept": "application/json"})
         response.raise_for_status()
         return response.content, self.url
 

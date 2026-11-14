@@ -246,8 +246,8 @@ def test_a_live_source_is_fetched_once_frozen_replayed_and_falls_back(toys, tmp_
     assert (replay.url, replay.window_hours, replay.note) == ("fake://buoys", 6, "replay of frozen feed raw_feed.json "
                                                                                 "(SHA-256 verified)")
     write_json(run / "snapshot.json", dict(read_json(run / "snapshot.json"), raw_sha256="0" * 64))
-    tampered, _ = build_domain_snapshot(live, "live", SeedLog(2), snapshot_file=str(run / "raw_feed.json"))
-    assert "WARNING" in tampered.note
+    with pytest.raises(ValueError, match="do not match the raw_sha256"):  # changed bytes are refused, not replayed
+        build_domain_snapshot(live, "live", SeedLog(2), snapshot_file=str(run / "raw_feed.json"))
 
     def offline():
         raise requests.ConnectionError("no network")

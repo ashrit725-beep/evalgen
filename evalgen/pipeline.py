@@ -46,6 +46,7 @@ from .digest import make_chatter, timed_chatter
 from .domains import get_domain
 from .domains.base import Domain
 from .domains.earthquakes import EARTHQUAKES
+from .forecast import HORIZON_S
 from .genres import detect_genre
 from .genres.base import Genre, RenderContext
 from .genres.classic import CLASSIC
@@ -60,9 +61,10 @@ from .rules import READING_RULES
 from .scoring import is_correct, normalize, same_answer
 from .seeds import SeedLog, derive_seed, fresh_nonce, seed_commitment
 from .solver import extract_digest, solve
-from .sources import LIVE, Snapshot, build_domain_snapshot, build_snapshot, frozen_feed, read_frozen_feed, save_snapshot
+from .sources import (LIVE, Snapshot, build_domain_snapshot, build_snapshot, frozen_events_sha256, frozen_feed,
+                      frozen_folder, read_frozen_feed, read_sidecar, save_snapshot)
 from .traps import SLOT_CANDIDATES, TrapConfig, draw_plan, inject_traps, score_traps
-from .util import read_json, read_manifest, sha256_hex, slugify, write_in, write_json
+from .util import read_json, read_manifest, sha256_hex, slugify, utc_iso, write_in, write_json
 
 RUNS_DIR = Path("runs")
 RUN_MARKER = ".evalgen-run"  # lets --force recognise (and only delete) evalgen run directories
@@ -126,11 +128,17 @@ class GenerateConfig:
         """The config as the manifest records it: asdict without the 0.3.0 options that keep their
         defaults, so that a legacy run records exactly the 0.2.0 config. The private run config is
         recorded by its file name alone: the manifest commits to its content (private_config_commitment),
-        and its folder names a place on the evaluator's machine, which a published run should not."""
+        and its folder names a place on the evaluator's machine, which a published run should not. Off the
+        legacy path, so are the frozen inputs a replay reads, which the snapshots' hashes commit to: from
+        the folder of the run they lie in ("live/snapshot"), or by their own name (published_path)."""
         defaults = {f.name: f.default for f in fields(self)}
         recorded = {k: v for k, v in asdict(self).items() if k not in self.OPTIONAL_KEYS or v != defaults[k]}
         if recorded.get("private_config") is not None:
             recorded["private_config"] = Path(recorded["private_config"]).name
+        if self.mix.strip() != LEGACY:
+            for name in ("snapshot_file", "snapshot_dir"):
+                if recorded.get(name) is not None:
+                    recorded[name] = published_path(recorded[name])
         return recorded
 
 
@@ -448,34 +456,140 @@ def _instance_records(instances: Sequence[Instance], snapshots: Mapping[str, Sna
     return records
 
 
-def _replay_check(frozen: str | None, log: Log, *, seed: int | None = None, drawn: Sequence[str] = ()) -> dict | None:
+def _source_run(path: str | Path) -> Path | None:
+    """The run that frozen inputs at `path` come from (a file of its snapshot folder, the folder, or the run's
+    own folder): the nearest folder at or above `path`, up to three levels up, that is an evalgen run with a
+    manifest, resolved; None when there is none."""
+    path = Path(path).resolve()
+    return next((folder for folder in [path, *path.parents][:4]
+                 if is_run_dir(folder) and (folder / "manifest.json").exists()), None)
+
+
+def published_path(given: str | Path) -> str:
+    """A frozen input's path as a manifest off the legacy path records it, naming no place on the evaluator's
+    machine: from the folder of the run it lies in ("live/snapshot/raw_feed.json"), or by its own name when
+    it lies in no run (as the private run config is recorded by its file name)."""
+    path = Path(given).resolve()
+    run = _source_run(path)
+    return path.name if run is None else path.relative_to(run.parent).as_posix()
+
+
+def _replayed_feeds(cfg: GenerateConfig, plan: Plan,
+                    frozen: Mapping[str, Path | None]) -> dict[str, tuple[Domain, Path | None, Path | None]]:
+    """What a replay reads, by domain: (the domain, its frozen bytes or None for synthetic records, the
+    snapshot.json that describes them or None for a bare frozen file)."""
+    if cfg.snapshot_file:
+        domain = EARTHQUAKES if plan.legacy else plan.domains[0]
+        path = Path(cfg.snapshot_file)
+        sidecar = path.with_name("snapshot.json")
+        return {domain.name: (domain, path, sidecar if sidecar.exists() else None)}
+    feeds = {}
+    for domain in plan.domains:
+        folder, _ = frozen_folder(cfg.snapshot_dir, domain)
+        feeds[domain.name] = (domain, frozen.get(domain.name), folder / "snapshot.json")
+    return feeds
+
+
+def _check_against_manifest(manifest: Mapping[str, Any], source_run: Path,
+                            feeds: Mapping[str, tuple[Domain, Path | None, Path | None]], *, same_code: bool,
+                            log: Log) -> None:
+    """Refuse (MixError) frozen snapshots that the manifest of the run they come from does not vouch for. Each
+    snapshot.json that lies where that run keeps its snapshots (snapshot/, or snapshot/<domain>/ in a run of
+    several domains) must be the snapshot that its manifest records, key for key: that binds the fields no
+    hash covers (where the bytes came from, when they were fetched, the window) to the record the run commits
+    to, and catches a hash edited in either. Frozen bytes must hash as the manifest records (raw_sha256), and
+    the records they give as it records (events_sha256): when the run's code was not this code, it may have
+    read them otherwise, and a difference is warned of instead."""
+    folder_of_run = source_run / "snapshot"
+    snapshots = manifest.get("snapshots")
+    for name, (domain, raw_path, sidecar) in feeds.items():
+        if sidecar is None:
+            continue  # a bare frozen file: nothing that the run's manifest could vouch for
+        folder = sidecar.parent.resolve()
+        if folder == folder_of_run:
+            entry = manifest.get("snapshot")
+        elif folder.parent == folder_of_run and folder.name == name:
+            entry = snapshots.get(name) if isinstance(snapshots, dict) else None
+        else:
+            continue  # not where that run keeps a snapshot: not that run's
+        if not isinstance(entry, dict):
+            raise MixError(f"the manifest of the source run {source_run.name} records no snapshot of {name}, which "
+                           f"{sidecar} describes: one of them was changed, so the snapshot is not replayed")
+        meta = read_sidecar(sidecar)
+        differ = sorted(key for key in set(meta) | set(entry) if meta.get(key) != entry.get(key))
+        if differ:
+            raise MixError(f"{sidecar} and the manifest of the source run {source_run.name} record different "
+                           f"{', '.join(differ)} for {name}: one of them was changed since the run, so the snapshot is "
+                           "not replayed")
+        if raw_path is None:
+            continue
+        raw = Path(raw_path).read_bytes()
+        if entry.get("raw_sha256") != sha256_hex(raw):
+            raise MixError(f"{raw_path} does not hash to the raw_sha256 that the manifest of the source run "
+                           f"{source_run.name} records, so it is not replayed")
+        events = frozen_events_sha256(domain, raw, legacy="domain" not in entry)
+        if events != entry.get("events_sha256"):
+            if same_code:
+                raise MixError(f"the records of {raw_path} hash to {events}, not to the events_sha256 that the manifest "
+                               f"of the source run {source_run.name} records for {name}: it was changed, so the "
+                               "snapshot is not replayed")
+            log(f"[generate] warning: the records of {raw_path} hash otherwise than the events_sha256 that the source "
+                f"run's manifest records for {name}: that run's code read its frozen bytes otherwise")
+
+
+def _closed_forecasts(feeds: Mapping[str, tuple[Domain, Path | None, Path | None]], legacy: bool, log: Log) -> None:
+    """Warn when a replay's forecasts ask about a window that has already ended: those of a frozen feed whose
+    domain asks forecasts of its live source cover the day after the feed was compiled (forecast.HORIZON_S),
+    and once it is over their outcomes are in the catalogue already. (A log line only, from the clock: the
+    run's files are the same whenever it is generated.)"""
+    now = time.time()
+    for name, (domain, raw_path, _) in feeds.items():
+        forecaster, live = domain.forecaster, domain.live
+        if raw_path is None or forecaster is None or live is None or forecaster.source != live.source:
+            continue
+        compiled_at = read_frozen_feed(domain, raw_path, legacy=legacy)[2]
+        if now > compiled_at + HORIZON_S:
+            log(f"[generate] warning: the frozen feed of {name} was compiled at {utc_iso(compiled_at)}, so the "
+                f"forecasts of this replay ask about the day that ended at {utc_iso(compiled_at + HORIZON_S)}: their "
+                "outcomes are already in the catalogue, so they test recall, not forecasting, and resolve grades "
+                "them at once")
+
+
+def _replay_check(cfg: GenerateConfig, plan: Plan, frozen: Mapping[str, Path | None], log: Log) -> dict | None:
     """When replaying another run's frozen feed (a file of its snapshot folder) or its frozen snapshots
-    (the folder), note whether that run used the same code. Off the legacy path (`seed`: the replay's),
-    also note whether it used the same seed: the domains that run drew synthetic records for (`drawn`)
-    are drawn again from this run's seed, so they are that run's records only with that run's seed, and
-    a replay with another seed says so (a legacy replay records what 0.2.0 recorded)."""
-    if not frozen:
+    (the folder), find that run (the nearest evalgen run above them), check its manifest against them
+    (_check_against_manifest: a snapshot it does not vouch for is refused, before anything is written),
+    and note whether it used the same code. Off the legacy path, also note whether it used the same seed:
+    the domains that run drew synthetic records for are drawn again from this run's seed, so they are that
+    run's records only with that run's seed, and a replay with another seed says so; and name that run by
+    its folder alone, never by a place on the evaluator's machine. A legacy replay records what 0.2.0
+    recorded (the source run's absolute path). A replay whose forecasts ask about a window already closed
+    is warned of (_closed_forecasts)."""
+    given = cfg.snapshot_file or cfg.snapshot_dir
+    if not given:
         return None
-    path = Path(frozen).resolve()
-    source_run = next((folder for folder in [path, *path.parents][:4]
-                       if is_run_dir(folder) and (folder / "manifest.json").exists()), None)
+    feeds = _replayed_feeds(cfg, plan, frozen)
+    _closed_forecasts(feeds, plan.legacy, log)
+    source_run = _source_run(given)
     try:
         manifest = None if source_run is None else read_json(source_run / "manifest.json")
-    except (OSError, ValueError):  # not UTF-8, not JSON, not a file: no run that evalgen wrote
+    except (OSError, ValueError, RecursionError):  # not UTF-8, not JSON, not a file: no run that evalgen wrote
         manifest = None
     if not isinstance(manifest, dict):  # a manifest that evalgen did not write is no source run's
-        return {"source_run": None, "same_code": None, **({} if seed is None else {"same_seed": None})}
+        return {"source_run": None, "same_code": None, **({} if plan.legacy else {"same_seed": None})}
     same = manifest.get("code_sha256") == code_fingerprint()
     if not same:
         log("[generate] warning: the source run was generated with different code, so a replay "
             "with the same seed will not reproduce its instances exactly")
-    entry = {"source_run": str(source_run), "same_code": same}
-    if seed is not None:
-        entry["same_seed"] = manifest.get("seed") == seed
-        if not entry["same_seed"] and drawn:
-            log(f"[generate] warning: the source run was generated with another seed, so the domains it drew "
-                f"synthetic records for ({', '.join(drawn)}) are drawn again from this seed, not replayed: only "
-                "the domains it read live are its records")
+    _check_against_manifest(manifest, source_run, feeds, same_code=same, log=log)
+    if plan.legacy:
+        return {"source_run": str(source_run), "same_code": same}
+    entry = {"source_run": source_run.name, "same_code": same, "same_seed": manifest.get("seed") == cfg.seed}
+    drawn = [name for name, feed in frozen.items() if feed is None]
+    if not entry["same_seed"] and drawn:
+        log(f"[generate] warning: the source run was generated with another seed, so the domains it drew "
+            f"synthetic records for ({', '.join(drawn)}) are drawn again from this seed, not replayed: only "
+            "the domains it read live are its records")
     return entry
 
 
@@ -493,10 +607,12 @@ def run_name(cfg: GenerateConfig) -> str:
 def _check_sources(plan: Plan, cfg: GenerateConfig) -> dict[str, Path | None]:
     """Refuse, before anything is written, sources that a run off the legacy path cannot use: the USGS
     hour feed, a frozen snapshot file for several domains, frozen snapshots that lack a domain of the
-    mix, a live source that a domain lacks, and frozen bytes that its domain's live source cannot replay
-    (a domain without one, or another source's bytes: _check_frozen). With frozen snapshots
-    (cfg.snapshot_dir), return what replays each domain (sources.frozen_feed: its frozen bytes, or None
-    for synthetic records)."""
+    mix, a live source that a domain lacks, frozen bytes that its domain's live source cannot replay
+    (a domain without one, another source's bytes, a window too short for the traps such as the hour
+    feed's, or a snapshot.json beside them that does not describe them: _check_frozen), a legacy run's
+    synthetic snapshot, and a synthetic snapshot.json beside frozen bytes (sources.frozen_feed). With
+    frozen snapshots (cfg.snapshot_dir), return what replays each domain (sources.frozen_feed: its frozen
+    bytes, or None for synthetic records)."""
     if cfg.feed != GenerateConfig.feed:
         raise MixError("the USGS feed is chosen in legacy runs only: off the legacy path its live source is the "
                        "day feed")
@@ -524,12 +640,14 @@ def _check_sources(plan: Plan, cfg: GenerateConfig) -> dict[str, Path | None]:
     return feeds
 
 
-def _check_frozen(domain: Domain, path: str | Path) -> None:
+def _check_frozen(domain: Domain, path: str | Path, *, legacy: bool = False) -> None:
     """Refuse, before anything is written, frozen bytes that `domain` cannot replay: MixError for a domain
-    without a live source, or bytes that are not its live source's (sources.read_frozen_feed);
-    FileNotFoundError for a file that is not there."""
+    without a live source, bytes that are not its live source's, a snapshot that cannot be right off the
+    legacy path, or a snapshot.json beside them that does not describe them (sources.read_frozen_feed; a
+    legacy run's frozen USGS feed is read as build_snapshot reads it); FileNotFoundError for a file that is
+    not there."""
     try:
-        read_frozen_feed(domain, path)
+        read_frozen_feed(domain, path, legacy=legacy)
     except ValueError as exc:
         raise MixError(f"the frozen feed cannot be replayed: {exc}") from None
 
@@ -633,7 +751,9 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
         raise MixError("a legacy run replays a frozen USGS feed with --snapshot-file; --snapshot-dir replays the "
                        "frozen snapshots of a run off the legacy path")
     elif cfg.snapshot_file:  # the frozen USGS feed of a legacy run, read as the replay reads it
-        _check_frozen(EARTHQUAKES, cfg.snapshot_file)
+        _check_frozen(EARTHQUAKES, cfg.snapshot_file, legacy=True)
+    # The run that the frozen feed or snapshots come from, checked before any run folder is replaced or made.
+    replay = _replay_check(cfg, plan, frozen, log)
     run_dir = Path(run_dir) if run_dir else RUNS_DIR / run_name(cfg)
     if run_dir.exists() and not run_dir.is_dir():
         raise FileExistsError(f"{run_dir} is a file, not a run directory")
@@ -647,9 +767,6 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
         if not is_run_dir(run_dir):
             raise FileExistsError(f"{run_dir} is not an evalgen run directory; refusing to delete it")
         shutil.rmtree(run_dir)
-    # The run that the frozen feed or snapshots come from, read before the run folder is made.
-    replay = _replay_check(cfg.snapshot_file or cfg.snapshot_dir, log, seed=None if plan.legacy else cfg.seed,
-                           drawn=[name for name, feed in frozen.items() if feed is None])
     run_dir.mkdir(parents=True, exist_ok=True)
     write_in(run_dir, run_dir / RUN_MARKER, "evalgen run directory\n")
 

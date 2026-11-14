@@ -25,7 +25,7 @@ import pytest
 import requests
 
 import cli
-from evalgen import domains, genres, mix, pipeline, scoring
+from evalgen import domains, genres, mix, pipeline, scoring, sources
 from evalgen.adapters import AdapterError, MockAdapter, Task, make_adapter
 from evalgen.answers import parse_reply
 from evalgen.domains import get_domain
@@ -1450,8 +1450,9 @@ class Served:
 
 
 def live_apis(calls: list[str]):
-    """requests.get as the USGS, NWS and JPL CAD APIs would answer it, from test data, recording each URL:
-    a fake USGS day feed, synthetic NWS observations per station and the recorded CAD response."""
+    """Every live request (sources.http_get) as the USGS, NWS and JPL CAD APIs would answer it, from test data,
+    recording each URL: a fake USGS day feed, synthetic NWS observations per station and the recorded CAD
+    response."""
     usgs, _ = fake_feed()
     served = WEATHER.synthetic(random.Random(8), 600, int(FETCHED.timestamp()), 24)
     stations = {s.id: {"type": "FeatureCollection", "features": [nws_feature(r) for r in served if r.source == s.id]}
@@ -1479,7 +1480,7 @@ def test_a_live_run_of_several_domains_replays_from_its_frozen_snapshots(tmp_pat
     mix = "earthquakes:classic,weather:news,neo:email,invented:chat"
     monkeypatch.setattr(wx, "_utc_now", lambda: FETCHED)
     with monkeypatch.context() as api:
-        api.setattr(requests, "get", live_apis(calls))
+        api.setattr(sources, "http_get", live_apis(calls))
         live = pipeline.generate(GenerateConfig(seed=18, instances=5, mix=mix, source="live"), tmp_path / "live",
                                  log=quiet)
     assert len(calls) == 2 + len(STATIONS)  # each source fetched once (the NWS once per station)
@@ -1493,7 +1494,7 @@ def test_a_live_run_of_several_domains_replays_from_its_frozen_snapshots(tmp_pat
     def unreachable(*args, **kwargs):
         raise requests.ConnectionError("offline: a replay never asks the network")
 
-    monkeypatch.setattr(requests, "get", unreachable)
+    monkeypatch.setattr(sources, "http_get", unreachable)
     monkeypatch.setattr(requests.Session, "send", unreachable)
     monkeypatch.setattr(wx, "_utc_now", lambda: FETCHED.replace(year=2030))  # nor does it read the clock
     replay = pipeline.generate(GenerateConfig(seed=18, instances=5, mix=mix, source="live",
@@ -1502,8 +1503,9 @@ def test_a_live_run_of_several_domains_replays_from_its_frozen_snapshots(tmp_pat
     assert sorted(files) == sorted(again) and len(files) >= 5 * (1 + 3) + 4 + 3  # instances, prompts, snapshots
     assert [name for name in files if files[name] != again[name]] == []
     a, b = (read_json(run / "manifest.json") for run in (live, replay))
-    assert b["config"] == {**a["config"], "snapshot_dir": str(live / "snapshot")}
-    assert b["replay"] == {"source_run": str(live.resolve()), "same_code": True, "same_seed": True}
+    # The source run and its snapshot folder are named from the run's folder, never by a place on this machine.
+    assert b["config"] == {**a["config"], "snapshot_dir": "live/snapshot"}
+    assert b["replay"] == {"source_run": "live", "same_code": True, "same_seed": True}
     for name, snapshot in a["snapshots"].items():  # the same records, from the same bytes, fetched when the live
         # run fetched them (a replay keeps the time its frozen snapshot records); only the note says "replay"
         assert {k: v for k, v in snapshot.items() if k != "note"} == {
