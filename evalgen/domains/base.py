@@ -116,7 +116,9 @@ class Spatial:
     radii: Mapping[str, tuple[int, ...]]  # within_distance radii by unit symbol
     margin: tuple[float, float]  # (km, rel): no record lies within max(km, rel × radius) of a radius
     nearest_gap: tuple[float, float]  # (km, rel): the runner-up lies max(km, rel × nearest) further away
-    nearest_max_km: float  # the nearest record lies at most this far from the question's point
+    # The nearest record lies at most this far from the question's point, as questions are composed (and on the
+    # legacy path); a question whose point questions.reanchor_nearest draws again has no such bound.
+    nearest_max_km: float
     point_offset_km: tuple[float, float]  # a question's point lies this far from a random record
     # Names a question's point: "station {number}". It names no source: the record the point is drawn
     # near is almost always the nearest one, so a label naming its source would point at the answer.
@@ -413,11 +415,11 @@ def _renamed(names: Mapping[str, str], name: str, what: str) -> str:
 
 
 # Chatter of a domain that has none of its own: lines that carry no data, worded from its vocabulary
-# ({noun}, {plural}, {id_label}, {source_label}, {group_label}) and filled in by digest.make_chatter
-# ({station}, {h1}, {h2}, {date}). None of them reads like a report or a notice, and none says what a digest
-# holds, which its reports could contradict.
+# ({noun}, {plural}, {id_label}, {source_label}, {group_label}) and filled in by digest.timed_chatter
+# ({station}, {h1}, {h2}, {date}, {until}). None of them reads like a report or a notice, and none says what a
+# digest holds, which its reports could contradict.
 GENERIC_CHATTER = (
-    "The {source_label} {station} was offline for maintenance from {h1} UTC on {date} until {h2} UTC.",
+    "The {source_label} {station} was offline for maintenance from {h1} UTC on {date} until {until}.",
     "Editor's note: entries are reproduced exactly as each {source_label} filed them, time conventions included.",
     "Late {plural} may be listed in the next edition instead.",
     "Reminder: units vary from entry to entry; read the unit printed with every value.",
@@ -535,6 +537,9 @@ class Domain:
           - it sets every attribute of the interface;
           - each field's canonical unit is one of its units, with scale 1 and offset 0, and no
             threshold margin is smaller than the rounding of a threshold restated in another unit;
+          - a threshold drawn in any of a field's units can clear its guard margin: it lies up to the
+            field's jitter and half the unit's threshold step from the record it was drawn from, and
+            when that falls short of the margin, every threshold in that unit is refused;
           - each field's tolerance makes sense in every unit an answer can be asked in;
           - fields have keys and labels of their own, and a unit symbol has one wording throughout;
           - it has two status words and every kind of trap word that digests print;
@@ -597,6 +602,7 @@ class Domain:
                 problems.append(f"the canonical unit of {spec.key} must have scale 1 and offset 0")
             if spec.filters:
                 problems += _margin_problems(spec.key, spec.margin[0], spec.units, spec.decimals)
+                problems += _threshold_problems(spec)
             problems += _tolerance_problems(spec)
         if self.spatial is not None:
             problems += _margin_problems("distance", self.spatial.margin[0], LENGTH, self.spatial.decimals)
@@ -774,6 +780,13 @@ class Domain:
         a station's observations are each other's twins. None: the record has no twin."""
         return (record.group, record.place)
 
+    def status_station(self, record: Any) -> str:
+        """The station that a status line of chatter names for a record or a report ("Station CI.WBN was offline
+        ...", digest.timed_chatter, whose window then holds no report made there): by default its source, whose
+        stations the line names. A domain whose records are made at stations that other sources file for too
+        (a weather station, whose observations relay feeds also file) gives the station it was made at."""
+        return record.source
+
     def planted_value(self, spec: FieldSpec, value: float, like: float, peers: Sequence[float] = ()) -> float:
         """A value of `spec` that the trap builders write on a real record's report (a conflict's wrong
         value) or draw for a record made up when no slot is left, `value`, written as a real report would
@@ -820,7 +833,8 @@ class Domain:
                         domain.group_label, tuple(domain.statuses), coord_decimals, numeric)
 
     def synthetic(self, rng: random.Random, n: int, compiled_at: int, window_hours: int) -> list[ResolvedRecord]:
-        """`n` seeded records inside the window that ends at `compiled_at`; never reads the clock."""
+        """`n` seeded records inside the window that ends at `compiled_at` (at most `n`: the earthquake world
+        holds fewer when it cannot place some, earthquakes.synthetic_world); never reads the clock."""
         raise NotImplementedError(f"{type(self).__name__} has no synthetic generator")
 
     def new_id(self, source: str, rng: random.Random, taken: set[str]) -> str:
@@ -933,6 +947,25 @@ def _margin_problems(name: str, margin: float, units: Sequence[Unit], decimals: 
         if margin < shift:
             problems.append(f"the {name} margin {margin:g} is smaller than the rounding of a threshold "
                             f"restated in {unit.symbol} ({shift:g})")
+    return problems
+
+
+def _threshold_problems(spec: FieldSpec) -> list[str]:
+    """A threshold is drawn from one record's value (questions._draw_threshold): moved by up to the field's
+    `jitter`, then rounded to a step in the unit it is asked in (the unit's own step, else the field's
+    threshold step, or on a coin flip its coarse step), so it lies at most the jitter and half a step (in the
+    canonical unit) from that record. When even the coarsest step of a unit cannot take it as far as the
+    field's absolute guard margin, every threshold asked in that unit lies within the margin of its own record,
+    and the guard refuses them all: no question would ever ask about the field in that unit (or at all)."""
+    problems = []
+    for unit in spec.units or (None,):
+        step = spec.threshold_step if unit is None or unit.step is None else unit.step
+        steps = (step,) if spec.coarse_step is None else (step, spec.coarse_step)
+        reach = spec.jitter + 0.5 * max(steps) * (1.0 if unit is None else abs(unit.scale))
+        if reach < spec.margin[0]:
+            asked = "" if unit is None else f" asked in {unit.symbol}"
+            problems.append(f"no threshold on {spec.key}{asked} clears its guard margin {spec.margin[0]:g}: it lies at "
+                            f"most {reach:g} (its jitter and half its threshold step) from the record it is drawn from")
     return problems
 
 

@@ -174,19 +174,22 @@ RETRACTION_NOTICES = ("voided", "struck from the ledger", "withdrawn", "RETRACTE
 # Both read after "is" and after a label and an ID ("the heft of KX/40512 is amended to 41 vk").
 CORRECTION_NOTICES = ("revised to", "amended to", "corrected to", "restated as", "adjusted to", "re-entered as",
                       "reset to")
-# Lines without data (digest.make_chatter fills in {h1} and {h2}, and the bound words).
+# Lines without data (digest.timed_chatter fills in {h1}, {date} and {until}, and the bound words). A line that
+# names a window gives its date, as a digest covers three days, and its window holds no report of the digest
+# (timed_chatter). No line uses a word of the notes and notices that a surface may draw and the rules then
+# quote ("ledger", of "struck from the ledger", or "entry", of "double entry of").
 CHATTER = (
-    "Editor's note: entries are reproduced exactly as each {source_label} filed them, units included.",
+    "Editor's note: everything is reproduced exactly as each {source_label} filed it, units included.",
     "Late {plural} may be listed in the next edition instead.",
-    "Reminder: units vary from entry to entry; read the unit printed with every value, and convert it as the "
+    "Reminder: units vary from line to line; read the unit printed with every value, and convert it as the "
     "glossary says.",
     "This digest is compiled automatically and has not been checked by an editor.",
-    "Ledger maintenance ran from {h1} to {h2} UTC; filing resumed afterwards.",
+    "Scheduled maintenance ran from {h1} UTC on {date} until {until}; filing resumed afterwards.",
     "Gate traffic at several {group_label}s was heavier than usual.",
-    "The {source_label} feeds were briefly out of step between {h1} and {h2} UTC; nothing was lost.",
+    "The {source_label} feeds were briefly out of step from {h1} UTC on {date} until {until}; nothing was lost.",
     "No {group_label} reported a closure in this period.",
 )
-CHATTER_LINES = 5  # chatter lines a surface draws (make_chatter prints one to three of them)
+CHATTER_LINES = 5  # chatter lines a surface draws (timed_chatter prints one to three of them)
 
 ONSETS = ("b", "br", "d", "dr", "f", "fl", "g", "gl", "gr", "h", "k", "kl", "kr", "l", "m", "n", "p", "pl", "pr",
           "qu", "r", "s", "sk", "sl", "sn", "st", "t", "tr", "v", "w", "z")

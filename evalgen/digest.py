@@ -259,25 +259,49 @@ def render_digest(reports: list[Report], notices: list[Notice], chatter: list[st
     return "\n".join([header, ""] + body)
 
 
+def _long_date(moment: datetime) -> str:
+    """A UTC date as chatter writes it: "9 September 2026"."""
+    return f"{moment.day} {MONTHS_LONG[moment.month - 1]} {moment.year}"
+
+
+def _until(opened: datetime, closed: datetime) -> str:
+    """The end of a window as a line of chatter writes it ({until}): its UTC time, and its date when the window
+    ends on a later day than it opened, which {date} gives ("00:45 UTC on 10 September 2026")."""
+    clock = f"{closed.hour:02d}:{closed.minute:02d} UTC"
+    return clock if closed.date() == opened.date() else f"{clock} on {_long_date(closed)}"
+
+
 def make_chatter(rng: random.Random, compiled_at: int, networks: Sequence[str], lines: Sequence[str] = CHATTER,
                  words: Mapping[str, str] | None = None) -> list[str]:
     """One to three of `lines` (at least three), as harmless noise: no IDs, values or coordinates.
     A line may name a station of one of the `networks` (the records' sources), two clock times ({h1},
-    {h2}), the UTC date of the first ({date}: "9 September 2026") and the domain's `words` (its
-    vocabulary, see Domain.words); every line costs the same draws (the 0.2.0 lines name no date)."""
+    {h2}), the UTC date of the first ({date}: "9 September 2026"), the end of the window they open and close
+    ({until}: "10:45 UTC", with its date when it falls on a later day: "00:45 UTC on 10 September 2026") and
+    the domain's `words` (its vocabulary, see Domain.words); every line costs the same draws (the 0.2.0 lines
+    name no date)."""
     picks = rng.sample(range(len(lines)), rng.randint(1, 3))
     out = []
     for i in sorted(picks):
         start = datetime.fromtimestamp(compiled_at - rng.randrange(2, 20) * 3600, tz=timezone.utc)
-        h1 = start.strftime("%H:%M")
-        h2 = (start + timedelta(minutes=rng.randrange(20, 120))).strftime("%H:%M")
-        date = f"{start.day} {MONTHS_LONG[start.month - 1]} {start.year}"
+        end = start + timedelta(minutes=rng.randrange(20, 120))
         station = f"{rng.choice(networks).upper()}.{''.join(rng.choice('ABCDEFGHKLMNPRSTW') for _ in range(3))}"
-        out.append(lines[i].format(station=station, h1=h1, h2=h2, date=date, **(words or {})))
+        out.append(lines[i].format(station=station, h1=start.strftime("%H:%M"), h2=end.strftime("%H:%M"),
+                                   date=_long_date(start), until=_until(start, end), **(words or {})))
     return out
 
 
-CHATTER_ATTEMPTS = 100  # windows a line about a source's station may draw before it is left out (timed_chatter)
+CHATTER_ATTEMPTS = 100  # windows a line that names one may draw before it is left out (timed_chatter)
+WINDOW_FIELDS = ("{h1}", "{h2}", "{until}")  # what a line that names a window prints of it
+DAY_S = 24 * 3600
+
+
+def _holds(first: int, last: int, when: int, dated: bool) -> bool:
+    """Whether a window printed to the minute, from its `first` minute to the end of its `last`, holds the time
+    `when`: on the day it gives (`dated`), or else on any day, since a window printed without its date (from
+    03:00 to 03:45 UTC) could be read as that time of any day of a digest that spans several."""
+    if dated:
+        return first <= when < last + 60
+    return (when - first) % DAY_S < last + 60 - first
 
 
 def timed_chatter(rng: random.Random, compiled_at: int, networks: Sequence[str], lines: Sequence[str],
@@ -286,20 +310,26 @@ def timed_chatter(rng: random.Random, compiled_at: int, networks: Sequence[str],
     each with the time after which a genre that posts it at a time of its own (a chat message, an email) may post
     it: the last minute of the window it names ("offline from 22:00 to 22:45 UTC": 22:45), or the first minute
     of a window whose end it does not give, or None for a line that names no time. A line posted before the
-    window it tells of read as though it foretold it.
+    window it tells of read as though it foretold it. A window that ends on a later day than it opened is
+    printed with its end's date ({until}).
 
-    A line about a station of one of the records' sources (`networks`) names a window in which that source
-    filed no report of the digest (`filed`: each report's source and time): "Sensor KPHL.PDF was offline from
-    00:00 to 00:45 UTC" beside a report that KPHL filed at 00:20 reads as a reason to doubt or drop it, a
-    distractor that no trap records, though the rules say that status lines change nothing. Such a line draws
-    its window and station again until one is clear, and is left out when none is after CHATTER_ATTEMPTS
-    draws. Lines that name no station, and a first draw that is clear, cost the draws that make_chatter's
-    lines cost."""
+    A line that names a window keeps it clear of the digest's reports (`filed`: each report's station and its
+    time). "Sensor KPHL.PDF was offline from 00:00 to 00:45 UTC" beside a report made at KPHL at 00:20, or
+    "Scheduled maintenance ran from 00:00 to 00:45 UTC; filing resumed afterwards" beside any report of 00:20,
+    reads as a reason to doubt or drop that report, a distractor that no trap records, though the rules say that
+    status lines change nothing. A line about a station names one of `networks` (the stations of the records:
+    their sources, or where a domain's records are made at stations that other sources file for, the station
+    each was made at; Domain.status_station), and its window holds no report made there, whichever source filed
+    it; a line that names a window and no station holds no report at all, and a window printed without its date
+    holds none at that time of any day (_holds). Such a line draws its window and station again until one is
+    clear, and is left out when none is after CHATTER_ATTEMPTS draws. Lines that name no window, and a first
+    draw that is clear, cost the draws that make_chatter's lines cost."""
     picks = rng.sample(range(len(lines)), rng.randint(1, 3))
     out: list[tuple[str, int | None]] = []
     for i in sorted(picks):
         template = lines[i]
-        about_station = "{station}" in template and ("{h1}" in template or "{h2}" in template)
+        window = any(field in template for field in WINDOW_FIELDS)
+        about_station, dated = "{station}" in template, "{date}" in template
         for _ in range(CHATTER_ATTEMPTS):
             start = compiled_at - rng.randrange(2, 20) * 3600
             end = start + rng.randrange(20, 120) * 60
@@ -307,14 +337,15 @@ def timed_chatter(rng: random.Random, compiled_at: int, networks: Sequence[str],
             station = f"{network.upper()}.{''.join(rng.choice('ABCDEFGHKLMNPRSTW') for _ in range(3))}"
             # the window as the line prints it, to the minute: from its first minute to the end of its last
             first, last = start - start % 60, end - end % 60
-            if not about_station or not any(source == network and first <= t < last + 60 for source, t in filed):
+            if not window or not any(_holds(first, last, t, dated) and (not about_station or site == network)
+                                     for site, t in filed):
                 break
         else:
-            continue  # every window drawn held a report of the station's source: the line is left out
+            continue  # every window drawn held a report: the line is left out
         opened, closed = (datetime.fromtimestamp(t, tz=timezone.utc) for t in (start, end))
-        date = f"{opened.day} {MONTHS_LONG[opened.month - 1]} {opened.year}"
-        text = template.format(station=station, h1=opened.strftime("%H:%M"), h2=closed.strftime("%H:%M"), date=date,
-                               **(words or {}))
-        after = last if "{h2}" in template else first if ("{h1}" in template or "{date}" in template) else None
+        text = template.format(station=station, h1=opened.strftime("%H:%M"), h2=closed.strftime("%H:%M"),
+                               date=_long_date(opened), until=_until(opened, closed), **(words or {}))
+        after = (last if ("{h2}" in template or "{until}" in template)
+                 else first if ("{h1}" in template or "{date}" in template) else None)
         out.append((text, after))
     return out

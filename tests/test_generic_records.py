@@ -368,7 +368,8 @@ def test_thresholds_round_to_their_units_step_and_are_never_minus_zero(toys):
             assert round_to_step(params["value"], steps[params["unit"]]) == params["value"]
     assert set(drawn) == set(steps)
     near_zero = [replace(r, values={**r.values, "temp": -0.04}) for r in records]
-    fine = replace(module.TEMPERATURE, units=(module.CELSIUS,), threshold_step=0.1)
+    # without the toy's jitter, the threshold is the value of -0.04 rounded: +0, never -0
+    fine = replace(module.TEMPERATURE, units=(module.CELSIUS,), threshold_step=0.1, jitter=0.0)
     value = _draw_threshold(fine, near_zero, random.Random(0))["value"]
     assert value == 0.0 and math.copysign(1.0, value) == 1.0 and json.dumps(value) == "0.0"
     assert [rounding_text([{"op": "round", "ndigits": n}]) for n in (0, 1, 2)] == [
@@ -675,7 +676,8 @@ def test_chatter_speaks_the_domains_words(toys):
             for line in lines:
                 assert "{" not in line and not re.search(r"by-\d|\d\.\d", line), line
                 assert line in {template.format(station=_station(line), h1=_clock(line, 0), h2=_clock(line, 1),
-                                                date=_date(line), **domain.words) for template in GENERIC_CHATTER}
+                                                date=_date(line), until=_until(line), **domain.words)
+                                for template in GENERIC_CHATTER}
     assert toys.flat.chatter is GENERIC_CHATTER and EARTHQUAKES.chatter != GENERIC_CHATTER
 
 
@@ -735,6 +737,12 @@ def _clock(line: str, n: int) -> str:
 def _date(line: str) -> str:
     match = re.search(r"\d{1,2} [A-Z][a-z]+ \d{4}", line)
     return match.group(0) if match else ""
+
+
+def _until(line: str) -> str:
+    """The end of the window a line names, as {until} writes it: "10:45 UTC", or across midnight with its date."""
+    match = re.search(r"until (\d{2}:\d{2} UTC(?: on \d{1,2} [A-Z][a-z]+ \d{4})?)", line)
+    return match.group(1) if match else ""
 
 
 def test_audit_rows_and_report_tallies_read_records(toys, tmp_path):

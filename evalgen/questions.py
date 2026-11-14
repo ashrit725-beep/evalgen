@@ -237,8 +237,10 @@ class Context:
 
     A window of a day or less (every earthquake digest) is asked about on 5-minute marks, and no
     record may lie within 2 minutes of a window's ends. A longer window (weeks of close approaches)
-    scales both by its length in days: a month is asked about on 3-hour marks and kept an hour clear
-    of every record, so that, for its span, its windows are as coarse and as clear as a day's."""
+    scales both by its length in days, rounded up: its marks are the first of TIME_STEPS_S that is at
+    least 5 minutes a day, and its margin is 2 minutes a day. A month is asked about on 3-hour marks and
+    kept an hour clear of every record (28 days: 56 minutes; 60 days: 6-hour marks and two hours), so
+    that, for its span, its windows are as coarse and as clear as a day's."""
 
     compiled_at: int
     window_hours: int
@@ -313,18 +315,32 @@ def _group_counts(records: Sequence[ResolvedRecord]) -> list[tuple[str, int]]:
     return sorted(counts.items())
 
 
+# Off the legacy path a point's number is drawn as the 0.2.0 one is and printed this much higher (110 to 199, or
+# up to 1099 for a label drawn again), so that it is no number a genre gives a source: a radio transcript's call
+# signs run from 1 to 99 ("Unit 84"), and "station 84" beside them read as the station of the network whose
+# reports Unit 84 reads out. The draws stay the same.
+POINT_NUMBER_OFFSET = 100
+
+
+def _point_number(rng: random.Random, again: bool, strict: bool) -> int:
+    """The number of a point's label (Spatial.point_label): 10 to 99, or 10 to 999 for a label drawn again
+    because the first was taken; off the legacy path (`strict`) POINT_NUMBER_OFFSET higher."""
+    return (POINT_NUMBER_OFFSET if strict else 0) + rng.randrange(10, 1000 if again else 100)
+
+
 def _draw_point(records: Sequence[ResolvedRecord], rng: random.Random, taken_labels: set[str],
                 spatial: Spatial, *, strict: bool = False) -> dict:
     """A named point near a random record. Labels are unique within an instance. Off the legacy path
     (`strict`) a label is the domain's point_label, which names no source: the record the point is drawn
-    near is almost always the nearest one, whose source a label would give away. The legacy path keeps
-    the 0.2.0 label, which names that record's source (Spatial.legacy_point_label)."""
+    near is almost always the nearest one, whose source a label would give away; and its number is none
+    that a genre gives a source (_point_number). The legacy path keeps the 0.2.0 label, which names that
+    record's source (Spatial.legacy_point_label)."""
     anchor = rng.choice(records)
     lat, lon = destination(anchor.lat, anchor.lon, rng.uniform(*spatial.point_offset_km), rng.uniform(0.0, 360.0))
     label_format = spatial.point_label if strict or spatial.legacy_point_label is None else spatial.legacy_point_label
-    label = label_format.format(source=anchor.source.upper(), number=rng.randrange(10, 100))
+    label = label_format.format(source=anchor.source.upper(), number=_point_number(rng, False, strict))
     while label in taken_labels:
-        label = label_format.format(source=anchor.source.upper(), number=rng.randrange(10, 1000))
+        label = label_format.format(source=anchor.source.upper(), number=_point_number(rng, True, strict))
     return {"lat": round(lat, 3), "lon": round(lon, 3), "label": label}
 
 
@@ -499,9 +515,18 @@ def strict_answer_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *
     return not any(is_correct(answer_type, key, execute(chain, [r], units=units), unit=unit) for r in others)
 
 
+EXACT_DIGITS = 15  # a scale or offset whose shortest decimal has more significant digits is a repeating one, rounded
+
+
 def _exact(x: float) -> Fraction:
-    """A unit's scale or offset as the exact ratio it stands for: 5/9 for °F, 1397/3125000 km/s for a mile
-    per hour, not their binary roundings."""
+    """A unit's scale or offset as the exact number it stands for, never its binary rounding: the decimal that
+    a glossary prints for it and units.encode computes with (its shortest repr: 1.609344 km for a mile, 25146/15625,
+    149597870.7 km for an au, 33.86389 hPa for an inch of mercury, 1397/3125000 km/s for a mile per hour); or,
+    for a ratio that no decimal writes exactly, whose repr is that of a repeating decimal cut off at 16 or 17
+    digits (0.5555555555555556), the ratio it rounds: 5/9 for °F, 1/3600 km/s for a km/h, -160/9 for the °F
+    offset, which a reader who converts by 9/5 and 32 works with."""
+    if len(Decimal(repr(x)).normalize().as_tuple().digits) <= EXACT_DIGITS:
+        return Fraction(repr(x))
     return Fraction(x).limit_denominator(10 ** 12)
 
 
@@ -512,8 +537,9 @@ def _halfway(scaled: Fraction) -> bool:
 
 def _rounding_settled(value: float, spec: FieldSpec, symbol: str | None, key: Any) -> bool:
     """Whether a stored value's answer in the unit `symbol` is settled by its exact value: the stored value
-    converted exactly into that unit is not exactly halfway between two answers of its places (68.3 in a
-    unit of 4 is 17.075, which half up gives 17.08 and the binary 17.074999... gives 17.07), nor is the
+    converted exactly into that unit (by its exact scale and offset, _exact) is not exactly halfway between
+    two answers of its places (68.3 in a unit of 4 is 17.075, which half up gives 17.08 and the binary
+    17.074999... gives 17.07), nor is the
     number that genres print for it (units.encode: 82.8 km is printed "51.45" mi, which a reader asked for
     one place may round to 51.4 or 51.5, though it stands for 51.4495...), and the key (computed in
     floating point) is that exact value rounded. A value asked in no unit is answered as stored."""
@@ -537,8 +563,11 @@ def _interesting(chain: Sequence[dict], records: Sequence[ResolvedRecord], value
 
 
 def fingerprint(chain: Sequence[dict]) -> str:
-    """Identity of a concrete question. Point labels are cosmetic and left out, and the two groups
-    of a comparison are unordered ("A or B?" is the same question as "B or A?")."""
+    """Identity of a concrete question: its whole chain, the unit and rounding of its answer included, so
+    that the same filters and terminal asked in another unit ("the shallowest depth in Tonga, in miles",
+    after the same in km) are another question, which a later instance of the run may ask about its own
+    records. Point labels are cosmetic and left out, and the two groups of a comparison are unordered
+    ("A or B?" is the same question as "B or A?")."""
     steps = []
     for step in chain:
         canonical = {k: v for k, v in step.items() if k != "label"}
@@ -587,6 +616,15 @@ def compose_questions(records: Sequence[ResolvedRecord], public: Sequence[Templa
                       usage: dict[str, int], *, domain: Domain = EARTHQUAKES,
                       strict_twins: bool = False, strict: bool = False) -> list[Question]:
     """3-5 questions per instance, balanced between the public and the new pool.
+
+    Each question has a slot of one pool: as many of each as fit in `n_questions`, an odd one of a pool
+    drawn at random, in a shuffled order. A slot tries up to six of its pool's templates, shuffled among
+    those not yet used in the instance and in step with their twins (below), and is lost when none fits;
+    then spare slots, public first and then alternating (public, new, public, new), make up the number. So
+    an instance can end two or three questions apart (4 public and 1 new, say) though templates of the
+    short pool fit its records: when the twin rule leaves a slot of one pool no candidate (every template
+    of the pool ahead of its twin), or its six candidates all fail, the spare slots fill the instance from
+    the public pool first, and a template the instance uses there brings its twin back in step too late.
 
     `usage` counts how often each template has been used so far in the run. A template may only run
     at most one question ahead of its twin, so the two pools keep the same mix of final operations
@@ -722,9 +760,9 @@ def reanchor_nearest(questions: Sequence[Question], records: Sequence[ResolvedRe
         deciders = sorted(places)
         k = rng.choices(deciders, weights=[asked_about[kinds[j]] / able[kinds[j]] for j in deciders], k=1)[0]
         source = reports[k].source.upper()
-        label = spatial.point_label.format(source=source, number=rng.randrange(10, 100))
+        label = spatial.point_label.format(source=source, number=_point_number(rng, False, True))
         while label in taken:
-            label = spatial.point_label.format(source=source, number=rng.randrange(10, 1000))
+            label = spatial.point_label.format(source=source, number=_point_number(rng, True, True))
         chain = placed(q.chain, index, dict(places[k], label=label))
         if fingerprint(chain) in used_chains:
             continue
@@ -786,7 +824,8 @@ def _wordings(table: Mapping[str, tuple[str, ...]], step: Mapping[str, Any], dom
 
 
 def _filter_phrase(step: Mapping[str, Any], rng: random.Random, alt_units: bool, domain: Domain,
-                   lexicon: Lexicon) -> str:
+                   lexicon: Lexicon) -> tuple[str, tuple[str, ...], dict[str, str]]:
+    """A filter's clause, as (the wording drawn, every wording of its op, the values that fill them in)."""
     s = Step(step, domain.units)
     singular = not lexicon.legacy
     if s.kind in ("at_least", "below"):
@@ -805,13 +844,37 @@ def _filter_phrase(step: Mapping[str, Any], rng: random.Random, alt_units: bool,
         values = {"group": s["group"]}
     else:
         raise ValueError(f"unknown filter {s.op!r}")
-    return rng.choice(_wordings(lexicon.filters, step, domain)).format(**values)
+    wordings = _wordings(lexicon.filters, step, domain)
+    return rng.choice(wordings), wordings, values
 
 
 def _join(clauses: list[str]) -> str:
     if len(clauses) <= 1:
         return "".join(clauses)
     return ", ".join(clauses[:-1]) + " and " + clauses[-1]
+
+
+def _relative(clause: str) -> bool:
+    return clause.startswith(RELATIVE_CLAUSES)
+
+
+def _natural(drawn: Sequence[tuple[str, tuple[str, ...], dict[str, str]]]) -> str:
+    """The filter clauses of a question off the legacy path, joined as English joins them. "and" joins clauses
+    of one kind ("of magnitude 3 or greater and shallower than 10 km", "whose temperature was ... and whose wind
+    speed was ..."), never a relative clause to one that is not ("observations with a temperature below 283
+    kelvins and whose wind speed was ..."): beside a clause of the other kind, a relative clause takes a wording
+    of its op that is not one (picked by the place of the wording drawn, so no draw is added or moved), and one
+    whose op has none follows the other clauses without "and" ("earthquakes of magnitude 3 or greater that
+    occurred between ..."). Relative clauses come last, as on the legacy path."""
+    clauses = [wording.format(**values) for wording, _, values in drawn]
+    if any(map(_relative, clauses)) and not all(map(_relative, clauses)):
+        for k, (wording, wordings, values) in enumerate(drawn):
+            plain = [w for w in wordings if not _relative(w.format(**values))]
+            if _relative(clauses[k]) and plain:
+                clauses[k] = plain[wordings.index(wording) % len(plain)].format(**values)
+    clauses.sort(key=_relative)
+    return " ".join(part for part in (_join([c for c in clauses if not _relative(c)]),
+                                      _join([c for c in clauses if _relative(c)])) if part)
 
 
 def rounding_text(chain: Sequence[Mapping[str, Any]]) -> str:
@@ -829,14 +892,19 @@ def phrase_question(question: Question, rng: random.Random, alt_units: bool = Fa
     """Wording for a question. Different RNG draws give paraphrases with the same meaning. `lexicon`
     words it: the domain's own by default, as legacy prompts are worded, while prompts off the legacy
     path pass Domain.prompt_lexicon. A lexicon that is not the 0.2.0 one (Lexicon.legacy) words a
-    quantity of 1 in the singular and quotes the two groups of a comparison; both draw as before."""
+    quantity of 1 in the singular, quotes the two groups of a comparison and joins its filters' clauses as
+    English joins them (_natural); all three draw as before."""
     lexicon = domain.lexicon if lexicon is None else lexicon
-    clauses = [_filter_phrase(s, rng, alt_units, domain, lexicon) for s in question.chain
-               if role(s["op"]) == "filter"]
-    clauses.sort(key=lambda c: c.startswith(RELATIVE_CLAUSES))  # relative clauses read best last
+    drawn = [_filter_phrase(s, rng, alt_units, domain, lexicon) for s in question.chain if role(s["op"]) == "filter"]
+    if lexicon.legacy:  # the 0.2.0 wording
+        clauses = [wording.format(**values) for wording, _, values in drawn]
+        clauses.sort(key=_relative)  # relative clauses read best last
+        joined = _join(clauses)
+    else:
+        joined = _natural(drawn)
     term = terminal_step(question.chain)
     s = Step(term, domain.units)
-    values = {"records": f"{lexicon.records} {_join(clauses)}" if clauses else lexicon.all_records,
+    values = {"records": f"{lexicon.records} {joined}" if drawn else lexicon.all_records,
               "unit": s.unit(question.unit).words if question.unit else "",
               "rounding": rounding_text(question.chain)}
     if s.kind == "rank":

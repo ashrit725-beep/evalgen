@@ -550,9 +550,10 @@ class Observations(Domain):
     source_label = "provider"
     group_label = "region"
     fields = (
+        # The jitter lets a threshold clear the 0.3 °C margin of the record it is drawn from (Domain.validate)
         FieldSpec(key="temp", label="temperature", canonical_unit="°C", units=(CELSIUS, FAHRENHEIT), decimals=1,
                   answer_type="temperature", tolerance=(0.5, 0.0), margin=(0.3, 0.0), rank_gap=0.5,
-                  quantiles=(0.2, 0.8), threshold_step=0.5, filters=("at_least", "below"),
+                  quantiles=(0.2, 0.8), threshold_step=0.5, jitter=1.5, filters=("at_least", "below"),
                   terminals=("argmax", "max", "time_of_max"), signed=True),  # no rank without a location
         FieldSpec(key="wind", label="wind speed", canonical_unit="km/h", units=(KMH, MPH), decimals=1,
                   answer_type="wind_speed", tolerance=(1.0, 0.05), margin=(1.0, 0.05), rank_gap=2.0,

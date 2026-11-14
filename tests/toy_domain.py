@@ -27,16 +27,21 @@ FAHRENHEIT = Unit("°F", "degrees Fahrenheit", 5 / 9, -160 / 9, step=1.0, one="d
 METRE = Unit("m", "metres", one="metre")
 FOOT = Unit("ft", "feet", 0.3048, step=0.5, one="foot")
 
+# A threshold is a reading's own temperature, moved by up to a degree (jitter) and rounded to half a degree (or
+# a whole °F), so that it can clear the 0.3 °C margin: rounded alone, it lay at most 0.25 °C (0.28 °C in °F)
+# from the reading it was drawn from, so the guard refused every one (Domain.validate now refuses a field so
+# drawn) and no question asked about the temperature with a threshold.
 TEMPERATURE = FieldSpec(
     key="temp", label="water temperature", canonical_unit="°C", units=(CELSIUS, FAHRENHEIT), decimals=1,
     answer_type="toy_temperature", tolerance=(0.3, 0.0), margin=(0.3, 0.0), rank_gap=0.4, quantiles=(0.2, 0.8),
-    threshold_step=0.5, filters=("at_least", "below"), terminals=("argmax", "rank", "max", "time_of_max"),
+    threshold_step=0.5, jitter=1.0, filters=("at_least", "below"), terminals=("argmax", "rank", "max", "time_of_max"),
     qualifier="probe", signed=True, correctable=True,
 )
 WAVE = FieldSpec(
     key="wave", label="wave height", canonical_unit="m", units=(METRE, FOOT), decimals=2,
-    answer_type="toy_wave_height", tolerance=(0.05, 0.02), margin=(0.08, 0.02), rank_gap=0.1, quantiles=(0.25, 0.8),
-    threshold_step=0.1, jitter=0.15, positive_threshold=True, filters=("below", "at_least"),
+    answer_type="toy_wave_height", tolerance=(0.05, 0.02), margin=(0.08, 0.02),
+    rank_gap=0.0,  # no ranked terminal reads it
+    quantiles=(0.25, 0.8), threshold_step=0.1, jitter=0.15, positive_threshold=True, filters=("below", "at_least"),
     terminals=("max", "min"),
 )
 # Without a position there is no rank question (P09, the one rank template, is spatial), so a toy without

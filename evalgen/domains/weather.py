@@ -13,8 +13,9 @@ feed that repeats it) and three numeric fields:
 Every conversion is exact as defined (1 mph = 1.609344 km/h, 1 kt = 1.852 km/h, 1 m/s = 3.6 km/h,
 0 °C = 32 °F = 273.15 K, and 1 inHg = 33.86389 hPa, the conventional inch of mercury the NWS uses),
 and every value is stored to a tenth of its canonical unit, which every printed form reads back to
-(evalgen.units). Margins, threshold steps and rank gaps are scaled to each field's spread over a day
-of US observations: a few tenths of a degree, half a km/h, a few tenths of a hectopascal.
+(evalgen.units). Margins and threshold steps are scaled to each field's spread over a day of US
+observations: a few tenths of a degree, half a km/h, a few tenths of a hectopascal; the warmest
+observation, the one ranked field, leads the next by half a degree.
 
 IDs are "WX-" and six digits ("WX-482137"): an opaque serial, which names neither the station nor the
 feed nor the time. A re-report filed under its observation's ID gives a time, a station and values of its
@@ -82,7 +83,8 @@ MPH = Unit("mph", "miles per hour", 1.609344, step=1.0, one="mile per hour")
 KNOT = Unit("kt", "knots", 1.852, step=1.0, one="knot")
 MPS = Unit("m/s", "metres per second", 3.6, step=0.5, one="metre per second")
 HPA = Unit("hPa", "hectopascals", one="hectopascal")
-# Altimeter settings are read to hundredths of an inch, so answers and restated thresholds keep two places.
+# Altimeter settings are read to hundredths of an inch, so thresholds asked or restated in inches keep two
+# places (no question ends in a pressure, so none is answered in inches).
 INHG = Unit("inHg", "inches of mercury", 33.86389, decimals=2, step=0.05, one="inch of mercury")
 
 # A day of US observations spans tens of degrees, so thresholds sit on half degrees (or whole degrees,
@@ -99,7 +101,8 @@ TEMPERATURE = FieldSpec(
 # never at zero, clear of every observation by half a km/h or 2 %.
 WIND = FieldSpec(
     key="wind", label="wind speed", canonical_unit="km/h", units=(KMH, MPH, KNOT, MPS), decimals=1,
-    answer_type="weather_wind_speed", tolerance=(0.5, 0.02), margin=(0.5, 0.02), rank_gap=1.8,
+    answer_type="weather_wind_speed", tolerance=(0.5, 0.02), margin=(0.5, 0.02),
+    rank_gap=0.0,  # no ranked terminal reads it
     quantiles=(0.25, 0.8), threshold_step=1.0, filters=("below", "at_least"), terminals=("max", "min"),
     jitter=3.0, positive_threshold=True,
 )
@@ -108,7 +111,8 @@ WIND = FieldSpec(
 # Pressure plays no role in P01-P12, so it is only ever a filter of the twins: no question ends in it.
 PRESSURE = FieldSpec(
     key="pressure", label="pressure", canonical_unit="hPa", units=(HPA, INHG), decimals=1,
-    answer_type="weather_pressure", tolerance=(0.5, 0.0), margin=(0.3, 0.0), rank_gap=1.0,
+    answer_type="weather_pressure", tolerance=(0.5, 0.0), margin=(0.3, 0.0),
+    rank_gap=0.0,  # no ranked terminal reads it
     quantiles=(0.2, 0.8), threshold_step=1.0, filters=("at_least", "below"), terminals=(),
     jitter=1.5,
 )
@@ -308,9 +312,11 @@ TRAP_VOCAB = TrapVocab(
     correction_notices=("corrected to", "revised to", "amended to"),
 )
 
-# Lines without data ({station} is a sensor of one of the digest's feeds, see digest.make_chatter).
+# Lines without data. {station} is a sensor at one of the digest's stations ("KIAH.PGH"), never at a relay
+# feed, which has none, and its window holds no observation made at that station, whichever feed filed it
+# (Weather.status_station, digest.timed_chatter).
 CHATTER = (
-    "Sensor {station} was offline for maintenance from {h1} UTC on {date} until {h2} UTC.",
+    "Sensor {station} was offline for maintenance from {h1} UTC on {date} until {until}.",
     "Wind speeds are sustained two-minute averages; gusts are not listed in this digest.",
     "Editor's note: entries are reproduced exactly as each {source_label} filed them, units and time conventions "
     "included.",
@@ -433,6 +439,14 @@ class Weather(Domain):
         standard = STATION_ZONES[station.id]
         summer = station.id not in NO_DAYLIGHT_SAVING and us_daylight_saving(record.time, standard)
         return standard + (1 if summer else 0)
+
+    def status_station(self, record: Any) -> str:
+        """The station an observation was made at (station_of), whichever feed filed it: a status line about
+        one of its sensors ("Sensor KIAH.PGH was offline ...") is about every observation made there, the
+        relayed ones too, and no line names a relay feed, which has no sensors. An observation at no known
+        station keeps its feed (Domain.status_station)."""
+        station = station_of(record)
+        return super().status_station(record) if station is None else station.id
 
     def synthetic(self, rng: random.Random, n: int, compiled_at: int, window_hours: int) -> list[Record]:
         """`n` observations at stations drawn alike, timed as NWS stations take them: each region's weather
