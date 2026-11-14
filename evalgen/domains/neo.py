@@ -497,6 +497,9 @@ class Neo(Domain):
     # Earth often lists it passing the Moon hours away (pipeline.sample_with_slots).
     twin_seconds = MOON_PAIR_HOURS * 3600
     twin_share = 0.5
+    # An object passes the Moon within a km/s of its speed past Earth and about a lunar distance from its distance,
+    # with the same H: a corrected velocity or distance agrees with its object's other approach as a real one does.
+    twin_fields = (MISS_DISTANCE.key, RELATIVE_VELOCITY.key, ABSOLUTE_MAGNITUDE.key)
 
     def twin_key(self, record: Record) -> str:
         """An approach's twins are the other approaches of its object: its designation."""

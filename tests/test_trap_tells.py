@@ -15,10 +15,15 @@ Traps in docs/DESIGN.md. Before the slots, merging reports within 40 s and keepi
 closed 38% of the gap between the naive reader and the oracle; before the second round, a close approach
 re-reported under its ID gave its object an H that its other approach did not have, planted reports lay
 in counting questions' scopes half as often again as real ones, and the status rule's count minus a learned
-offset closed 14% of that gap in weather; on these samples such readers close none of it."""
+offset closed 14% of that gap in weather; before the third round, planted reports were a steady share of every
+digest (one factor off every naive count closed a tenth of the gap, on held-out domains and genres too), a
+corrected temperature or velocity disagreed with its station's or its object's other reports, a planted report
+that decided a question led the next by half as much as a real one (and almost never decided one about a
+place), and a phantom's form was sent sooner than a real one; on these samples such readers close none of it."""
 from __future__ import annotations
 
 import itertools
+import math
 import random
 import re
 from collections import Counter, defaultdict
@@ -41,7 +46,8 @@ from evalgen.scoring import is_correct, normalize
 from evalgen.seeds import SeedLog
 from evalgen.solver import _reading, solve
 from evalgen.sources import build_domain_snapshot
-from evalgen.traps import EARTHQUAKE_BUILDERS, RETRACTION_WEIGHTS, TrapConfig, builders_for
+from evalgen.traps import (CORRECTION_WEIGHTS, CROSS_REF_WEIGHTS, EARTHQUAKE_BUILDERS, NOTICE_DELAY, RETRACTION_WEIGHTS,
+                           SAME_ID_WEIGHTS, TrapConfig, builders_for, draw_plan)
 
 DOMAINS = (EARTHQUAKES, WEATHER, NEO, INVENTED)
 GENRES = ("classic", "news", "email", "chat", "table", "form", "radio")
@@ -187,12 +193,14 @@ def test_a_planted_report_stands_in_for_a_record_drawn_but_not_kept(sample):
 
 def test_a_corrected_value_is_a_real_value_of_the_group_not_one_just_past_a_threshold(sample):
     """The wrong value that a correction fixes is the value of a record of the group that the digest does
-    not keep (written to the corrected record's places), not one placed just past an asked threshold."""
+    not keep (written to the corrected record's places), not one placed just past an asked threshold. (A
+    field whose values a record shares with its near twins, Domain.twin_fields, is corrected to a value that
+    agrees with them instead: see the next test.)"""
     taken, corrections = 0, 0
     for digest in sample:
         bound, inst = digest["bound"], digest["inst"]
         for notice in map(bound.to_generic, inst.notices):
-            if notice.kind != "correction":
+            if notice.kind != "correction" or notice.field in bound.twin_fields:
                 continue
             corrections += 1
             record = next(generic(r, bound) for r in map(bound.dress, digest["snapshot"].events) if r.id == notice.target)
@@ -201,6 +209,42 @@ def test_a_corrected_value_is_a_real_value_of_the_group_not_one_just_past_a_thre
             spare = [r for r in slots_of(digest).values() if r.group == record.group]
             taken += any(round(r.values[spec.key], places) == notice.old_value for r in spare)
     assert corrections >= 20 and taken >= 0.8 * corrections, (taken, corrections)
+
+
+def test_a_corrected_value_agrees_with_its_records_twins(sample):
+    """Where a record's values are tied to its near twins' (Domain.twin_fields: a station's temperature to its
+    observations hours away, an object's speed past the Moon to its speed past Earth), a correction shows a
+    value that agrees with the record's nearest twin as a real value agrees with its own (traps._twin_values),
+    not a value of any slot of its group: a corrected temperature, often another station's, jumped a median
+    4.5 °C from its station's nearest other report where real ones jump 1 °C (an AUC of 0.84 to 0.90), and a
+    corrected velocity left its object's other approach by more than any real one does (0.75 to 0.81). An
+    object passes the Moon within a km/s of its speed past Earth, and so does every corrected approach."""
+    weather = [d for d in sample if d["bound"] is WEATHER] + digests_of(WEATHER, 17, 32, genres=("classic",))
+
+    def jump(r, others, digest):  # to its station's nearest other report within 3 h, per root hour
+        at = [o for o in others if o.place == r.place and o.ref.casefold() != r.ref.casefold()
+              and abs(o.time - r.time) <= 3 * 3600]
+        if not at:
+            return None
+        o = min(at, key=lambda o: abs(o.time - r.time))
+        return abs(r.values["temp"] - o.values["temp"]) / math.sqrt(abs(o.time - r.time) / 3600 + 0.25)
+
+    planted, real = rows(weather, jump, ("corr",))
+    assert len(planted) >= 20 and 0.3 <= auc(planted, real) <= 0.7, (len(planted), auc(planted, real))
+    median = lambda v: sorted(v)[len(v) // 2]  # noqa: E731
+    assert median(planted) <= 1.6 * median(real), (median(planted), median(real))
+    neo = [d for d in sample if d["bound"] is NEO] + digests_of(NEO, 17, 32, genres=("classic",))
+    siblings = 0
+    for digest in neo:
+        for r, label in zip(digest["reports"], digest["labels"]):
+            if label not in ("real", "corr"):
+                continue
+            mates = [o for o in digest["reports"] if designation_of(o.ref) == designation_of(r.ref)
+                     and o.ref.casefold() != r.ref.casefold()]
+            for o in mates:
+                siblings += label == "corr"
+                assert abs(r.values["v_rel"] - o.values["v_rel"]) <= 1.0 + 0.01, (label, r, o)
+    assert siblings > 0
 
 
 def test_planted_values_lie_where_real_ones_do(sample):
@@ -381,14 +425,157 @@ def test_removing_a_planted_report_changes_as_many_answers_as_removing_a_real_on
     assert 0.4 <= auc(planted, real) <= 0.6, auc(planted, real)
 
 
+LEAD_TERMINALS = ("argmax", "max", "min", "time_of_max", "rank", "nearest_to", "nearest_distance")
+
+
+def deciders(digest) -> list[tuple[str, int, float]]:
+    """(the kind of question, the report that decides it, how far it leads the next) for each question whose
+    naive answer one report decides (every report a record of its own): the largest (smallest: min) value of
+    its field in scope, the k-th, or the report nearest its place; the lead in shares of the field's spread
+    over the digest's reports, or in km."""
+    reports, units = digest["reports"], digest["units"]
+    out = []
+    for q in digest["inst"].questions:
+        term = Step(next(s for s in q.chain if role(s["op"]) == "terminal"), units)
+        if term.kind not in LEAD_TERMINALS:
+            continue
+        inside = [i for i, r in enumerate(reports)
+                  if all(passes(s, r, units) for s in q.chain if role(s["op"]) == "filter")]
+        if len(inside) < 2:
+            continue
+        if term.kind in ("nearest_to", "nearest_distance"):
+            d = sorted((haversine_km(term.raw["lat"], term.raw["lon"], reports[i].lat, reports[i].lon), i)
+                       for i in inside)
+            out.append((term.kind, d[0][1], d[1][0] - d[0][0]))
+            continue
+        key = term.field
+        values = [r.values[key] for r in reports]
+        spread = max(max(values) - min(values), 1e-9)
+        ordered = sorted(inside, key=lambda i: (reports[i].values[key] if term.kind == "min" else -reports[i].values[key], i))
+        k = term["k"] - 1 if term.kind == "rank" else 0
+        if len(ordered) > k + 1:
+            out.append((term.kind, ordered[k], abs(reports[ordered[k]].values[key] - reports[ordered[k + 1]].values[key])
+                        / spread))
+    return out
+
+
+def test_a_report_that_decides_a_question_leads_the_next_as_a_real_one_does(sample):
+    """A planted report that changes the record a question names, or its value, must pass the real record
+    that holds it; placed where it changes an answer, it passed it by little (a station's next observation
+    passes its last one by a degree), and the report a question about a place was drawn near was a real record,
+    so that real reports decided those questions, by tens or hundreds of km, and planted ones almost never.
+    Each trap now draws how far a real record that decides a question leads the next one, of each kind of
+    question, and prefers a placement whose planted report, where it decides one, leads within a factor of two
+    of it (traps._Leads); and a question about a place is asked about a place near a report of the digest that
+    then decides it, planted or real (questions.reanchor_nearest, and the test that follows). (Before: an AUC
+    of 0.27 in weather for how far a report that decides a question leads the next, and of 0.18 to 0.23 for
+    the report nearest a place in earthquakes.)"""
+    planted, real, nearest = [], [], Counter()
+    for digest in sample:
+        for kind, i, lead in deciders(digest):
+            label = digest["labels"][i]
+            if kind in ("nearest_to", "nearest_distance"):
+                nearest[label in REMOVABLE] += 1
+                continue
+            (planted if label in REMOVABLE else real if label == "real" else []).append(lead)
+    assert len(planted) >= 40 and 0.38 <= auc(planted, real) <= 0.62, (len(planted), auc(planted, real))
+    assert nearest[True] > 0 and nearest[False] > 0, nearest  # the report nearest a place is sometimes planted
+
+
+@pytest.fixture(scope="module")
+def places(sample):
+    """The sample's digests of the domains whose records have a position, and those of three more seeds."""
+    return [digest for digest in sample if digest["domain"].spatial is not None] + [
+        digest for domain in DOMAINS if domain.spatial is not None for seed in (SEED + 1, SEED + 2, SEED + 3)
+        for digest in digests_of(domain, seed, INSTANCES)]
+
+
+def test_a_place_lies_near_the_report_that_decides_it_planted_or_real(places):
+    """A question about the record nearest to a place is asked about a place drawn near a report of the digest
+    that then decides it, a record's or a planted one, each kind about as often as its share of the reports the
+    question asks about, with a label drawn for that report and no bound on how far the key's nearest record
+    lies (questions.reanchor_nearest). So the report nearest to a place lies in the band of a drawn place, and
+    is named by its label (where a label names a source), as often planted as real; and planted reports decide
+    such questions, and lead the next, more nearly as real ones do. (Before: a place drawn near any report kept
+    the label drawn for a record, and was decided by a report in that band, and named by its label, less often
+    when the report was planted, with AUCs of 0.28 to 0.38 in weather; and the key's nearest record had to lie
+    within Spatial.nearest_max_km, which bounded how far a planted report that decides such a question leads
+    the next and kept most of them from deciding one: in weather, an AUC of 0.38 for that lead, and planted
+    reports deciding a fifth as many of these questions as their share of the reports asked about, where they
+    now decide half as many, and in earthquakes four fifths.)"""
+    band, named, leads, decided, asked = defaultdict(list), defaultdict(list), defaultdict(list), Counter(), Counter()
+    for digest in places:
+        spatial = digest["domain"].spatial
+        reports, units, labels = digest["reports"], digest["units"], digest["labels"]
+        lo, hi = spatial.point_offset_km
+        for q in digest["inst"].questions:
+            term = Step(next(s for s in q.chain if role(s["op"]) == "terminal"), units)
+            if term.kind not in ("nearest_to", "nearest_distance"):
+                continue
+            inside = [i for i, r in enumerate(reports)
+                      if all(passes(s, r, units) for s in q.chain if role(s["op"]) == "filter")]
+            d = sorted((haversine_km(term.raw["lat"], term.raw["lon"], reports[i].lat, reports[i].lon), i)
+                       for i in inside)
+            i = d[0][1]
+            planted = labels[i] in REMOVABLE
+            band[planted].append(lo - 0.6 <= d[0][0] <= hi + 0.6)  # coordinates are printed to 0.001°
+            named[planted].append(bool(re.search(rf"\b{re.escape(reports[i].source.upper())}\b",
+                                                 str(term.raw["label"]).upper())))
+            leads[planted].append(d[1][0] - d[0][0] if len(d) > 1 else math.inf)
+            decided[planted] += 1
+            for j in inside:
+                asked[labels[j] in REMOVABLE] += 1
+    rate = {k: {p: sum(v[p]) / len(v[p]) for p in (True, False)} for k, v in (("band", band), ("named", named))}
+    assert all(abs(r[True] - r[False]) <= 0.1 for r in rate.values()) and rate["band"][False] >= 0.9, rate
+    share = decided[True] / sum(decided.values()) / (asked[True] / sum(asked.values()))
+    assert decided[True] >= 10 and share >= 0.4, (decided, asked, share)  # (0.57 on this sample)
+    assert 0.3 <= auc(leads[True], leads[False]) <= 0.7, auc(leads[True], leads[False])  # (0.33; before, 0.22)
+
+
+def test_a_notice_follows_its_report_later_than_any_genre_sends_it(sample, monkeypatch):
+    """A notice about a report is issued 92 minutes to 3 hours after the report's time (traps.NOTICE_DELAY;
+    a correction of a record that close to the compilation just before it), later than a form is sent, so no
+    genre sends a planted report sooner because a notice about it follows: a form, sent before any notice
+    about its record, was sent a median 21 minutes after a phantom's time when retractions came 10 to 90
+    minutes after it, against 44 after a real record's (an AUC of 0.28 to 0.29)."""
+    for digest in sample:
+        inst = digest["inst"]
+        final = digest["bound"].statuses[0]
+        times = {r.ref: r.time for r in map(digest["bound"].to_generic, inst.reports) if r.status == final}
+        for notice in inst.notices:
+            gap = notice.time - times[notice.target]
+            assert NOTICE_DELAY[0] <= gap <= NOTICE_DELAY[1] or (
+                notice.kind == "correction" and notice.time == inst.compiled_at - 30), (notice, gap)
+    from evalgen.genres import form
+
+    calls = []
+    original = form._sent_time
+
+    def recording(rng, when, deadline):
+        calls.append((when, deadline))
+        return original(rng, when, deadline)
+
+    monkeypatch.setattr(form, "_sent_time", recording)
+    capped = Counter()
+    for domain in DOMAINS:  # (a phantom lies at least 92 minutes before the compilation, as a report at its time)
+        phantoms = {r.time for digest in digests_of(domain, 23, 12, genres=("form",))
+                    for r in digest["inst"].reports if r.role == "phantom"}
+        for when, deadline in calls:
+            if when in phantoms:
+                capped[deadline - when <= 90 * 60 + 59] += 1
+        calls.clear()
+    assert capped[False] > 0 and capped[True] == 0, capped
+
+
 def test_the_status_rule_count_is_the_likeliest_right_count(sample):
     """A reader who drops every report of the second status (the status rule) and counts what is left counts
     every phantom in a question's scope, as a phantom is settled as it is. With a retraction in every digest
     and its phantom in counting questions' scopes as often as a load-bearing trap's, that count was one too
     many more often than it was right, and taking one off it (an offset learned per template) gained 9% of
     the gap between the naive reader and the oracle beyond the status rule, 14% in weather. A digest now
-    holds none to three retractions, none the likeliest (traps.RETRACTION_WEIGHTS): the status count is right
-    more often than it is off by any number, and a learned offset gains nothing."""
+    holds none, one or two retractions, none the likeliest (traps.RETRACTION_WEIGHTS), drawn apart from its
+    other traps (traps.draw_plan): the status count is right more often than it is off by any number, and a
+    learned offset gains nothing."""
     offsets, rows_ = Counter(), []
     for digest in sample:
         reports, draft = digest["reports"], digest["bound"].statuses[1]
@@ -404,7 +591,7 @@ def test_the_status_rule_count_is_the_likeliest_right_count(sample):
                           q.template_id), "status": counted, "naive": careless, "key": key})
     assert offsets[0] == max(offsets.values()) and offsets[0] > 1.5 * offsets[1], offsets
     retractions = Counter(sum(t.kind == "retraction" for t in d["inst"].traps) for d in sample)
-    assert retractions[0] == max(retractions.values()) and max(retractions) <= len(RETRACTION_WEIGHTS) - 1
+    assert RETRACTION_WEIGHTS[0] == max(RETRACTION_WEIGHTS) and max(retractions) <= len(RETRACTION_WEIGHTS) - 1
     # An offset per domain and template, learned on half the instances, applied to the status counts of the
     # others, gains less than a twentieth of the naive reader's gap to the oracle beyond the status rule.
     learned: dict = defaultdict(Counter)
@@ -459,18 +646,22 @@ def test_a_close_approach_is_re_reported_under_its_id_only_where_its_object_has_
     assert LOW <= auc(planted, real) <= HIGH, auc(planted, real)
 
 
-def test_a_status_reader_keeps_as_many_reports_however_many_phantoms(sample):
-    """A digest keeps one record less for each retraction it holds (pipeline.sample_with_slots), so the
-    reports of the settling status, records and phantoms together, number as a digest's records would
-    without any phantom (events_min to events_max), and neither their number nor the digest's size tells how
-    many phantoms are among them: with a phantom count that varied on top of the records, a phantom lay in a
-    larger digest than a real record did (an AUC of 0.64 to 0.66 for the reports beside it)."""
+def test_a_digest_prints_as_many_reports_however_many_are_planted(sample):
+    """A digest keeps one record less for each report its traps will add (pipeline.sample_with_slots,
+    traps.TrapPlan.lines), so its reports, records and planted ones together, number from events_min to
+    events_max however many are planted, and neither its size nor the reports beside a planted one tell how
+    many are: with a phantom count that varied on top of the records, a phantom lay in a larger digest than a
+    real record did (an AUC of 0.64 to 0.66 for the reports beside it), and a re-report count on top of them
+    would do the same for re-reports."""
     cfg = GenerateConfig(seed=SEED)
+    planted_reports = Counter()
     for digest in sample:
-        settled = sum(r.status == digest["bound"].statuses[0] for r in digest["reports"])
-        assert cfg.events_min <= settled <= cfg.events_max, settled
-    planted, real = rows(sample, lambda r, others, digest: float(len(others)), ("phantom",))
-    assert 0.4 <= auc(planted, real) <= 0.6, auc(planted, real)
+        assert cfg.events_min <= len(digest["reports"]) <= cfg.events_max, len(digest["reports"])
+        planted_reports[sum(label in REMOVABLE for label in digest["labels"])] += 1
+    assert len(planted_reports) >= 6 and max(planted_reports) >= 8, planted_reports
+    for kinds in (("phantom",), ("dup_same", "dup_xref"), ("second",)):
+        planted, real = rows(sample, lambda r, others, digest: float(len(others)), kinds)
+        assert 0.4 <= auc(planted, real) <= 0.6, (kinds, auc(planted, real))
 
 
 def test_a_weather_re_report_is_not_pinned_to_its_observations_station(sample):
@@ -511,21 +702,76 @@ def test_a_weather_re_report_is_not_pinned_to_its_observations_station(sample):
 # ----------------------------------------------------------------------------- how traps are planned
 
 
-def test_a_trap_that_changes_no_answer_is_followed_by_another_of_its_kind(sample):
-    """A planted report that lies in the scopes a real record lies in often changes no answer; a planned
-    re-report or conflict that changes none is followed by one more of its kind, which is not followed in
-    turn, so that a digest keeps about as many traps that change answers as before scopes were matched (2-3
-    re-reports, a conflict and none to three retractions are planned; a retraction is never followed)."""
-    load_bearing, extra = [], 0
+def test_a_digest_holds_the_traps_its_plan_draws(sample):
+    """A digest's traps are planned before its records (traps.draw_plan), each kind on its own: none to two
+    retractions, none or one to three re-reports under IDs of their own, none or one to eight reports under
+    their records' own IDs (a fifth of them second reports), none to three corrections. Every planned trap
+    finds a place (a re-report may share its record with another re-report where no record is left free of
+    traps), and no trap follows another: a planned re-report or conflict that changed no answer was followed by
+    one more of its kind, which made how many reports a digest plants depend on its questions. About as many
+    traps change an answer as before (three a digest, against 3.1 to 3.5)."""
+    load_bearing, forms = [], Counter()
     for digest in sample:
         traps = digest["inst"].traps
-        kinds = Counter(t.kind for t in traps)
-        conflicts = sum(n for k, n in kinds.items() if k.startswith("conflicting"))
-        assert 2 <= kinds["duplicate"] <= 6 and kinds["retraction"] <= 3 and 1 <= conflicts <= 2
-        assert [t.trap_id for t in traps] == [f"T{i}" for i in range(1, len(traps) + 1)]
-        extra += max(0, kinds["duplicate"] - 3) + conflicts - 1  # at least this many followed a trap
+        kinds = Counter(t.form for t in traps)
+        forms.update(kinds)
+        assert kinds["phantom"] <= len(RETRACTION_WEIGHTS) - 1 and kinds["cross_ref"] <= len(CROSS_REF_WEIGHTS) - 1
+        assert kinds["same_id"] + kinds["second_report"] <= len(SAME_ID_WEIGHTS) - 1
+        assert kinds["correction"] <= len(CORRECTION_WEIGHTS) - 1
+        assert [t.trap_id for t in traps] == [f"T{i}" for i in range(1, len(traps) + 1)]  # every planned trap placed
         load_bearing.append(sum(1 for t in traps if t.affected))
-    assert extra > 0 and sum(load_bearing) / len(load_bearing) >= 2.8, (extra, sum(load_bearing) / len(load_bearing))
+    assert set(forms) == {"same_id", "cross_ref", "phantom", "second_report", "correction"}
+    assert sum(load_bearing) / len(load_bearing) >= 2.7, sum(load_bearing) / len(load_bearing)
+
+
+def test_how_many_reports_a_digest_plants_varies_widely_and_each_kind_on_its_own():
+    """Planted reports were a steady share of a digest (two or three re-reports, a conflict and a retraction
+    or more in every one), and lay in questions' scopes as real records do, so that a reader who took that
+    share off every count, round(0.84 x the naive count), reading no status, ID, note or notice, was right on
+    about 20 points more of the counting questions than the naive reader, and closed a tenth of the gap between
+    the naive reader and the oracle, as much on held-out domains and genres. Now how many a digest plants
+    varies widely (none in about one digest in sixteen, up to thirteen), each kind is drawn on its own, and for
+    any share of a digest's records that a counting question's scope holds, the planted reports in it are none
+    about as often as any other number: within 5 points for the naive reader (every planted report; none of it
+    below a scope of a third of the digest), 3 for a reader who merges reports by ID alone (the
+    cross-referenced re-reports and the phantoms), and exactly for the status rule (the phantoms), so that no
+    number or share taken off a count does much better than the count itself (traps.draw_plan)."""
+    rng = random.Random(1)
+    plans = [draw_plan(rng) for _ in range(20000)]
+    lines = Counter(p.lines for p in plans)
+    assert 0.055 <= lines[0] / len(plans) <= 0.075 and max(lines) == 13
+    assert 4.7 <= sum(p.lines for p in plans) / len(plans) <= 5.3
+    for a, b in itertools.combinations(("retractions", "cross_refs", "same_ids", "corrections"), 2):
+        x, y = [getattr(p, a) for p in plans], [getattr(p, b) for p in plans]
+        assert abs(_correlation(x, y)) < 0.03, (a, b)
+
+    def pmf(weights):
+        return [w / sum(weights) for w in weights]
+
+    def plus(p, q):
+        out = [0.0] * (len(p) + len(q) - 1)
+        for i, x in enumerate(p):
+            for j, y in enumerate(q):
+                out[i + j] += x * y
+        return out
+
+    def thinned(p, s):  # how many of them lie in a scope that holds a share s of the digest's records
+        return [sum(p[t] * math.comb(t, c) * s ** c * (1 - s) ** (t - c) for t in range(c, len(p)))
+                for c in range(len(p))]
+
+    phantoms, cross_refs = pmf(RETRACTION_WEIGHTS), pmf(CROSS_REF_WEIGHTS)
+    every = plus(plus(phantoms, cross_refs), pmf(SAME_ID_WEIGHTS))
+    for residual, bound in ((every, 0.05), (plus(phantoms, cross_refs), 0.03), (phantoms, 0.0)):
+        for s in (0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9):
+            in_scope = thinned(residual, s)
+            assert max(in_scope) - in_scope[0] <= bound + 1e-12, (s, in_scope)
+            assert s >= 1 / 3 or max(in_scope) == in_scope[0], (s, in_scope)
+
+
+def _correlation(x, y) -> float:
+    mx, my = sum(x) / len(x), sum(y) / len(y)
+    sxy = sum((a - mx) * (b - my) for a, b in zip(x, y))
+    return sxy / math.sqrt(sum((a - mx) ** 2 for a in x) * sum((b - my) ** 2 for b in y))
 
 
 def test_joint_misreadings_are_those_of_every_combination_of_traps(sample):
@@ -683,6 +929,44 @@ def test_a_plugin_domain_gets_the_same_placement(toys):
                 assert report.ref in spare and spare[report.ref].values == report.values
     scores = readings_of_simple(sample)
     assert closed(scores, "proximity") <= 0.1 and closed(scores, "status") >= 0.25, scores
+
+
+def test_no_share_taken_off_a_count_carries_to_a_held_out_domain_and_genre(sample, toys, monkeypatch):
+    """A reader who takes a share off every count (round(a x the naive count)), with one factor fitted on the
+    built-in domains, reading no status, ID, note or notice, closed 9.7 to 10% of the gap between the naive
+    reader and the oracle there (a = 0.84), and 11 to 13% on the held-out toy domain and the toy-telex genre:
+    planted reports were a steady share of every digest (traps.draw_plan). Now the factor fitted on the
+    built-in sample closes less than a twentieth of the gap on it, and less than a tenth on the toy domain, in
+    classic and in the held-out genre."""
+    from pathlib import Path
+
+    from evalgen import genres
+
+    monkeypatch.setattr(genres, "REGISTRY", genres.Registry())
+    telex = genres.load_plugin(Path(__file__).resolve().parent / "toy_genre.py")
+    toy = digests_of(toys.toy, 29, 48, genres=("classic", telex))
+    # (each domain on a seed of its own: a digest's plan is drawn on its instance's seed path, which the module's
+    # sample shares between its domains, so that it holds 28 plans four times over)
+    public = [d for seed, domain in zip((31, 37, 41, 43), DOMAINS) for d in digests_of(domain, seed, 24)]
+
+    def answers(digests):  # (a counting question?, the naive answer, the question, the key) of each question
+        out = []
+        for digest in digests:
+            data, units, bound, inst = digest["data"], digest["units"], digest["bound"], digest["inst"]
+            for q in inst.questions:
+                naive = execute(q.chain, DigestData(data.reports, []), skip=("dedupe",), units=units,
+                                resolver=bound.resolve)
+                out.append((any(Step(s).kind == "count" for s in q.chain), naive, q, inst.answer_key[q.qid]))
+        return out
+
+    public, held_out = answers(public), answers(toy)
+    grid = [round(1 - 0.01 * i, 2) for i in range(31)]
+    fitted = max(grid, key=lambda a: (sum(round(a * n) == k for c, n, _, k in public if c), a))
+    for rows_, most in ((public, 0.05), (held_out, 0.1)):
+        right = lambda scaled: sum(is_correct(q.answer_type, k, round(fitted * n) if scaled and c else n, unit=q.unit)  # noqa: E731
+                                   for c, n, q, k in rows_)
+        naive_right = right(False)
+        assert (right(True) - naive_right) / (len(rows_) - naive_right) < most, (fitted, right(True), naive_right)
 
 
 def readings_of_simple(sample) -> Counter:

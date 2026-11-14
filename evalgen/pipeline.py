@@ -53,14 +53,15 @@ from .mix import LEGACY, Inventory, MixError, Plan, load_run_plugins, plan_mix, 
 from .models import Instance, Question, Rendering
 from .ops import execute, role
 from .prompt import build_prompt, domain_prompt
-from .questions import Context, Template, compose_new_templates, compose_questions, phrase_question, public_templates
+from .questions import (Context, Template, compose_new_templates, compose_questions, phrase_question, public_templates,
+                        reanchor_nearest)
 from .report import code_fingerprint, load_instances, read_run_json, read_scores, write_report
 from .rules import READING_RULES
 from .scoring import is_correct, normalize, same_answer
 from .seeds import SeedLog, derive_seed, fresh_nonce, seed_commitment
 from .solver import extract_digest, solve
 from .sources import LIVE, Snapshot, build_domain_snapshot, build_snapshot, frozen_feed, read_frozen_feed, save_snapshot
-from .traps import TrapConfig, draw_retractions, inject_traps
+from .traps import SLOT_CANDIDATES, TrapConfig, draw_plan, inject_traps, score_traps
 from .util import read_json, read_manifest, sha256_hex, slugify, write_in, write_json
 
 RUNS_DIR = Path("runs")
@@ -169,9 +170,9 @@ def sample_with_slots(pool: Sequence[Any], rng: random.Random, n_min: int, n_max
     alike, and a planted report in a slot's place stands where a real record could have stood: its time,
     position, place, source, group, values and their precision, and its ID, are those of a real record.
     (A pool barely larger than a digest leaves few slots; traps then make up the rest, traps._virtual_slot.)
-    The digest keeps `planted` records less than it draws a size for: one for each phantom its traps will
-    file (traps.RETRACTION_WEIGHTS), so that its settled reports, records and phantoms, number alike however
-    many phantoms are among them."""
+    The digest keeps `planted` records less than it draws a size for: one for each report its traps will
+    add (traps.draw_plan), so that its reports, records and planted ones, number alike however many of them
+    are planted."""
     n = max(1, min(len(pool), rng.randint(n_min, n_max)) - planted)
     drawn = _focused_sample(pool, rng, min(len(pool), n + slots), domain)
     drawn = _with_twins(drawn, pool, split, domain)
@@ -253,7 +254,7 @@ class Composition:
 
 def compose_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Template], seedlog: SeedLog,
                      cfg: GenerateConfig, ctx: Context, used_chains: set[str], usage: dict[str, int], *,
-                     domain: Domain = EARTHQUAKES, legacy: bool = True, retractions: int = 0) -> Composition:
+                     domain: Domain = EARTHQUAKES, legacy: bool = True, planted: int = 0) -> Composition:
     """An instance's records, questions and answer key. Off the legacy path, a domain with surface
     words draws them first (seed path "instance", i, "surface", which legacy runs never create) and
     the bound domain renames the sampled records (Domain.dress); everything after uses the bound
@@ -261,7 +262,7 @@ def compose_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Tem
     questions keep the stricter guards of runs off the legacy path (compose_questions, strict_twins and
     strict). Off the legacy path the instance also draws its slots, the records its planted reports stand
     in for (sample_with_slots, seed path "instance", i, "slots"), and keeps one record less for each of the
-    `retractions` its digest will hold. The key is code over the snapshot's records."""
+    `planted` reports its traps will add (traps.TrapPlan.lines). The key is code over the snapshot's records."""
     surface = None
     if not legacy and domain.has_surface:
         surface = domain.draw_surface(seedlog.rng("instance", index, "surface"))
@@ -272,7 +273,7 @@ def compose_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Tem
     else:
         sample, spare = sample_with_slots(snapshot.events, seedlog.rng("instance", index, "events"), cfg.events_min,
                                           cfg.events_max, seedlog.rng("instance", index, "slots"), domain=domain,
-                                          planted=retractions)
+                                          planted=planted)
     events = [domain.dress(e) for e in sample]
     q_rng = seedlog.rng("instance", index, "questions")
     questions = compose_questions(events, public_templates(domain), new_templates, q_rng, ctx,
@@ -302,22 +303,37 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
     if genre_plan is not None and len(genre_plan) != cfg.variants + 1:
         raise ValueError(f"the genre plan names {len(genre_plan)} genres for {cfg.variants + 1} renderings")
     off_legacy = genre_plan is not None
-    # Off the legacy path a digest holds none to three retractions, drawn before its records, which make room
-    # for them (traps.RETRACTION_WEIGHTS, seed path "instance", i, "retractions"); a legacy digest one.
-    retractions = draw_retractions(seedlog.rng("instance", index, "retractions")) if off_legacy else 1
+    # Off the legacy path a digest's traps are planned before its records, which make room for the reports they
+    # add (traps.draw_plan, seed path "instance", i, "plan"); a legacy digest keeps the 0.2.0 plan.
+    plan = draw_plan(seedlog.rng("instance", index, "plan")) if off_legacy else None
     composed = compose_instance(index, snapshot, new_templates, seedlog, cfg, ctx, used_chains, usage,
-                                domain=domain, legacy=not off_legacy, retractions=retractions if off_legacy else 0)
+                                domain=domain, legacy=not off_legacy, planted=plan.lines if plan is not None else 0)
     domain, events, questions, answer_key = composed.domain, composed.events, composed.questions, composed.answer_key
     units = domain.units
     glossary = None if genre_plan is None else domain.glossary()
     lexicon = None if genre_plan is None else domain.prompt_lexicon()  # None: the 0.2.0 wording
     # Off the legacy path a trap counts only careless readings that hold at the printed precision, and its
     # planted report lies in as many of the questions' scopes as a real record does (traps.TrapConfig).
-    trap_config = TrapConfig(id_style="sequence" if snapshot.source == "usgs" else "random", retractions=retractions,
-                             guarded=off_legacy, match_scope=off_legacy)
+    trap_config = TrapConfig(id_style="sequence" if snapshot.source == "usgs" else "random", guarded=off_legacy,
+                             match_scope=off_legacy, plan=plan,
+                             candidates=SLOT_CANDIDATES if off_legacy else TrapConfig.candidates)
     reports, notices, traps = inject_traps(events, questions, seedlog.rng("instance", index, "traps"),
                                            compiled_at=snapshot.compiled_at, window_hours=snapshot.window_hours,
                                            config=trap_config, domain=domain, slots=composed.slots)
+    if off_legacy:
+        # A question about the record nearest to a place asks about a place near a report of the digest that
+        # then decides it, a record's or a planted one, each kind about as often as its share of the reports
+        # asked about (questions.reanchor_nearest, seed path "instance", i, "anchors"); its answer and what each
+        # trap does to it are read again.
+        lines = [domain.to_generic(r) for r in reports]
+        kinds = [r.role if r.role in ("duplicate", "phantom") or (r.role == "conflict" and r.status != domain.statuses[0])
+                 else None for r in lines]
+        moved = reanchor_nearest(questions, events, lines, kinds, seedlog.rng("instance", index, "anchors"), ctx,
+                                 used_chains, domain=domain)
+        if moved:
+            for q in moved:
+                answer_key[q.qid] = execute(q.chain, events, units=units)
+            score_traps(traps, questions, answer_key, reports, notices, domain=domain, time_margin=ctx.time_margin)
     for q in questions:
         unfiltered = [s for s in q.chain if role(s["op"]) != "filter"]
         q.features = {

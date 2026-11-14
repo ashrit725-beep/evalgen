@@ -603,8 +603,12 @@ def test_every_rendering_reads_back_to_exactly_its_reports_and_notices(run_insta
             assert not re.search(r"\d\.\d|-\d{5}|°", line), line
 
 
-def check_guards(q, records, ctx: Context) -> None:
-    """Every parameter of a question keeps its guard from every record of its instance."""
+def check_guards(q, records, ctx: Context, reports=()) -> None:
+    """Every parameter of a question keeps its guard from every record of its instance. A question about the
+    record nearest to a place has a clear answer, and its nearest record, or else the report nearest to the
+    place (`reports`, the digest's, a record's or a planted one), lies within the domain's bound: a place
+    moved near a report that then decides it (questions.reanchor_nearest) sets no bound on how far its key's
+    nearest record lies."""
     units = WEATHER.units
     for raw in q.chain:
         step = Step(raw, units)
@@ -632,7 +636,9 @@ def check_guards(q, records, ctx: Context) -> None:
         assert all(a - b >= WEATHER.field(term.field).rank_gap - 1e-9 for a, b in zip(values, values[1:]))
     if term.kind in ("nearest_to", "nearest_distance"):
         d = sorted(distance_km(term.raw, r) for r in rows)
-        assert d[0] <= WEATHER.spatial.nearest_max_km and (len(d) < 2 or d[1] - d[0] >= max(
+        near = min((distance_km(term.raw, r) for r in rows_after_filters(q.chain, reports, units=units)),
+                   default=d[0])
+        assert min(near, d[0]) <= WEATHER.spatial.nearest_max_km and (len(d) < 2 or d[1] - d[0] >= max(
             WEATHER.spatial.nearest_gap[0], WEATHER.spatial.nearest_gap[1] * d[0]))
 
 
@@ -643,7 +649,7 @@ def test_questions_keep_their_guards_and_never_repeat(run_instances, run_records
         ctx = Context(inst.compiled_at, inst.window_hours)
         assert 3 <= len(inst.questions) <= 5
         for q in inst.questions:
-            check_guards(q, records, ctx)
+            check_guards(q, records, ctx, inst.reports)
             assert execute(q.chain, records, units=WEATHER.units) == inst.answer_key[q.qid] is not None
             assert q.evidence == [r.id for r in rows_after_filters(q.chain, records, units=WEATHER.units)]
             fingerprints.append(fingerprint(q.chain))
@@ -664,9 +670,8 @@ def test_traps_are_planted_in_weather_words_and_read_as_designed(run_instances, 
         records = [run_records[record_id] for record_id in inst.event_ids]
         by_id = {r.id: r for r in records}
         assert check_resolution(inst.reports, inst.notices, records, domain=WEATHER) == []
-        # (a digest off the legacy path holds none to three retractions: traps.RETRACTION_WEIGHTS)
-        assert {"duplicate", "conflicting_value"} <= {t.kind for t in inst.traps} <= {"duplicate", "retraction",
-                                                                                   "conflicting_value"}
+        # (a digest off the legacy path holds the traps its plan draws, of each kind none or more: traps.draw_plan)
+        assert {t.kind for t in inst.traps} <= {"duplicate", "retraction", "conflicting_value"}
         data = DigestData(inst.reports, inst.notices)
         for trap in inst.traps:
             kinds[(trap.kind, trap.form)] += 1

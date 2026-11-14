@@ -453,6 +453,11 @@ class Domain:
     # `twin_seconds` (pipeline.sample_with_slots). None: the domain's records have no near twins.
     twin_seconds: int | None = None
     twin_share: float = 0.0
+    # The fields whose values a record shares, give or take, with its near twins: a station's temperature an hour
+    # later, an object's speed and distance past the Moon. A value the trap builders plant on a record's own
+    # report (a corrected one) then agrees with its twins as a real value does (traps._twin_values). Empty: each
+    # record's values are its own (a quake's magnitude is not its aftershock's).
+    twin_fields: tuple[str, ...] = ()
     # Set by a domain whose record IDs name their record's place (a station's identifier at the head of an
     # observation's ID): a report filed under a record's ID must then stand at its place, so a re-report of
     # it can never be the only report at its place, as a real record can (traps._slot_pair). No built-in
@@ -510,13 +515,18 @@ class Domain:
           - P01-P12 bind to its primary and secondary fields, its fields declare no terminal that no
             template ends in (no question would end in it), and its lexicon words every filter a template
             may use and every terminal the templates end in;
-          - its answer types agree with each other and with the registered ones.
+          - its answer types agree with each other and with the registered ones;
+          - the fields it ties to near twins (twin_fields) are its own, and it has near twins to tie them to.
         Raises ValueError naming every problem."""
         missing = [name for name in REQUIRED_ATTRIBUTES if not hasattr(self, name)]
         if missing:
             raise ValueError(f"{type(self).__name__} does not set {', '.join(missing)}")
+        keys = {spec.key for spec in self.fields}
+        twin_problems = [f"twin field {key!r} is none of its fields" for key in self.twin_fields if key not in keys]
+        if self.twin_fields and self.twin_seconds is None:
+            twin_problems.append("it ties fields to near twins (twin_fields) but has none (twin_seconds)")
         problems = (self._unit_problems() + self._word_problems() + self._op_problems()
-                    + self._answer_type_problems())
+                    + self._answer_type_problems() + twin_problems)
         if problems:
             raise ValueError(f"domain {self.name!r}: " + "; ".join(problems))
 

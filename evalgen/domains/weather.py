@@ -369,6 +369,9 @@ class Weather(Domain):
     # digest often lists a station's next observation, five minutes or an hour later.
     twin_seconds = 2 * 3600
     twin_share = 0.6
+    # A station's temperature and pressure move little from one observation to the next (its wind does not:
+    # gusts come and go); a corrected temperature agrees with the station's other observations as a real one does.
+    twin_fields = (TEMPERATURE.key, PRESSURE.key)
 
     def __init__(self, live: NwsObservations | None = None) -> None:
         self.live = NwsObservations() if live is None else live

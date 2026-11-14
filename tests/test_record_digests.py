@@ -32,7 +32,7 @@ from evalgen.prompt import domain_answer_spec, domain_placeholder, domain_unit_w
 from evalgen.questions import Context, compose_new_templates
 from evalgen.report import load_instances
 from evalgen.rules import Mishandle
-from evalgen.scoring import AnswerType, is_correct, register_answer_type, same_answer
+from evalgen.scoring import AnswerType, is_correct, normalize, register_answer_type, same_answer
 from evalgen.seeds import SeedLog
 from evalgen.solver import extract_digest, solve
 from evalgen.sources import build_domain_snapshot, record_problems
@@ -197,9 +197,8 @@ def test_record_traps_are_planted_and_read_as_earthquake_traps_are(toys, name):
         assert all(isinstance(r, RecordReport) for r in inst.reports)
         kinds.update(t.kind for t in inst.traps)
         forms.update((t.kind, t.form) for t in inst.traps)
-        # (a digest off the legacy path holds none to three retractions: traps.RETRACTION_WEIGHTS)
-        assert {"duplicate", "conflicting_value"} <= {t.kind for t in inst.traps} <= {"duplicate", "retraction",
-                                                                                   "conflicting_value"}
+        # (a digest off the legacy path holds the traps its plan draws, of each kind none or more: traps.draw_plan)
+        assert {t.kind for t in inst.traps} <= {"duplicate", "retraction", "conflicting_value"}
         data = DigestData(inst.reports, inst.notices)
         vocab = bound.trap_vocab
         for trap in inst.traps:
@@ -238,15 +237,14 @@ def test_record_traps_are_planted_and_read_as_earthquake_traps_are(toys, name):
                 misread = [execute(q.chain, data, mishandle=Mishandle.from_dict(m), units=bound.units,
                                    resolver=bound.resolve) for m in trap.mishandles]
                 assert fallen in misread and not same_answer(q.answer_type, fallen, inst.answer_key[qid], unit=q.unit)
-            for qid, answers in trap.fallen.items():
-                q = inst.question(qid)
-                assert answers and not any(same_answer(q.answer_type, a, inst.answer_key[qid], unit=q.unit)
-                                           for a in answers)
+            for qid, answers in trap.fallen.items():  # never exactly the key (traps.score_traps: a joint misreading
+                q = inst.question(qid)               # the scorer would still accept is kept, as test_matrix reads it)
+                key = normalize(q.answer_type, inst.answer_key[qid])
+                assert answers and all(normalize(q.answer_type, a) != key for a in answers)
         for q in inst.questions:  # the key, and the reading rules of the domain applied to the digest
             assert execute(q.chain, data, units=bound.units, resolver=bound.resolve) == inst.answer_key[q.qid]
-    # Every instance plants at least one retraction; one whose phantom drew no question's scope changes no
-    # answer and is followed by another (traps.TrapConfig.match_scope).
-    assert forms[("duplicate", "same_id")] and forms[("duplicate", "cross_ref")] and kinds["retraction"] >= 5
+    assert forms[("duplicate", "same_id")] and forms[("duplicate", "cross_ref")] and kinds["retraction"]
+    assert forms[("conflicting_value", "correction")] and forms[("conflicting_value", "second_report")]
     assert builders_for(domain).primary is not builders_for(EARTHQUAKES).primary == primary_report
 
 
@@ -552,7 +550,10 @@ def test_the_naive_reader_falls_for_the_traps_and_only_for_them(toy_runs):
         assert models["oracle"]["traps"]["caught"]["rate"] == 1.0
         naive = models["naive"]["traps"]
         assert naive["caught"]["k"] + naive["fell_for_trap"]["k"] == naive["caught"]["n"] > 0
-        assert list(naive["by_kind"]) == ["duplicate", "retraction", "conflicting_value"]
+        # (every kind a run's digests hold, in this order: a run of a few digests may hold no retraction)
+        assert {"duplicate", "conflicting_value"} <= set(naive["by_kind"])
+        assert list(naive["by_kind"]) == [k for k in ("duplicate", "retraction", "conflicting_value")
+                                          if k in naive["by_kind"]]
         assert models["naive"]["accuracy"]["rate"] < 1.0 == models["oracle"]["accuracy"]["rate"]
         instances = load_instances(run)
         trapped = {(inst.instance_id, qid) for inst in instances for t in inst.traps for qid in t.fallen}
@@ -584,7 +585,9 @@ def test_record_runs_report_their_domain_and_traps(toy_runs):
     for name, run in toy_runs.items():
         data = read_json(run / "report.json")
         assert [m["model"] for m in data["models"]] == ["oracle", "naive", "mock"]
-        assert list(data["run"]["traps"]["by_kind"]) == ["duplicate", "retraction", "conflicting_value"]
+        kinds = list(data["run"]["traps"]["by_kind"])  # (a run of a few digests may hold no retraction)
+        assert {"duplicate", "conflicting_value"} <= set(kinds)
+        assert kinds == [k for k in ("duplicate", "retraction", "conflicting_value") if k in kinds]
         plural = get_domain(name).bind(load_instances(run)[0].surface).plural
         markdown = (run / "report.md").read_text(encoding="utf-8")
         assert "conflicting value" in markdown and ("readings" in markdown or plural in markdown)
