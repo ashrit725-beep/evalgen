@@ -101,10 +101,10 @@ ID_PATTERN = r"[a-z]{2,3}[-/.]\d{5}"  # lower-cased: two or three letters, a sep
 # The unbound domain's own words: what its glossary prints when no surface is bound (every instance of
 # a run is bound to one). Each surface draws its own labels and units in their place.
 
-HEFT = Unit("vk", "varks")
-TALLEN = Unit("tl", "tallens", 12.0, decimals=3, step=0.5)
-DWELL = Unit("mr", "mirns")
-SKELL = Unit("sk", "skells", 0.25, decimals=1, step=5.0)
+HEFT = Unit("vk", "varks", one="vark")
+TALLEN = Unit("tl", "tallens", 12.0, decimals=3, step=0.5, one="tallen")
+DWELL = Unit("mr", "mirns", one="mirn")
+SKELL = Unit("sk", "skells", 0.25, decimals=1, step=5.0, one="skell")
 
 PRIMARY = FieldSpec(
     key="f1", label="gross heft", canonical_unit="vk", units=(HEFT, TALLEN), decimals=1,
@@ -244,14 +244,15 @@ ID_LETTERS = "bcdfghjklmnpqrstvwxz"
 ID_SEPARATORS = ("-", "/", ".")
 
 
-def drawn_unit(spec: FieldSpec, symbol: str, words: str, scale: float) -> Unit:
+def drawn_unit(spec: FieldSpec, symbol: str, words: str, scale: float, one: str | None = None) -> Unit:
     """A unit drawn for `spec` in which one unit is `scale` stored units, exactly. Its answers and
     restated thresholds take as many places as keep their last digit no coarser than one stored step
     (a stored value of 183.7 is 15.308 in a unit of 12: one step of 0.001 there is 0.012), and its
-    thresholds are rounded to the step of STEPS nearest the field's own threshold step in it."""
+    thresholds are rounded to the step of STEPS nearest the field's own threshold step in it. `one` is
+    its words after a number of exactly 1 (Unit.one)."""
     places = max(0, spec.decimals + math.ceil(math.log10(scale) - 1e-9))
     step = min(STEPS, key=lambda s: abs(math.log(s * scale / spec.threshold_step)))
-    return Unit(symbol, words, scale, decimals=places, step=step)
+    return Unit(symbol, words, scale, decimals=places, step=step, one=one)
 
 
 def _plural(word: str) -> str:
@@ -314,11 +315,11 @@ class _Coiner:
         self.take(name)
         return name
 
-    def unit(self) -> tuple[str, str]:
-        """A coined unit: its symbol (two or three letters, from its name) and its words, the plural
-        of its name ("vk", "varks"). The symbol is fit to print as the name is: never a common word
-        ("so", "set"), which would make the text after every value read as prose, and never offensive
-        (the name "flag" could give the symbol "f" + "ag")."""
+    def unit(self) -> tuple[str, str, str]:
+        """A coined unit: its symbol (two or three letters, from its name), its words, the plural of its
+        name, and its name, the words for one of it ("vk", "varks", "vark"). The symbol is fit to print
+        as the name is: never a common word ("so", "set"), which would make the text after every value
+        read as prose, and never offensive (the name "flag" could give the symbol "f" + "ag")."""
         while True:
             name = self.coin(1)
             candidates = (name[0] + name[-1], name[:2], name[0] + name[-2:], name[:3])
@@ -326,7 +327,7 @@ class _Coiner:
                            and _fit(s)), None)
             if symbol is not None and _plural(name) not in RESERVED:
                 self.take(symbol, _plural(name))
-                return symbol, _plural(name)
+                return symbol, _plural(name), name
 
     def prefix(self) -> str:
         """An ID prefix: two or three letters in one case, and a separator ("KX/", "vrn-")."""
@@ -359,11 +360,16 @@ def _draw_units(spec: FieldSpec, coiner: _Coiner) -> tuple[Unit, ...]:
     """A field's units for one instance: a stored unit, then a larger one, a smaller one, or both, in
     a drawn order."""
     rng = coiner.rng
-    stored = Unit(*coiner.unit())
+    symbol, words, one = coiner.unit()
+    stored = Unit(symbol, words, one=one)
     scales = [rng.choice(LARGER_SCALES), rng.choice(SMALLER_SCALES)]
     rng.shuffle(scales)
     scales = scales[:rng.choice((1, 2))]
-    return (stored, *(drawn_unit(spec, *coiner.unit(), scale) for scale in scales))
+    others = []
+    for scale in scales:
+        symbol, words, one = coiner.unit()
+        others.append(drawn_unit(spec, symbol, words, scale, one))
+    return (stored, *others)
 
 
 # ---------------------------------------------------------------------------------------- domain

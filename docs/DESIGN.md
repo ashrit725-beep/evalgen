@@ -21,7 +21,7 @@ Without the new options, 0.3.0 writes the 0.2.0 run byte for byte.
 python3 -m pip install -r requirements.txt     # requests + pytest (Python 3.10+)
 python3 cli.py demo --seed 42 --instances 20  # fully offline, no API keys, ~1 second
 python3 cli.py demo --mix random               # 0.3.0: every domain and genre, offline, ~3 seconds
-python3 -m pytest -q                           # 760 tests, ~2 minutes
+python3 -m pytest -q                           # 814 tests, ~2 minutes
 ```
 
 The demo writes `runs/demo-synthetic-seed42/report.md` (and `report.json`); with `--mix random` it
@@ -551,7 +551,8 @@ A domain module exports `DOMAIN`, an instance of a `Domain` subclass. The regist
 | `chatter`, `lexicon` | lines without data, which never say what a digest holds (a status line says when a station was offline, with its date, not that its reports were left out, which the digest's own reports could contradict), and the wording of questions (`standard_lexicon` words any domain from its own words) |
 | `rules_text()`, `report_time()`, `glossary(surface)` | the reading rules (in which `report_time` says what a report's time is) and the glossary its prompts print |
 | `draw_surface(rng)`, `bind(surface)`, `surface_group_labels` | per-instance surface words, for a domain that draws them, and every group label they can draw: the scorer, which reads answers by the types registered when the domain was loaded, lets a group answer end in any of them ("Nerm Halt berth" is "Nerm Halt"), and `bind` refuses a surface that calls its groups anything else or names a group with one |
-| `resolve`, `to_generic`, `from_generic` | the reading rules in code, and the map between a domain's own record types and the generic ones that genres write |
+| `resolve`, `to_generic`, `from_generic` | the reading rules in code, and the map between a domain's own record types and the generic ones that genres write and read (every genre but classic, through `genres.base.generic_items` and `domain_items`) |
+| `group_preposition`, `utc_offset` | how prose places a record in its group ("in" a region, "near" a body approached), and the UTC offset of the local time a located record is written in (the whole hour nearest the solar time of its longitude, unless the domain knows its records' real zones, as weather does) |
 
 Earthquakes keep their 0.2.0 record types (`Event`, `Report`), which gained read-only generic names
 (`values`, `group`, `source`). Every other domain uses the generic `Record` (the ground truth) and
@@ -633,22 +634,46 @@ message was sent. They keep every other 0.2.0 wording and draw exactly as before
 (`Domain.prompt_lexicon`); legacy prompts keep the 0.2.0 wording (see Limitations). A question about
 the time of a record's largest value names its records first ("Among the …, when (UTC, HH:MM) was …
 recorded?"), so that the verb never trails a long filter, and every prompt off the legacy path says
-that an HH:MM answer drops the seconds rather than rounding them, as the key does.
+that an HH:MM answer drops the seconds rather than rounding them, as the key does. Off the legacy
+path, too:
 
-**One answer, however a tie is rounded.** Off the legacy path a question whose answer is the largest
-or smallest value of a field, asked in a unit, is redrawn when that value, converted exactly into the
-unit (a printed value stands for the stored one), lies exactly halfway between two answers of the asked
-places, or when the key, computed in floating point, is not that exact value rounded
-(`questions.strict_answer_ok`). In the invented domain, a stored 68.3 in a unit of 4 is exactly
-17.075: binary floating point rounds it to 17.07, and half up or half even to 17.08. The legacy path
-keeps the 0.2.0 guards.
+- a quantity of exactly 1 takes its unit's singular ("colder than 1 degree Celsius", "1 mile";
+  `Unit.one`, which an invented unit takes from its coined name), where 0.2.0 wrote "1 degrees";
+- the two groups of a comparison are quoted ('which region has more of them: "Honshu, Japan" or
+  "Southern Alaska"?'), so that a name with a comma reads as one choice, as an answer must give it;
+- a question's point is named by its number alone, its position right after it ("station 34 at
+  (17.210, -66.510)", "COOP site 51 (40.466°N, 80.093°W)"). The point lies 5 to 60 km from a record
+  drawn at random, which is almost always the nearest record, so a label that named that record's
+  source (0.2.0's "station PR-34", weather's "COOP site 51 near KPIT") named the answer's: in 39 of 43
+  nearest questions of three 20-instance weather runs, where 12% of the candidate observations came
+  from that station, and in 38 of 38 earthquake questions, against 39%. `Domain.validate` refuses a
+  point label that names a source.
+
+**One answer, from one record, however a tie is rounded.** Off the legacy path a question whose answer
+is a value of one record (the largest or smallest value of a field, the time of the largest, the
+distance of the nearest record) is redrawn when the runner-up record's answer, computed as the key is,
+would be scored right: a reader who takes the wrong record must not be counted right. The nearest gap
+already keeps a nearest distance clear of its tolerance; a max, a min or a time had no such guard, and
+12 of 333 such questions in twelve runs of 15 instances (three per domain) accepted the runner-up's
+answer (a shallowest depth of 26.4 km beside one of 26.8 km, within the 2% depth tolerance; the closest
+approaches of the fastest two objects a minute apart). A question about the largest or smallest value,
+asked in a unit, is also redrawn when that value, converted exactly into the unit (a printed value
+stands for the stored one), lies exactly halfway between two answers of the asked places; when the
+number that genres print for it does (82.8 km is printed 51.45 mi, which a reader asked for one decimal
+place may round to 51.4 or 51.5, though it stands for 51.4495…); or when the key, computed in floating
+point, is not the exact value rounded (`questions.strict_answer_ok`). In the invented domain, a stored
+68.3 in a unit of 4 is exactly 17.075: binary floating point rounds it to 17.07, and half up or half
+even to 17.08. The legacy path keeps the 0.2.0 guards (see Limitations).
 
 **The glossary.** Every prompt off the legacy path prints its domain's glossary between the reading
 rules and the digest, in `<glossary>` tags. It gives:
 
 - what the records, IDs, sources and groups are called, and the ID pattern;
 - the two statuses, and the precision of positions;
-- each field's key, label, stored unit and decimals, with every unit and its exact conversion.
+- each field's key, label, stored unit and decimals, with every unit and its exact conversion, and the
+  qualifier given with each value, named in words too where digests print it without its key (an
+  earthquake's "mag_type" ("magnitude type"), which the 0.2.0 lines print as "(md)", "MD 3.2" or
+  "type=md").
 
 Words are quoted as JSON strings. `render_glossary` refuses a glossary that would not read back
 exactly, and `parse_glossary` reads it from the prompt text. A glossary never names the domain's
@@ -695,7 +720,11 @@ instance stores its surface, so that scoring and the audit can read it back.
   0.2.0 ones. A legacy run reaches USGS through the 0.2.0 code (the hour or the day feed). Off the
   legacy path its live source is the day feed (`--source live`), and its USGS instances still ask
   the forecast question. Genres other than classic write and read its 0.2.0 reports and magnitude
-  corrections in the generic form of every other domain.
+  corrections in the generic form of every other domain, all through one map, `to_generic` and
+  `from_generic` (`genres.base.generic_items` and `domain_items`): a line that is no earthquake report
+  (no magnitude type, say) is no report in any genre, and the reading rules refuse an earthquake
+  correction of another field than the magnitude rather than ignore it. Before, five genres kept
+  copies of the map of their own, which read those inputs in five ways.
 - **weather**: temperature, a signed field, plays the primary role (thresholds, the warmest
   observation, its rank and its time) and wind speed the secondary one. Pressure appears in the
   twins' filters.
@@ -707,6 +736,12 @@ instance stores its surface, so that scoring and the audit can read it back.
     NWS quality-control codes V and Z).
   - Synthetic observations follow each station's climate normals, a daily cycle and a weather
     system per region.
+  - An observation's local time is its station's own (`Weather.utc_offset`): the standard offset of
+    the station's zone, an hour more while US daylight saving time is in force (from 2:00 on the
+    second Sunday of March to 2:00 on the first Sunday of November; Phoenix keeps none), computed
+    from the calendar rather than the machine's time zone database. The whole hour nearest the solar
+    time of a longitude, which other located records keep, put three stations an hour off in winter
+    (Detroit at UTC-06:00), and 23 of the 24 an hour or two off in summer.
   - The live source asks api.weather.gov for the last 24 hours of each station's observations,
     with the User-Agent the API requires, and freezes every response as it was served, its HTTP
     status and the exact text of its body, in one JSON bundle (`raw_feed.json`, format
@@ -726,7 +761,9 @@ instance stores its surface, so that scoring and the audit can read it back.
   - Records have no position, so the spatial templates and their twins drop out: eight public
     templates instead of twelve.
   - The groups are the bodies approached (Earth, Moon, Venus, Mars, Mercury), and the sources are
-    catalogues.
+    catalogues. A body is no place a record is in, so the prose of every genre records an approach
+    *near* its body ("recorded near Moon", subheads "Near Venus"), where it records an observation
+    *in* its region (`Domain.group_preposition`); it read "recorded … in Moon" before.
   - Synthetic snapshots cover 30 days, so time windows lie on 3- or 6-hour marks, and a time
     question asks for the UTC time of day.
   - An approach ID is the object's designation without spaces, then `-ca` and the number of its
@@ -781,7 +818,16 @@ exact inverse of `render`).
     sent time) is never a record's time, and every report states its record's time in full, to the
     second. A classic wire line prints it in brackets after its source ("KPHL WIRE [05:55:26
     (UTC-05:00) 18 Feb 2026] ..."), where a chat log prints a message's stamp, so the rules say that
-    a WIRE line is a report and its bracketed time the report's.
+    a WIRE line is a report and its bracketed time the report's. A classic prose line of a domain
+    other than earthquakes says that its record was recorded at its time, and names its source last
+    ("06:12:19 UTC on 12 April 2026 — reading by-12345 (reviewed) was recorded in North Sea, at (56.512,
+    3.104): … Listed by ukmo."), where its earlier form ("… — ukmo lists reading by-12345 …") read as
+    the time of the listing.
+  - A form's sent time is drawn alike for every form of a batch, up to one shared limit below the
+    shortest time from any record to a notice about it, so that no form is sent after a notice about
+    its record, and no form's delay tells whether a notice names its record. Capping only the forms
+    that notices name sent a planted report's form sooner than a real one of its batch in 70-75% of
+    pairs.
   - A notice applies wherever it is printed: the pinned board of a chat log heads the log, and
     most genres print some notices before the report they name, so the rules define a notice by
     what it says, never as a message about an "earlier" report.
@@ -1039,11 +1085,13 @@ So the 0.2.0 study in the README regenerates byte for byte under 0.3.0.
   with its plugins. Live sources are frozen per domain, and `--snapshot-dir` replays them. Runs off
   the legacy path made by development versions of 0.3.0 do not regenerate byte for byte under the
   release. Before commit `f8a0835` (their manifests still say 0.2.0) traps, twins, the codec and the
-  rules changed. The last commits before the release changed what those prompts print (the
-  glossary's ID line, the earthquake rules' heading and rule 9, every domain's rules on notices and
-  times, the wording of radii, some news, chat and form wordings, weather's duplicate notes, and the
-  invented domain's surfaces) and the format of the frozen NWS bundle. Legacy runs from every one of
-  those versions do regenerate.
+  rules changed. The last commits before the release changed what those prompts print (the glossary's
+  ID line and an earthquake's qualifier, the earthquake rules' heading and rule 9, every domain's
+  rules on notices and times, the wording of radii, of a quantity of 1, of compared groups and of a
+  question's point, which questions the guards keep, some news, chat and form wordings, how prose
+  places a body approached and times a classic prose line, weather's duplicate notes and local times,
+  the forms' sent times, and the invented domain's surfaces) and the format of the frozen NWS bundle.
+  Legacy runs from every one of those versions do regenerate.
 * Python 3.9 for 0.3.0 was checked by script, because pytest is not installed for the system
   Python 3.9 of the machine that built it. `tests/test_python39.py` scans the code for what 3.9
   cannot run. Under Python 3.9.6, the 0.2.0 regression run matches the hashes its test pins, and
@@ -1079,7 +1127,7 @@ evalgen/
   forecast.py           delayed-resolution questions and resolution (USGS FDSN)
   audit.py report.py    audit sample; report.md / report.json
   pipeline.py           one cycle end to end
-tests/                  760 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
+tests/                  814 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
                         digest parsing, reply parsing and scoring, USGS and forecasts, adapters, report,
                         gap intervals, head to head, reading-rules coverage, CLI and its errors, received
                         runs that try to reach outside their folder; each domain and genre, every domain in
@@ -1213,12 +1261,17 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
 **Domains and genres**
 
 * **The 0.2.0 text that legacy output keeps.** Legacy prompts and reports are the 0.2.0 ones, byte
-  for byte, so three flaws that 0.3.0 fixes off the legacy path remain in them. A radius can be
+  for byte, so the flaws that 0.3.0 fixes off the legacy path remain in them. A radius can be
   worded "no more than 40 km from …" beside a depth threshold, which reads as a range of depths
   (rarely: none of the 1,191 question texts of the 0.2.0 regression run; 2 of 471 in a 40-instance
   random mix before 0.3.0 reworded it there). The report says that "each twin pair is used
   equally often", which the 0.2.0 composer does not do (see Templates). And it describes the naive
   reader as treating "every line" as a separate quake, which is true of the classic digest only.
+  Legacy questions also keep the 0.2.0 wording and guards (see Question wording and One answer):
+  "1 miles"; the two regions of a comparison unquoted ("Honshu, Japan or Southern Alaska"); a point
+  named after the network of the quake it was drawn near ("station NC-42"), which is almost always
+  the nearest quake's; and a largest or smallest value whose runner-up the scorer accepts too (in the
+  legacy run of seed 4242, 40 instances, a smallest depth of 8.0 km beside one of 8.3 km).
 * **Invented words.** Coined names of four or five letters, and their unit words, can still be English
   words (a unit called "halls"), and the list of offensive parts that no coined word may contain is a
   list: it is not a filter of every word that gives offence.
@@ -1234,11 +1287,13 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   (KJFK, KORD, KDEN, KSEA, KLAX), the names and positions of the 24 stations are a hand-made table
   in the NWS style. In a live run an observation takes its position from the API whenever it gives
   one, and its station's name always from the table.
-* **Nominal local times.** Every genre writes a located record's local time with the whole hour
-  nearest the solar time of its longitude (`geo.utc_offset_hours`), always with the offset stated,
-  which is no real time zone: a September earthquake in Southern California reads UTC-08:00, and a May
-  observation at Detroit UTC-06:00, where the places keep UTC-07:00 and UTC-04:00. The stated offset
-  and rule 6 fix every instant, so no answer changes, but a reader who knows the zones may hesitate.
+* **Nominal local times of earthquakes.** Every genre writes a located record's local time with its
+  offset stated. A weather observation takes its station's real zone, but an earthquake (like any
+  located record of a domain that knows no zones) takes the whole hour nearest the solar time of its
+  longitude (`Domain.utc_offset`, `geo.utc_offset_hours`), which is no real time zone: a September
+  earthquake in Southern California reads UTC-08:00, where the place keeps UTC-07:00. The 0.2.0
+  digest, which legacy runs print, does the same. The stated offset and rule 6 fix every instant, so
+  no answer changes, but a reader who knows the zones may hesitate.
 * **neo has five bodies.** Templates whose only parameter is the body (P03 and P08, and their
   twins) run out after about five questions per run. In a 60-instance neo run, P03 and P08 asked
   five questions each and their twins six.
@@ -1252,9 +1307,6 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   and the 0.2.0 parser does not read back place notes, retraction reasons or the magnitude that a
   correction replaces. The margin guards keep the oracle at 100%, and the cross-matrix test reads
   that cell back at 0.2.0 precision.
-* **Duplicated adapter code.** Five genres (news, email, chat, table, form) keep private copies of
-  the map between the earthquake `Report` and `Notice` and the generic form; radio uses
-  `Domain.to_generic` and `Domain.from_generic`. Consolidating them is a follow-up.
 
 **Mixes**
 

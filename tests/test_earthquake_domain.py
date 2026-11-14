@@ -257,7 +257,8 @@ def test_earthquake_field_specs_carry_the_020_constants():
     assert (spatial.margin, spatial.nearest_gap) == ((3.0, 0.06), (3.0, 0.08))  # DISTANCE_*, NEAREST_GAP_*
     assert spatial.nearest_max_km == NEAREST_MAX_KM == 500.0
     assert (spatial.point_offset_km, spatial.decimals) == ((5.0, 60.0), 1)
-    assert spatial.point_label.format(source="NC", number=42) == "station NC-42"
+    assert spatial.legacy_point_label.format(source="NC", number=42) == "station NC-42"  # 0.2.0, legacy runs only
+    assert spatial.point_label.format(source="NC", number=42) == "station 42"  # names no network off the legacy path
     assert (TIME_MARGIN_S, RANKS) == (120, (2, 3))
 
 
@@ -307,6 +308,7 @@ def test_off_the_legacy_path_no_radius_reads_as_the_end_of_a_range():
         for op, wordings in new.items():
             assert len(wordings) == len(table[op]) and not any("recorded" in w for w in wordings)
             assert any("recorded" in w for w in table[op])  # the 0.2.0 wording, which legacy prompts keep
+    assert LEXICON.legacy and not GENRE_LEXICON.legacy  # "1 miles" and unquoted regions on the legacy path only
     assert len(DISTANCE_WORDINGS) == len(LEXICON.filters["within_distance"])
     assert all(re.match(r"(?:within|at a distance of no more than) \{value\} (?:of|from) \{place\}$", w)
                for w in DISTANCE_WORDINGS)
@@ -315,7 +317,7 @@ def test_off_the_legacy_path_no_radius_reads_as_the_end_of_a_range():
     own = replace(LEXICON, filters={**LEXICON.filters, "within_distance": ("inside {value} of {place}",),
                                     "time_between": ("dated {start} to {end}",)},
                   questions={**LEXICON.questions, "time_of_largest": ("When did the strongest one strike?",)})
-    assert genre_lexicon(own) == own  # a wording of a domain's own is kept
+    assert genre_lexicon(own) == replace(own, legacy=False)  # a wording of a domain's own is kept
 
     question = Question("Q1", "P02", "public", [
         {"op": "dedupe"}, {"op": "depth_at_least", "value": 16.0, "unit": "km"},
@@ -400,9 +402,10 @@ def test_the_glossary_describes_every_field_and_stays_out_of_legacy_prompts(inst
     glossary = EARTHQUAKES.glossary()
     assert (glossary.noun, glossary.plural, glossary.id_label, glossary.source_label, glossary.group_label) == (
         "earthquake", "earthquakes", "event ID", "network", "region")
+    readers_length = tuple(u.for_readers() for u in LENGTH)  # without the words for one mile, which only questions use
     assert [(f.key, f.label, f.canonical_unit, f.units, f.decimals) for f in glossary.fields] == [
-        ("mag", "magnitude", None, (), 2), ("depth", "depth", "km", LENGTH, 1)]
-    assert glossary.units == EARTHQUAKES.units
+        ("mag", "magnitude", None, (), 2), ("depth", "depth", "km", readers_length, 1)]
+    assert glossary.units == {key: tuple(u.for_readers() for u in units) for key, units in EARTHQUAKES.units.items()}
     assert "domain" not in {f.name for f in fields(Glossary)}  # a prompt never names a (held-out) domain
     assert not any("<glossary>" in r.prompt for inst in instances for r in inst.renderings)
 

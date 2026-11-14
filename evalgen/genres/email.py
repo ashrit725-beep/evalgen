@@ -38,9 +38,10 @@ revised, which the reading rules of every domain name. The parser skips quoted l
 rest; everything else (headers, greetings, sign-offs, signatures, attribution lines, remarks) carries
 no data. Every rendering is checked to read back exactly (genres.base.check_round_trip).
 
-Earthquake reports and notices keep their 0.2.0 types (models.Report and Notice), whose generic
-names (values, group, source) the parser maps back onto their 0.2.0 attributes; every other domain's
-are RecordReports and generic Notices.
+Earthquake reports and notices keep their 0.2.0 types (models.Report and Notice): the thread is
+written from their generic form (Domain.to_generic) and read back through Domain.from_generic
+(genres.base.generic_items and domain_items); every other domain's are RecordReports and generic
+Notices.
 """
 from __future__ import annotations
 
@@ -54,14 +55,12 @@ from typing import Any, Mapping, Sequence
 
 from ..digest import MONTHS, WEEKDAYS
 from ..domains.base import Domain, Glossary, GlossaryField, RecordReport, TrapVocab
-from ..domains.earthquakes import Earthquakes
-from ..geo import utc_offset_hours
-from ..models import Notice, Report
+from ..models import Notice
 from ..ops import DigestData
 from ..units import Unit
-from .base import (COORDS_PATTERN, TIME_FORMATS, TIME_PATTERN, UTC_TIME_FORMATS, Genre, RenderContext, alternation,
-                   check_round_trip, format_coords, format_time, format_value, id_pattern, parse_coords, parse_time,
-                   read_value, value_pattern)
+from .base import (COORDS_PATTERN, GROUP_PREPOSITION, TIME_FORMATS, TIME_PATTERN, UTC_TIME_FORMATS, Genre,
+                   RenderContext, alternation, check_round_trip, domain_items, format_coords, format_time,
+                   format_value, generic_items, id_pattern, parse_coords, parse_time, read_value, value_pattern)
 
 # ------------------------------------------------------------------------------ the genre
 
@@ -119,13 +118,8 @@ class Email(Genre):
                 raise ValueError(f"a digest of {domain.name} records is read through the glossary its prompt "
                                  "prints, and this prompt prints none")
             glossary = domain.glossary()
-        return _parse(digest_text, glossary, _legacy(domain))
-
-
-def _legacy(domain: Domain) -> bool:
-    """Earthquake domains keep the 0.2.0 record types: their lines are models.Report, and their
-    corrections give new_mag, old_mag and mag_type."""
-    return isinstance(domain, Earthquakes)
+        data = _parse(digest_text, glossary)
+        return DigestData(domain_items(domain, data.reports), domain_items(domain, data.notices))
 
 
 EMAIL = Email()
@@ -255,59 +249,23 @@ def _short_date(ts: int, zone: int) -> str:
 
 
 # ------------------------------------------------------------------------------ records
-# Every domain's lines answer to the same generic names (ref, source, status, time, lat, lon, group,
-# values, place, same_as); only an earthquake's 0.2.0 Report keeps its one qualifier, the magnitude
-# type, as an attribute. These functions are the genre's only knowledge of the two record types.
+# The thread is written from, and read back to, the generic form of every domain's reports and notices
+# (genres.base.generic_items and domain_items): RecordReports, and corrections that name their field.
+# An earthquake's 0.2.0 Reports and magnitude corrections pass through Domain.to_generic and
+# Domain.from_generic, as in every other genre.
 
 
-def _qualifier(f: GlossaryField, r: Any) -> str | None:
+def _qualifier(f: GlossaryField, r: RecordReport) -> str | None:
     """The qualifier a report gives with a field's value (None: the field has none, or the report gives
-    none). A RecordReport stores its qualifiers by key; a 0.2.0 Report stores its one as an attribute
-    of that name ("mag_type")."""
-    if f.qualifier is None:
-        return None
-    if isinstance(r, RecordReport):
-        return r.qualifiers.get(f.qualifier)
-    return getattr(r, f.qualifier, None)
-
-
-def _new_report(legacy: bool, *, ref: str, source: str, status: str, time: int, lat: float | None,
-                lon: float | None, group: str, values: dict[str, float], qualifiers: dict[str, str],
-                place: str | None, same_as: str | None) -> Any:
-    """A report as its domain stores it: a RecordReport, or (`legacy`) an earthquake's 0.2.0 Report, whose
-    generic names map back onto its attributes (the inverse of models._GenericNames). None when a
-    legacy line lacks what a Report needs."""
-    if not legacy:
-        return RecordReport(ref=ref, source=source, status=status, time=time, lat=lat, lon=lon, group=group,
-                            values=values, qualifiers=qualifiers, place=place, same_as=same_as)
-    if lat is None or lon is None or set(values) != {"mag", "depth"} or "mag_type" not in qualifiers:
-        return None
-    return Report(ref=ref, network=source, status=status, time=time, lat=lat, lon=lon, depth_km=values["depth"],
-                  mag=values["mag"], mag_type=qualifiers["mag_type"], region=group, place=place, same_as=same_as)
+    none)."""
+    return None if f.qualifier is None else r.qualifiers.get(f.qualifier)
 
 
 def _revision(n: Notice) -> tuple[str, float, float, str | None]:
-    """What a correction revises: (field key, new value, old value, new qualifier). A generic notice names
-    its field; a 0.2.0 earthquake correction revises the magnitude ("mag") and gives its type."""
-    if n.field is not None:
-        if n.new_value is None or n.old_value is None:
-            raise ValueError(f"the correction of {n.target} gives no new and old value")
-        return n.field, n.new_value, n.old_value, n.qualifier
-    if n.new_mag is None or n.old_mag is None:
-        raise ValueError(f"the correction of {n.target} names no field and gives no magnitude")
-    return "mag", n.new_mag, n.old_mag, n.mag_type
-
-
-def _new_correction(legacy: bool, target: str, time: int, key: str, new: float, old: float,
-                    qualifier: str | None) -> Notice | None:
-    """A correction as its domain stores it (the inverse of _revision); None for a legacy correction of
-    another field than the magnitude, which a 0.2.0 Notice cannot hold."""
-    if not legacy:
-        return Notice(kind="correction", target=target, time=time, field=key, new_value=new, old_value=old,
-                      qualifier=qualifier)
-    if key != "mag":
-        return None
-    return Notice(kind="correction", target=target, time=time, new_mag=new, old_mag=old, mag_type=qualifier)
+    """What a correction revises: (field key, new value, old value, new qualifier)."""
+    if n.field is None or n.new_value is None or n.old_value is None:
+        raise ValueError(f"the correction of {n.target} names no field, or gives no new and old value")
+    return n.field, n.new_value, n.old_value, n.qualifier
 
 
 # ---------------------------------------------------------------------------- writing items
@@ -317,7 +275,7 @@ def _new_correction(legacy: bool, target: str, time: int, key: str, new: float, 
 class _Item:
     """One report as a message lists it, with what was drawn for it."""
 
-    report: Any  # a Report or a RecordReport
+    report: RecordReport  # in its generic form (generic_items)
     when: str  # its time, formatted
     where: str | None  # its position, formatted (None: records have none)
     units: tuple[Unit | None, ...]  # the unit of each field's value, in glossary order
@@ -354,11 +312,12 @@ def _listing(parts: Sequence[str]) -> str:
     return " and ".join(parts) if len(parts) < 3 else ", ".join(parts[:-1]) + " and " + parts[-1]
 
 
-def _sentence(item: _Item, glossary: Glossary) -> str:
+def _sentence(item: _Item, glossary: Glossary, preposition: str = "in") -> str:
+    """A report as a sentence, placing the record in its group with `preposition` (Domain.group_preposition)."""
     r = item.report
     where = "" if item.where is None else f" at {item.where}"
     return (f"At {item.when}, the {glossary.source_label} {r.source} recorded {glossary.noun} {r.ref} ({r.status}) "
-            f"in {r.group}{where}, with {_listing(_labelled(glossary, item))}." + _tail(item))
+            f"{preposition} {r.group}{where}, with {_listing(_labelled(glossary, item))}." + _tail(item))
 
 
 def _block(item: _Item, glossary: Glossary) -> list[str]:
@@ -475,6 +434,7 @@ class _Words:
     glossary: Glossary
     to: str  # the list's mailbox
     desk: _Person  # who sends notices
+    preposition: str = "in"  # how sentences place a record in its group (Domain.group_preposition)
 
     def fill(self, template: str, **extra: str) -> str:
         g = self.glossary
@@ -485,19 +445,20 @@ def _render(ctx: RenderContext, glossary: Glossary) -> str:
     """The thread of `ctx`'s reports, notices and chatter, as `ctx.style` draws it. Every step draws from
     the rendering's own stream, in this order: the items, the people, the messages and their item
     styles, the notices, the chatter, the replies that only acknowledge, the order, the dates and
-    subjects, and the text."""
+    subjects, and the text. Reports and notices are written in their generic form (generic_items)."""
     rng, style, vocab = ctx.rng, ctx.style, ctx.domain.trap_vocab
-    sources = sorted({r.source for r in ctx.reports})
+    reports: list[RecordReport] = generic_items(ctx.domain, ctx.reports)
+    sources = sorted({r.source for r in reports})
     if glossary.located:
         first: dict[str, Any] = {}
-        for r in ctx.reports:
+        for r in reports:
             first.setdefault(r.source, r)
-        zones = {source: utc_offset_hours(first[source].lon) for source in sources}
+        zones = {source: ctx.domain.utc_offset(first[source]) for source in sources}
     else:
         zones = {source: rng.randint(*ZONES) for source in sources}
     items = []
-    for r in ctx.reports:
-        offset = utc_offset_hours(r.lon) if glossary.located else zones[r.source]
+    for r in reports:
+        offset = ctx.domain.utc_offset(r) if glossary.located else zones[r.source]
         when = format_time(r.time, _draw(rng, TIME_PRESETS[style["time"]]), offset)
         where = (format_coords(r.lat, r.lon, _draw(rng, COORD_PRESETS[style["coords"]]), glossary.coord_decimals)
                  if glossary.located else None)
@@ -507,9 +468,10 @@ def _render(ctx: RenderContext, glossary: Glossary) -> str:
 
     desks, coordinators = _people(rng, sources, zones, glossary)
     words = _Words(glossary, f"{_cap(glossary.noun)} exchange <exchange@{EXCHANGE}>",
-                   _Person("Notices desk", f"notices@{EXCHANGE}", "Notices", "Records exchange", 0))
+                   _Person("Notices desk", f"notices@{EXCHANGE}", "Notices", "Records exchange", 0),
+                   ctx.domain.group_preposition)
     messages = _report_messages(items, style, rng, desks, coordinators)
-    forwards = [_forward(n, rng, style, words, vocab) for n in ctx.notices]
+    forwards = [_forward(n, rng, style, words, vocab) for n in generic_items(ctx.domain, ctx.notices)]
     for forward in forwards:
         if style["notices"] == "attached":
             rng.choice([m for m in messages if m.kind == "reports"]).forwards.append(forward)
@@ -668,7 +630,7 @@ def _own_text(m: _Message, style: Mapping[str, Any], rng: random.Random, words: 
         lines += [rng.choice(GREETINGS), ""]
         intro = rng.choice(INTROS if m.items else EMPTY_INTROS)
         lines += [words.fill(intro), ""]
-        lines += _items(m, glossary)
+        lines += _items(m, glossary, words.preposition)
         if m.forwards:
             lines += [rng.choice(ATTACHED_INTROS), ""]
     elif m.kind == "ack":
@@ -687,7 +649,7 @@ def _own_text(m: _Message, style: Mapping[str, Any], rng: random.Random, words: 
     return lines
 
 
-def _items(m: _Message, glossary: Glossary) -> list[str]:
+def _items(m: _Message, glossary: Glossary, preposition: str = "in") -> list[str]:
     """A message's items in its item style, followed by a blank line: bullets as consecutive lines,
     sentences and blocks as paragraphs."""
     lines: list[str] = []
@@ -696,7 +658,7 @@ def _items(m: _Message, glossary: Glossary) -> list[str]:
             marker = f"{number}. " if m.marker == "numbered" else m.marker
             lines.append(_bullet(item, glossary, marker))
         elif m.item_style == "sentence":
-            lines += [_sentence(item, glossary), ""]
+            lines += [_sentence(item, glossary, preposition), ""]
         else:
             lines += [*_block(item, glossary), ""]
     if lines and lines[-1] != "":
@@ -770,7 +732,7 @@ def _grammar(glossary: Glossary) -> _Grammar:
     bullet = (rf"(?:[-*•]|\d{{1,3}}\.) (?P<ref>{record_id}) \((?P<status>{status}), {source}\): (?P<group>.+?)"
               + (f"; {where}" if located else "") + f"; {when}; " + ", ".join(labelled) + r"\." + tail)
     sentence = (rf"At {when}, the {source} recorded {re.escape(glossary.noun)} (?P<ref>{record_id}) "
-                rf"\((?P<status>{status})\) in (?P<group>.+?)" + (f" at {where}" if located else "")
+                rf"\((?P<status>{status})\) {GROUP_PREPOSITION} (?P<group>.+?)" + (f" at {where}" if located else "")
                 + ", with " + _listing(labelled) + r"\." + tail)
     head = rf"{re.escape(_cap(glossary.noun))} (?P<ref>{record_id}) \((?P<status>{status})\)"
     block = (head + rf"\n{INDENT}{re.escape(_cap(glossary.source_label))}: (?P<source>.+)"
@@ -801,11 +763,11 @@ def _grammar(glossary: Glossary) -> _Grammar:
                     block=re.compile(block), notices=tuple(notices))
 
 
-def _parse(text: str, glossary: Glossary, legacy: bool) -> DigestData:
-    """Every report and notice of a thread, from the lines that are not quoted."""
+def _parse(text: str, glossary: Glossary) -> DigestData:
+    """Every report and notice of a thread, from the lines that are not quoted, in their generic form."""
     grammar = _grammar(glossary)
     lines = text.split("\n")
-    reports: list[Any] = []
+    reports: list[RecordReport] = []
     notices: list[Notice] = []
     i = 0
     while i < len(lines):
@@ -819,26 +781,26 @@ def _parse(text: str, glossary: Glossary, legacy: bool) -> DigestData:
                 end += 1
             match = grammar.block.fullmatch("\n".join(lines[i - 1:end]))
             if match is not None:
-                report = _read_report(match, glossary, legacy)
+                report = _read_report(match, glossary)
                 if report is not None:
                     reports.append(report)
                 i = end
                 continue
-        notice = _read_notice(line, grammar, legacy)
+        notice = _read_notice(line, grammar)
         if notice is not None:
             notices.append(notice)
             continue
         for pattern in grammar.lines:
             match = pattern.fullmatch(line)
             if match is not None:
-                report = _read_report(match, glossary, legacy)
+                report = _read_report(match, glossary)
                 if report is not None:
                     reports.append(report)
                 break
     return DigestData(reports, notices)
 
 
-def _read_report(match: re.Match[str], glossary: Glossary, legacy: bool) -> Any:
+def _read_report(match: re.Match[str], glossary: Glossary) -> RecordReport | None:
     """The report an item's match gives; None when its time or position is none."""
     when = parse_time(match["time"])
     position = parse_coords(match["coords"], glossary.coord_decimals) if glossary.located else (None, None)
@@ -847,12 +809,12 @@ def _read_report(match: re.Match[str], glossary: Glossary, legacy: bool) -> Any:
     values = {f.key: read_value(f, match, f"v{i}") for i, f in enumerate(glossary.fields)}
     qualifiers = {f.qualifier: match[f"q{i}"] for i, f in enumerate(glossary.fields)
                   if f.qualifier is not None and match[f"q{i}"] is not None}
-    return _new_report(legacy, ref=match["ref"], source=match["source"], status=match["status"], time=when,
-                       lat=position[0], lon=position[1], group=match["group"], values=values, qualifiers=qualifiers,
-                       place=match["place"], same_as=match["same"])
+    return RecordReport(ref=match["ref"], source=match["source"], status=match["status"], time=when,
+                        lat=position[0], lon=position[1], group=match["group"], values=values, qualifiers=qualifiers,
+                        place=match["place"], same_as=match["same"])
 
 
-def _read_notice(line: str, grammar: _Grammar, legacy: bool) -> Notice | None:
+def _read_notice(line: str, grammar: _Grammar) -> Notice | None:
     for pattern, f in grammar.notices:
         match = pattern.fullmatch(line)
         if match is None:
@@ -862,8 +824,9 @@ def _read_notice(line: str, grammar: _Grammar, legacy: bool) -> Notice | None:
             return None
         if f is None:
             return Notice(kind="retraction", target=match["ref"], time=when, reason=match["reason"])
-        return _new_correction(legacy, match["ref"], when, f.key, read_value(f, match, "new"),
-                               read_value(f, match, "old"), match["qualifier"])
+        return Notice(kind="correction", target=match["ref"], time=when, field=f.key,
+                      new_value=read_value(f, match, "new"), old_value=read_value(f, match, "old"),
+                      qualifier=match["qualifier"])
     return None
 
 

@@ -12,15 +12,17 @@ prompt's glossary: its record noun, field labels (bulletin, prose, wire) or keys
 value in a unit the style draws, with the exact codec of evalgen.units), qualifiers, status words and
 ID pattern. Times are given to the second, in UTC or with their UTC offset stated; positions in
 hemispheres or signed; duplicate notes and notices are worded through the domain's trap vocabulary,
-which its reading rules quote. The header and section heads are worded from the domain's words too.
+which its reading rules quote. A prose line gives its time as the time the record was recorded, and
+places the record in its group with the domain's preposition ("in North Sea", "near Moon":
+Domain.group_preposition). The header and section heads are worded from the domain's words too.
 The parser reads every line back through the glossary alone, and every rendering is checked to read
 back to exactly its reports and notices (genres.base.check_round_trip).
 
     bulletin  [ukmo] by-12345 | 2026-04-12T06:12:19Z | North Sea | 56.512°N, 3.104°E | water temperature
               12.3 °C (spar) | wave height 6.07 ft | reviewed | same reading as by-54321 | near: Dogger Bank
-    prose     06:12:19 UTC on 12 April 2026 — ukmo lists reading by-12345 (reviewed) in North Sea, at
-              (56.512, 3.104): water temperature 54.1 °F (spar), wave height 1.85 m. Note: duplicate of
-              by-54321. Location note: Dogger Bank.
+    prose     06:12:19 UTC on 12 April 2026 — reading by-12345 (reviewed) was recorded in North Sea, at
+              (56.512, 3.104): water temperature 54.1 °F (spar), wave height 1.85 m. Listed by ukmo. Note:
+              duplicate of by-54321. Location note: Dogger Bank.
     wire      ukmo WIRE [2026-04-12 06:12:19 UTC] North Sea @ 56.512°N, 3.104°E: water temperature 12.3 °C
               (spar); wave height 1.85 m. Ref by-12345, reviewed.
     log       2026-04-12T07:12:19+01:00 ref=by-12345 src=ukmo status=reviewed group="North Sea"
@@ -38,14 +40,13 @@ from typing import Any, Mapping, Sequence
 from ..digest import LINE_PRESETS, NOTICE_PLACEMENTS, choose_style, render_digest
 from ..domains.base import Domain, Glossary, GlossaryField, RecordReport, TrapVocab
 from ..domains.earthquakes import Earthquakes
-from ..geo import utc_offset_hours
 from ..models import Notice
 from ..ops import DigestData
 from ..solver import parse_digest
 from ..units import Unit, decode, encode
-from .base import (COORDS_PATTERN, NUMBER, TIME_FORMATS, TIME_PATTERN, UTC_TIME_FORMATS, Genre, RenderContext,
-                   alternation, check_round_trip, format_coords, format_time, format_value, id_pattern, parse_coords,
-                   parse_time, read_value, value_pattern)
+from .base import (COORDS_PATTERN, GROUP_PREPOSITION, NUMBER, TIME_FORMATS, TIME_PATTERN, UTC_TIME_FORMATS, Genre,
+                   RenderContext, alternation, check_round_trip, format_coords, format_time, format_value, id_pattern,
+                   parse_coords, parse_time, read_value, value_pattern)
 
 # ------------------------------------------------------------------------------ the genre
 
@@ -188,13 +189,13 @@ def _render_records(ctx: RenderContext, glossary: Glossary) -> str:
     lines: list[tuple[RecordReport, str]] = []
     for r in ctx.reports:
         line_style = _draw(rng, LINE_PRESETS[style["lines"]])
-        offset = utc_offset_hours(r.lon) if glossary.located else zones[r.source]
+        offset = ctx.domain.utc_offset(r) if glossary.located else zones[r.source]
         when = format_time(r.time, _draw(rng, RECORD_TIME_PRESETS[style["time"]]), offset)
         where = (format_coords(r.lat, r.lon, _draw(rng, RECORD_COORD_PRESETS[style["coords"]]), glossary.coord_decimals)
                  if glossary.located else None)
         units = [_draw_unit(rng, f, style["units"]) for f in glossary.fields]
         note = rng.choice(vocab.duplicate_notes) if r.same_as else None
-        lines.append((r, _record_line(r, line_style, glossary, when, where, units, note)))
+        lines.append((r, _record_line(r, line_style, glossary, when, where, units, note, ctx.domain.group_preposition)))
 
     body: list[str] = []
     if style["layout"] == "by_time":
@@ -230,8 +231,9 @@ def _render_records(ctx: RenderContext, glossary: Glossary) -> str:
 
 
 def _record_line(r: RecordReport, style: str, glossary: Glossary, when: str, where: str | None,
-                 units: Sequence[Unit | None], note: str | None) -> str:
-    """One report as a line of `style`: bulletin, prose, wire or log (see the module docstring)."""
+                 units: Sequence[Unit | None], note: str | None, preposition: str = "in") -> str:
+    """One report as a line of `style`: bulletin, prose, wire or log (see the module docstring); a prose
+    line places the record in its group with `preposition` (Domain.group_preposition)."""
     if style == "log":
         text = f"{when} ref={r.ref} src={_token(r.source)} status={r.status} group={_token(r.group)}"
         if glossary.located:
@@ -255,9 +257,9 @@ def _record_line(r: RecordReport, style: str, glossary: Glossary, when: str, whe
         if r.place is not None:
             parts.append(f"near: {r.place}")
         return " | ".join(parts)
-    if style == "prose":
-        text = (f"{when} — {r.source} lists {glossary.noun} {r.ref} ({r.status}) in {r.group}"
-                + ("" if where is None else f", at {where}") + ": " + ", ".join(values) + ".")
+    if style == "prose":  # the time is when the record was recorded, never when its source listed it
+        text = (f"{when} — {glossary.noun} {r.ref} ({r.status}) was recorded {preposition} {r.group}"
+                + ("" if where is None else f", at {where}") + ": " + ", ".join(values) + f". Listed by {r.source}.")
     elif style == "wire":
         text = (f"{r.source} WIRE [{when}] {r.group}" + ("" if where is None else f" @ {where}") + ": "
                 + "; ".join(values) + f". Ref {r.ref}, {r.status}.")
@@ -354,9 +356,9 @@ def _grammar(glossary: Glossary) -> _Grammar:
     bulletin = (rf"^\[(?P<source>.+?)\] (?P<ref>{record_id}) \| {when} \| (?P<group>.+?)"
                 + (rf" \| {where}" if located else "") + "".join(rf" \| {part}" for part in labelled)
                 + rf" \| (?P<status>{status})(?: \| (?P<note>.+?) (?P<same>{record_id}))?(?: \| near: (?P<place>.+))?$")
-    prose = (rf"^{when} — (?P<source>.+?) lists {re.escape(glossary.noun)} (?P<ref>{record_id}) "
-             rf"\((?P<status>{status})\) in (?P<group>.+?)" + (f", at {where}" if located else "") + ": "
-             + ", ".join(labelled) + r"\." + tail + "$")
+    prose = (rf"^{when} — {re.escape(glossary.noun)} (?P<ref>{record_id}) \((?P<status>{status})\) was recorded "
+             rf"{GROUP_PREPOSITION} (?P<group>.+?)" + (f", at {where}" if located else "") + ": "
+             + ", ".join(labelled) + r"\. Listed by (?P<source>.+?)\." + tail + "$")
     wire = (rf"^(?P<source>.+?) WIRE \[{when}\] (?P<group>.+?)" + (f" @ {where}" if located else "")
             + ": " + "; ".join(labelled) + rf"\. Ref (?P<ref>{record_id}), (?P<status>{status})\." + tail + "$")
     log = (rf"^{when} ref=(?P<ref>{record_id}) src=(?P<source>{TOKEN}) status=(?P<status>{status}) "

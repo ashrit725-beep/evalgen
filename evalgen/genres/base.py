@@ -24,7 +24,9 @@ inverse, so the text-only oracle recovers every report:
     id_pattern                      a record ID, as the glossary's pattern describes it
 
 ``check_round_trip`` refuses a rendering that its genre does not read back to exactly its reports
-and notices.
+and notices. ``generic_items`` and ``domain_items`` map a domain's own record types (an earthquake's
+0.2.0 Reports and magnitude corrections) to the generic form that genres write, and back
+(Domain.to_generic, Domain.from_generic).
 """
 from __future__ import annotations
 
@@ -37,7 +39,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
 from ..digest import MONTHS, MONTHS_LONG, WEEKDAYS
-from ..domains.base import Domain, Glossary, GlossaryField, RecordReport
+from ..domains.base import GROUP_PREPOSITIONS, Domain, Glossary, GlossaryField, RecordReport
 from ..models import Notice, Report
 from ..ops import DigestData
 from ..units import Unit, decode, encode, find_unit
@@ -104,6 +106,28 @@ def check_round_trip(genre: Genre, text: str, ctx: RenderContext, glossary: Glos
         raise ValueError(f"the {genre.name} genre does not read its rendering back exactly: it misses {missing[:3]} "
                          f"and reads {extra[:3]} instead (are some words of the domain or its surface unprintable "
                          "in this genre?)")
+
+
+def generic_items(domain: Domain, items: Iterable[Any]) -> list[Any]:
+    """A context's reports or notices in the form every genre writes: RecordReports and Notices whose
+    correction names its field (Domain.to_generic; an earthquake's 0.2.0 Reports and magnitude
+    corrections are mapped, every other domain's are in that form already)."""
+    return [domain.to_generic(item) for item in items]
+
+
+def domain_items(domain: Domain, items: Iterable[Any]) -> list[Any]:
+    """Generic reports or notices that a genre read from a digest, as the domain's digests hold them
+    (Domain.from_generic, the inverse of generic_items). One that the domain cannot hold (an earthquake
+    report without a magnitude type, or with a qualifier no earthquake field has) is no report of its
+    digests: it is left out, and changes nothing. Every genre reads its records through this one map,
+    so that none reads an input in a way of its own."""
+    out = []
+    for item in items:
+        try:
+            out.append(domain.from_generic(item))
+        except ValueError:
+            continue
+    return out
 
 
 def _unmatched(items: Sequence[Any], pool: Sequence[Any]) -> list[Any]:
@@ -266,6 +290,12 @@ def alternation(words: Iterable[str]) -> str:
     return "|".join(re.escape(word) for word in sorted(set(words), key=lambda w: (-len(w), w)))
 
 
+# How prose places a record in its group ("in Midwest", "near Moon": Domain.group_preposition), as a regex
+# that reads every domain's, and the same at the start of a sentence ("Near Moon, ...").
+GROUP_PREPOSITION = f"(?:{alternation(GROUP_PREPOSITIONS)})"
+GROUP_PREPOSITION_CAPITALISED = f"(?:{alternation(word.capitalize() for word in GROUP_PREPOSITIONS)})"
+
+
 # ---------------------------------------------------------------------------------- glossary
 
 GLOSSARY_TITLE = "Glossary: what the records in the digest are, and how their values are written."
@@ -303,7 +333,8 @@ def render_glossary(glossary: Glossary) -> str:
         lines.append(f"- Positions: latitude and longitude, stored to {_places(glossary.coord_decimals)} of a degree.")
     for f in glossary.fields:
         stored = "a plain number, stored" if f.canonical_unit is None else f"stored in {_quote(f.canonical_unit)}"
-        qualifier = "" if f.qualifier is None else f"; its {_quote(f.qualifier)} is given with each value"
+        named = "" if f.qualifier_label is None else f" ({_quote(f.qualifier_label)})"
+        qualifier = "" if f.qualifier is None else f"; its {_quote(f.qualifier)}{named} is given with each value"
         lines.append(f"- Field {_quote(f.key)}: {_quote(f.label)}, {stored} to {_places(f.decimals)}{qualifier}.")
         for unit in f.units:
             lines.append(f"  - {_quote(unit.symbol)} ({_quote(unit.words)}): " + _conversion(unit, f.canonical_unit))
@@ -330,8 +361,8 @@ _STATUSES = re.compile(rf"- Statuses: a (?P<final>{_QUOTED}) report settles a re
 _POSITIONS = re.compile(r"- Positions: latitude and longitude, stored to (?P<decimals>\d+) decimal places? of a "
                         r"degree\.")
 _FIELD = re.compile(rf"- Field (?P<key>{_QUOTED}): (?P<label>{_QUOTED}), (?:a plain number, stored|stored in "
-                    rf"(?P<canonical>{_QUOTED})) to (?P<decimals>\d+) decimal places?(?:; its (?P<qualifier>{_QUOTED}) "
-                    r"is given with each value)?\.")
+                    rf"(?P<canonical>{_QUOTED})) to (?P<decimals>\d+) decimal places?(?:; its (?P<qualifier>{_QUOTED})"
+                    rf"(?: \((?P<qualifier_label>{_QUOTED})\))? is given with each value)?\.")
 _UNIT = re.compile(rf"  - (?P<symbol>{_QUOTED}) \((?P<words>{_QUOTED})\): (?:(?P<stored>the stored unit)|a value in "
                    rf"{_QUOTED} is the value in {_QUOTED} × (?P<scale>{NUMBER})(?: (?P<sign>[+-]) "
                    r"(?P<offset>\d+(?:\.\d+)?))?)\.")
@@ -383,7 +414,9 @@ def _read_glossary_line(line: str, words: dict[str, Any], fields: list[dict[str,
         fields.append({"key": json.loads(match["key"]), "label": json.loads(match["label"]),
                        "canonical_unit": None if match["canonical"] is None else json.loads(match["canonical"]),
                        "decimals": int(match["decimals"]), "units": [],
-                       "qualifier": None if match["qualifier"] is None else json.loads(match["qualifier"])})
+                       "qualifier": None if match["qualifier"] is None else json.loads(match["qualifier"]),
+                       "qualifier_label": (None if match["qualifier_label"] is None
+                                           else json.loads(match["qualifier_label"]))})
         return True
     match = _RECORDS.fullmatch(line)
     if match is not None:

@@ -37,9 +37,10 @@ from .domains.base import Domain, FieldSpec, Lexicon, ResolvedRecord, Spatial
 from .domains.earthquakes import EARTHQUAKES
 from .geo import destination
 from .models import Question
-from .ops import (ALIASES, Step, answer_spec, canonical_threshold, distance_km, execute, role, rows_after_filters,
-                  terminal_step)
-from .units import LENGTH, Unit, find_unit
+from .ops import (ALIASES, Step, answer_spec, by_field, canonical_threshold, distance_km, execute, role,
+                  rows_after_filters, terminal_step)
+from .scoring import is_correct
+from .units import LENGTH, Unit, encode, find_unit
 from .util import plain_number
 
 TIME_MARGIN_S = 120  # no record within 2 minutes of a time window's ends (digests print times to the minute)
@@ -312,13 +313,17 @@ def _group_counts(records: Sequence[ResolvedRecord]) -> list[tuple[str, int]]:
 
 
 def _draw_point(records: Sequence[ResolvedRecord], rng: random.Random, taken_labels: set[str],
-                spatial: Spatial) -> dict:
-    """A named point near a random record. Labels are unique within an instance."""
+                spatial: Spatial, *, strict: bool = False) -> dict:
+    """A named point near a random record. Labels are unique within an instance. Off the legacy path
+    (`strict`) a label is the domain's point_label, which names no source: the record the point is drawn
+    near is almost always the nearest one, whose source a label would give away. The legacy path keeps
+    the 0.2.0 label, which names that record's source (Spatial.legacy_point_label)."""
     anchor = rng.choice(records)
     lat, lon = destination(anchor.lat, anchor.lon, rng.uniform(*spatial.point_offset_km), rng.uniform(0.0, 360.0))
-    label = spatial.point_label.format(source=anchor.source.upper(), number=rng.randrange(10, 100))
+    label_format = spatial.point_label if strict or spatial.legacy_point_label is None else spatial.legacy_point_label
+    label = label_format.format(source=anchor.source.upper(), number=rng.randrange(10, 100))
     while label in taken_labels:
-        label = spatial.point_label.format(source=anchor.source.upper(), number=rng.randrange(10, 1000))
+        label = label_format.format(source=anchor.source.upper(), number=rng.randrange(10, 1000))
     return {"lat": round(lat, 3), "lon": round(lon, 3), "label": label}
 
 
@@ -346,7 +351,7 @@ def _answer_steps(units: Sequence[Unit], decimals: int, rng: random.Random) -> l
 
 
 def draw_filter(op: str, records: Sequence[ResolvedRecord], rng: random.Random, ctx: Context,
-                taken_labels: set[str], *, domain: Domain = EARTHQUAKES) -> dict | None:
+                taken_labels: set[str], *, domain: Domain = EARTHQUAKES, strict: bool = False) -> dict | None:
     kind, field = parse_op(op)
     if kind in ("at_least", "below"):
         params = _draw_threshold(domain.field(field), records, rng)
@@ -354,7 +359,7 @@ def draw_filter(op: str, records: Sequence[ResolvedRecord], rng: random.Random, 
     if kind == "within_distance":
         spatial = _spatial(domain)
         unit = _pick_unit(LENGTH, rng)
-        point = _draw_point(records, rng, taken_labels, spatial)
+        point = _draw_point(records, rng, taken_labels, spatial, strict=strict)
         return _step(op, **point, radius=rng.choice(spatial.radii[unit]), unit=unit)
     if kind == "time_between":
         window = _draw_window(rng, ctx)
@@ -366,7 +371,7 @@ def draw_filter(op: str, records: Sequence[ResolvedRecord], rng: random.Random, 
 
 
 def draw_terminal(op: str, records: Sequence[ResolvedRecord], rng: random.Random, taken_labels: set[str], *,
-                  domain: Domain = EARTHQUAKES) -> list[dict] | None:
+                  domain: Domain = EARTHQUAKES, strict: bool = False) -> list[dict] | None:
     kind, field = parse_op(op)
     if kind in ("count", "argmax", "time_of_max"):
         return [_step(op)]
@@ -376,10 +381,10 @@ def draw_terminal(op: str, records: Sequence[ResolvedRecord], rng: random.Random
         spec = domain.field(field)
         return [_step(op), *_answer_steps(spec.units, spec.decimals, rng)]
     if kind == "nearest_to":
-        return [_step(op, **_draw_point(records, rng, taken_labels, _spatial(domain)))]
+        return [_step(op, **_draw_point(records, rng, taken_labels, _spatial(domain), strict=strict))]
     if kind == "nearest_distance":
         spatial = _spatial(domain)
-        nearest = _step(op, **_draw_point(records, rng, taken_labels, spatial))
+        nearest = _step(op, **_draw_point(records, rng, taken_labels, spatial, strict=strict))
         return [nearest, *_answer_steps(LENGTH, spatial.decimals, rng)]
     if kind == "compare_groups":
         counts = _group_counts(records)
@@ -397,9 +402,10 @@ def guards_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *, domai
     keep their field's margin, radii the domain's distance margin and time windows `time_margin`
     seconds (the instance's window's, Context.time_margin).
 
-    `strict` (every run off the legacy path) also rejects a value answer that is not settled by its
-    record's exact value (strict_answer_ok). The 0.2.0 guards (the default, which the legacy path
-    keeps) check none of this."""
+    `strict` (every run off the legacy path) also rejects a value answer that does not belong to its own
+    record, and to that record's exact value, alone (strict_answer_ok): one that a reader who takes the
+    runner-up record would give and still be scored right, or one that rests on how a tie is rounded.
+    The 0.2.0 guards (the default, which the legacy path keeps) check none of this."""
     if not _guards_ok(chain, records, domain=domain, time_margin=time_margin):
         return False
     return not strict or strict_answer_ok(chain, records, domain=domain)
@@ -449,22 +455,41 @@ def _guards_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *, doma
 
 def strict_answer_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *,
                      domain: Domain = EARTHQUAKES) -> bool:
-    """Whether a value answer is settled by its record's exact value (guards_ok, strict): for a max or a
-    min, the stored value of the answer's record, converted exactly into the asked unit (as a printed
-    value stands for the stored one), is not exactly halfway between two answers of the asked places,
-    and the key, which is computed in floating point, is that exact value rounded (_rounding_settled).
-    So the key never rests on how a tie is rounded, or on the binary rounding of a conversion."""
+    """Whether a value answer belongs to its own record, and to that record's exact value, alone
+    (guards_ok, strict). For the terminals whose answer is a value of a record rather than its ID:
+
+      - max, min, time_of_max, nearest_distance: the runner-up record's answer (the next value down, or
+        up for a min; the time of the second-largest value; the distance of the second-nearest record),
+        computed as the key is, is scored wrong (scoring.is_correct), so that a reader who takes the
+        wrong record is never counted right. A nearest record's runner-up lies beyond the nearest gap
+        already, which this checks in the asked unit and rounding;
+      - max, min: the answer is settled by its record's exact value (_rounding_settled), so the key never
+        rests on how a tie is rounded, or on the binary rounding of a conversion.
+
+    Rank and argmax gaps keep their own guards (_guards_ok), and their answers are IDs."""
     units = domain.units
     term = Step(terminal_step(chain), units)
-    if term.kind not in ("max", "min"):
+    if term.kind not in ("max", "min", "time_of_max", "nearest_distance"):
         return True
     rows = rows_after_filters(chain, records, units=units)
     if not rows:
         return True
-    best = (max if term.kind == "max" else min)(rows, key=lambda r: r.values[term.field])
-    _, unit = answer_spec(chain, domain)
-    return _rounding_settled(best.values[term.field], domain.field(term.field), unit,
-                             execute(chain, [best], units=units))
+    if term.kind == "nearest_distance":
+        ordered = sorted(rows, key=lambda r: (distance_km(term.raw, r), r.id))
+    elif term.kind == "time_of_max":
+        ordered = by_field(rows, term.field)
+    else:
+        ordered = sorted(rows, key=lambda r: (r.values[term.field], r.id), reverse=term.kind == "max")
+    best = ordered[0]
+    answer_type, unit = answer_spec(chain, domain)
+    key = execute(chain, [best], units=units)
+    if term.kind in ("max", "min"):
+        if not _rounding_settled(best.values[term.field], domain.field(term.field), unit, key):
+            return False
+        ordered = [r for r in ordered if r.values[term.field] != best.values[term.field]]  # ties answer alike
+    else:
+        ordered = ordered[1:]
+    return not ordered or not is_correct(answer_type, key, execute(chain, [ordered[0]], units=units), unit=unit)
 
 
 def _exact(x: float) -> Fraction:
@@ -473,18 +498,24 @@ def _exact(x: float) -> Fraction:
     return Fraction(x).limit_denominator(10 ** 12)
 
 
+def _halfway(scaled: Fraction) -> bool:
+    """Whether a number, scaled to whole units of the asked places, lies exactly halfway between two."""
+    return scaled - math.floor(scaled) == Fraction(1, 2)
+
+
 def _rounding_settled(value: float, spec: FieldSpec, symbol: str | None, key: Any) -> bool:
     """Whether a stored value's answer in the unit `symbol` is settled by its exact value: the stored value
     converted exactly into that unit is not exactly halfway between two answers of its places (68.3 in a
-    unit of 4 is 17.075, which half up gives 17.08 and the binary 17.074999... gives 17.07), and the key
-    (computed in floating point) is that exact value rounded. A value asked in no unit is answered as
-    stored."""
+    unit of 4 is 17.075, which half up gives 17.08 and the binary 17.074999... gives 17.07), nor is the
+    number that genres print for it (units.encode: 82.8 km is printed "51.45" mi, which a reader asked for
+    one place may round to 51.4 or 51.5, though it stands for 51.4495...), and the key (computed in
+    floating point) is that exact value rounded. A value asked in no unit is answered as stored."""
     if symbol is None:
         return True
     unit = find_unit(spec.units, symbol)
     places = unit.places(spec.decimals)
     scaled = (Fraction(repr(value)) - _exact(unit.offset)) / _exact(unit.scale) * 10 ** places
-    if scaled - math.floor(scaled) == Fraction(1, 2):
+    if _halfway(scaled) or _halfway(Fraction(encode(value, spec.decimals, unit)) * 10 ** places):
         return False
     return abs(float(math.floor(scaled + Fraction(1, 2)) / Fraction(10) ** places) - key) < 10.0 ** -(places + 3)
 
@@ -514,17 +545,18 @@ def instantiate(template: Template, records: Sequence[ResolvedRecord], rng: rand
                 used_chains: set[str], taken_labels: set[str], attempts: int = 40,
                 domain: Domain = EARTHQUAKES, strict: bool = False) -> Question | None:
     """Draw parameters for a template until every guard passes and the question is new to the run
-    (`strict`: with the guards of runs off the legacy path, see guards_ok)."""
+    (`strict`: with the guards and point labels of runs off the legacy path, see guards_ok)."""
     for _ in range(attempts):
         chain: list[dict] = [{"op": "dedupe"}]
         complete = True
         for op in template.filters:
-            step = draw_filter(op, records, rng, ctx, taken_labels, domain=domain)
+            step = draw_filter(op, records, rng, ctx, taken_labels, domain=domain, strict=strict)
             if step is None:
                 complete = False
                 break
             chain.append(step)
-        tail = draw_terminal(template.terminal, records, rng, taken_labels, domain=domain) if complete else None
+        tail = (draw_terminal(template.terminal, records, rng, taken_labels, domain=domain, strict=strict)
+                if complete else None)
         if tail is None:
             continue
         chain.extend(tail)
@@ -558,9 +590,10 @@ def compose_questions(records: Sequence[ResolvedRecord], public: Sequence[Templa
     about one domain, ends with every twin pair at most one question apart. The 0.2.0 rule (the
     default, which the legacy path keeps) lets a template run ahead freely until its twin's first use.
 
-    With `strict` (every run off the legacy path, too), questions keep the guards of those runs: no value
-    answer that rests on how a tie is rounded (guards_ok). The default is the 0.2.0 composer, draw for
-    draw."""
+    With `strict` (every run off the legacy path, too), questions keep the guards and point labels of
+    those runs: no value answer that a reader of the wrong record would share, or that rests on how a tie
+    is rounded (guards_ok), and no point label that names a source (_draw_point). The default is the
+    0.2.0 composer, draw for draw."""
     twin = {t.template_id: t.twin_of for t in new if t.twin_of}
     twin.update({public_id: new_id for new_id, public_id in list(twin.items())})
     unused = 0 if strict_twins else 1 << 30  # how often a twin that was never used counts as used
@@ -606,13 +639,17 @@ def fmt_num(x: Any) -> str:
     return plain_number(x)
 
 
-def _quantity(value: float, unit: Unit, units: Sequence[Unit], decimals: int, alt_units: bool) -> str:
+def _quantity(value: float, unit: Unit, units: Sequence[Unit], decimals: int, alt_units: bool,
+              singular: bool = False) -> str:
     """'50 miles', or in a metamorphic variant the same quantity in the next unit, to that unit's
-    places (`decimals` unless it sets its own): '80.5 km'."""
+    places (`decimals` unless it sets its own): '80.5 km'. With `singular` (off the legacy path), a
+    quantity of exactly 1 takes the unit's words for one: '1 mile', not the 0.2.0 '1 miles'."""
     if alt_units:
         other = units[(units.index(unit) + 1) % len(units)]
-        return f"{other.from_canonical(unit.to_canonical(value)):.{other.places(decimals)}f} {other.words}"
-    return f"{fmt_num(value)} {unit.words}"
+        number = f"{other.from_canonical(unit.to_canonical(value)):.{other.places(decimals)}f}"
+        return f"{number} {other.words_for(number) if singular else other.words}"
+    number = fmt_num(value)
+    return f"{number} {unit.words_for(number) if singular else unit.words}"
 
 
 def _place(step: Mapping[str, Any], rng: random.Random) -> str:
@@ -639,13 +676,15 @@ def _wordings(table: Mapping[str, tuple[str, ...]], step: Mapping[str, Any], dom
 def _filter_phrase(step: Mapping[str, Any], rng: random.Random, alt_units: bool, domain: Domain,
                    lexicon: Lexicon) -> str:
     s = Step(step, domain.units)
+    singular = not lexicon.legacy
     if s.kind in ("at_least", "below"):
         symbol = s.get("unit")
         value = s["value"]
         values = {"value": fmt_num(value) if symbol is None else
-                  _quantity(value, s.unit(symbol), s.units(), domain.field(s.field).decimals, alt_units)}
+                  _quantity(value, s.unit(symbol), s.units(), domain.field(s.field).decimals, alt_units, singular)}
     elif s.kind == "within_distance":
-        values = {"value": _quantity(s["radius"], s.unit(s["unit"]), LENGTH, _spatial(domain).decimals, alt_units),
+        values = {"value": _quantity(s["radius"], s.unit(s["unit"]), LENGTH, _spatial(domain).decimals, alt_units,
+                                     singular),
                   "place": _place(step, rng)}
     elif s.kind == "time_between":
         style = rng.randrange(2)
@@ -677,7 +716,8 @@ def phrase_question(question: Question, rng: random.Random, alt_units: bool = Fa
                     domain: Domain = EARTHQUAKES, lexicon: Lexicon | None = None) -> str:
     """Wording for a question. Different RNG draws give paraphrases with the same meaning. `lexicon`
     words it: the domain's own by default, as legacy prompts are worded, while prompts off the legacy
-    path pass Domain.prompt_lexicon."""
+    path pass Domain.prompt_lexicon. A lexicon that is not the 0.2.0 one (Lexicon.legacy) words a
+    quantity of 1 in the singular and quotes the two groups of a comparison; both draw as before."""
     lexicon = domain.lexicon if lexicon is None else lexicon
     clauses = [_filter_phrase(s, rng, alt_units, domain, lexicon) for s in question.chain
                if role(s["op"]) == "filter"]
@@ -691,6 +731,7 @@ def phrase_question(question: Question, rng: random.Random, alt_units: bool = Fa
         values["nth"] = ORDINALS[s["k"]]
     elif s.kind in ("nearest_to", "nearest_distance"):
         values["place"] = _place(term, rng)
-    elif s.kind == "compare_groups":
-        values.update(a=s["a"], b=s["b"])
+    elif s.kind == "compare_groups":  # quoted off the legacy path: "Honshu, Japan" is one region, not two
+        a, b = (s["a"], s["b"]) if lexicon.legacy else (f'"{s["a"]}"', f'"{s["b"]}"')
+        values.update(a=a, b=b)
     return rng.choice(_wordings(lexicon.questions, term, domain)).format(**values)

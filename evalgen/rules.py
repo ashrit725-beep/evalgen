@@ -164,10 +164,15 @@ def _as_record(report: Report | RecordReport, record_id: str) -> Event | Record:
 
 
 def _corrected(record: Event | Record, fix: Notice, qualifiers: Mapping[str, str]) -> Event | Record:
+    """A record as a correction revises it. An earthquake (0.2.0) correction gives its new magnitude;
+    one that gives none (a generic correction of another field, such as a depth, which no 0.2.0
+    correction holds) is an error, never silently ignored, as a generic correction that names no field
+    is (_generic_correction)."""
     if isinstance(record, Record):
         return _generic_correction(record, fix, qualifiers)
     if fix.new_mag is None:
-        return record
+        revised = f": it revises {fix.field!r}, which an earthquake correction cannot" if fix.field else ""
+        raise ValueError(f"the correction of {fix.target} gives no new magnitude{revised}")
     return replace(record, mag=fix.new_mag, mag_type=fix.mag_type or record.mag_type)
 
 

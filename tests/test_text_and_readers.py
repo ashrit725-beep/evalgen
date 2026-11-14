@@ -176,7 +176,7 @@ def test_no_value_answer_rests_on_how_a_tie_is_rounded():
     domain = invented.bind(invented.draw_surface(random.Random(6)))  # its second field has a unit of 4
     spec = domain.fields[1]
     unit = next(u for u in spec.units if u.scale == 4.0)
-    assert unit == drawn_unit(SECONDARY, unit.symbol, unit.words, 4.0) and unit.places(spec.decimals) == 2
+    assert unit == drawn_unit(SECONDARY, unit.symbol, unit.words, 4.0, unit.one) and unit.places(spec.decimals) == 2
     chain = [{"op": "dedupe"}, {"op": "max", "field": spec.key}, {"op": "convert", "to": unit.symbol},
              {"op": "round", "ndigits": unit.places(spec.decimals)}]
 

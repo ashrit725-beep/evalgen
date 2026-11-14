@@ -199,8 +199,8 @@ def compose_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Tem
     words draws them first (seed path "instance", i, "surface", which legacy runs never create) and
     the bound domain renames the sampled records (Domain.dress); everything after uses the bound
     domain and the renamed records, every twin pair stays in step from the run's first question, and
-    questions keep the stricter guards of runs off the legacy path (compose_questions, strict_twins and
-    strict). The key is code over the snapshot's records."""
+    questions keep the stricter guards and point labels of runs off the legacy path (compose_questions,
+    strict_twins and strict). The key is code over the snapshot's records."""
     surface = None
     if not legacy and domain.has_surface:
         surface = domain.draw_surface(seedlog.rng("instance", index, "surface"))

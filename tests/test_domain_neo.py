@@ -521,7 +521,8 @@ def _restated(q, text: str) -> int:
             unit = step.unit(step["unit"])
             other = units[(units.index(unit) + 1) % len(units)]
             places = other.places(NEO.field(step.field).decimals)
-            count += f"{other.from_canonical(unit.to_canonical(step['value'])):.{places}f} {other.words}" in text
+            shown = f"{other.from_canonical(unit.to_canonical(step['value'])):.{places}f}"
+            count += f"{shown} {other.words_for(shown)}" in text
     return count
 
 

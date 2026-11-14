@@ -57,6 +57,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import requests
 
+from ..geo import haversine_km
 from ..sources import USER_AGENT
 from ..units import Unit
 from ..util import parse_utc_iso
@@ -64,19 +65,19 @@ from .base import DISTANCE_WORDINGS, RULES_WIDTH, Domain, FieldSpec, Lexicon, Re
 
 # ------------------------------------------------------------------------------ units and fields
 
-CELSIUS = Unit("°C", "degrees Celsius")
-FAHRENHEIT = Unit("°F", "degrees Fahrenheit", 5 / 9, -160 / 9, step=1.0)  # °C = (°F - 32) × 5/9
+CELSIUS = Unit("°C", "degrees Celsius", one="degree Celsius")
+FAHRENHEIT = Unit("°F", "degrees Fahrenheit", 5 / 9, -160 / 9, step=1.0, one="degree Fahrenheit")  # °C = (°F - 32) × 5/9
 # °C = K - 273.15. Answers and restated thresholds in kelvins keep two places: a tenth of a degree
 # Celsius always ends in 5 hundredths of a kelvin (0.7 °C is 273.85 K), which one place would round
 # exactly halfway, either way.
-KELVIN = Unit("K", "kelvins", 1.0, -273.15, decimals=2, step=1.0)
-KMH = Unit("km/h", "kilometres per hour")
-MPH = Unit("mph", "miles per hour", 1.609344, step=1.0)
-KNOT = Unit("kt", "knots", 1.852, step=1.0)
-MPS = Unit("m/s", "metres per second", 3.6, step=0.5)
-HPA = Unit("hPa", "hectopascals")
+KELVIN = Unit("K", "kelvins", 1.0, -273.15, decimals=2, step=1.0, one="kelvin")
+KMH = Unit("km/h", "kilometres per hour", one="kilometre per hour")
+MPH = Unit("mph", "miles per hour", 1.609344, step=1.0, one="mile per hour")
+KNOT = Unit("kt", "knots", 1.852, step=1.0, one="knot")
+MPS = Unit("m/s", "metres per second", 3.6, step=0.5, one="metre per second")
+HPA = Unit("hPa", "hectopascals", one="hectopascal")
 # Altimeter settings are read to hundredths of an inch, so answers and restated thresholds keep two places.
-INHG = Unit("inHg", "inches of mercury", 33.86389, decimals=2, step=0.05)
+INHG = Unit("inHg", "inches of mercury", 33.86389, decimals=2, step=0.05, one="inch of mercury")
 
 # A day of US observations spans tens of degrees, so thresholds sit on half degrees (or whole degrees,
 # or whole °F and K), moved up to 1.5 °C from a quantile so that they rarely sit on an observed value,
@@ -106,11 +107,12 @@ PRESSURE = FieldSpec(
     jitter=1.5,
 )
 
-# Stations are tens to hundreds of km apart, and a question's point lies 5 to 60 km from one of them.
+# Stations are tens to hundreds of km apart, and a question's point lies 5 to 60 km from one of them. The
+# point is named by its own number alone: the station it lies near is almost always the answer's.
 SPATIAL = Spatial(
     radii={"km": (25, 40, 50, 75, 100, 150, 200, 300), "mi": (15, 25, 30, 50, 75, 100, 150, 200)},
     margin=(3.0, 0.06), nearest_gap=(3.0, 0.08), nearest_max_km=500.0, point_offset_km=(5.0, 60.0),
-    point_label="COOP site {number} near {source}",
+    point_label="COOP site {number}",
 )
 
 # ---------------------------------------------------------------------------------- stations
@@ -180,6 +182,44 @@ STATIONS = (
             7.0),
 )
 STATION_BY_ID = {station.id: station for station in STATIONS}
+STATION_BY_NAME = {station.name: station for station in STATIONS}
+
+# Local times. Each station's time zone, as its standard offset from UTC in hours; every one keeps US
+# daylight saving time but Phoenix (Arizona does not). Digests write an observation's local time in the
+# offset in force at its station at the observation's time (Weather.utc_offset), stated with the time,
+# so a station is never given a zone it does not have.
+STATION_ZONES = {"KBOS": -5, "KJFK": -5, "KPHL": -5, "KPIT": -5, "KATL": -5, "KCLT": -5, "KMCO": -5, "KMIA": -5,
+                 "KORD": -6, "KMSP": -6, "KDTW": -5, "KSTL": -6, "KDFW": -6, "KIAH": -6, "KOKC": -6, "KMSY": -6,
+                 "KDEN": -7, "KSLC": -7, "KPHX": -7, "KABQ": -7, "KSEA": -8, "KPDX": -8, "KSFO": -8, "KLAX": -8}
+NO_DAYLIGHT_SAVING = frozenset({"KPHX"})
+STATION_REACH_KM = 100.0  # an observation without its station's name belongs to the nearest station this close
+
+
+def _sunday(year: int, month: int, n: int) -> datetime:
+    """Midnight, as a UTC time, of the date of the n-th Sunday of a month."""
+    first = datetime(year, month, 1, tzinfo=timezone.utc)
+    return first + timedelta(days=(6 - first.weekday()) % 7 + 7 * (n - 1))
+
+
+def us_daylight_saving(ts: int, standard: int) -> bool:
+    """Whether US daylight saving time is in force at the Unix time `ts` in a zone `standard` hours from
+    UTC: from 2:00 local standard time on the second Sunday of March to 2:00 local daylight time (1:00
+    standard time) on the first Sunday of November, the rule since 2007. Computed from the calendar,
+    never from the host's time zone database, so that a run regenerates alike on every machine."""
+    year = datetime.fromtimestamp(ts, tz=timezone.utc).year
+    start = _sunday(year, 3, 2) + timedelta(hours=2 - standard)
+    end = _sunday(year, 11, 1) + timedelta(hours=1 - standard)
+    return start.timestamp() <= ts < end.timestamp()
+
+
+def station_of(record: Any) -> Station | None:
+    """The station an observation was made at: the one its place names (every observation's place is its
+    station's name), else the nearest one within STATION_REACH_KM of its position; None for neither."""
+    station = STATION_BY_NAME.get(getattr(record, "place", None) or "")
+    if station is not None or record.lat is None or record.lon is None:
+        return station
+    nearest = min(STATIONS, key=lambda s: haversine_km(record.lat, record.lon, s.lat, s.lon))
+    return nearest if haversine_km(record.lat, record.lon, nearest.lat, nearest.lon) <= STATION_REACH_KM else None
 
 # ----------------------------------------------------------------------------------- IDs
 
@@ -355,6 +395,17 @@ class Weather(Domain):
 
     def __init__(self, live: NwsObservations | None = None) -> None:
         self.live = NwsObservations() if live is None else live
+
+    def utc_offset(self, record: Any) -> int:
+        """The offset of the local time in force at an observation's station at its time: the station's
+        standard offset, an hour more under US daylight saving time (station_of, STATION_ZONES). An
+        observation at no known station keeps the nominal offset of its longitude (Domain.utc_offset)."""
+        station = station_of(record)
+        if station is None:
+            return super().utc_offset(record)
+        standard = STATION_ZONES[station.id]
+        summer = station.id not in NO_DAYLIGHT_SAVING and us_daylight_saving(record.time, standard)
+        return standard + (1 if summer else 0)
 
     def synthetic(self, rng: random.Random, n: int, compiled_at: int, window_hours: int) -> list[Record]:
         """`n` observations at stations drawn alike, at any second of the window: each region's weather

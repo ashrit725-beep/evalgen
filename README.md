@@ -111,7 +111,7 @@ details are in each run's miss analysis: [0.1.0](runs/compare-100/miss_analysis.
 
 ## Reproduce it
 
-Install the dependencies (requests and pytest; Python 3.10 or later), run the 760 tests (about 2
+Install the dependencies (requests and pytest; Python 3.10 or later), run the 814 tests (about 2
 minutes), and run a full cycle offline, with no API key and no cost:
 
 ```bash
@@ -197,7 +197,7 @@ metrics and their limitations.
   `verify-config`).
 - `configs/private.example.json`: the format of a private run config (an example only: real
   held-out sets must stay private).
-- `tests/`: 760 tests.
+- `tests/`: 814 tests.
 - `runs/compare-100/` and `runs/compare-100-v2/`: each comparison's report (`report.md` and
   `report.json`), miss analysis and `manifest.json` (seed, settings, code fingerprint). The raw
   prompts and replies are not committed. The 0.1.0 run cannot be regenerated with the current code,
