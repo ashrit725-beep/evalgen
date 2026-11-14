@@ -1063,6 +1063,25 @@ NOTICE_RULE = ("A notice is a message about a report, not a report itself, and i
 # message's own time stamp ("[06:35] relaybot: ..."). Beside the rule on message times, the bracket could
 # pass for the time the wire relayed the report, which would leave the report with no time of its own.
 WIRE_RULE = "A WIRE line is a report, not a message: the time in its brackets is the report's time."
+# The key under which the lines of key=value fields (a classic log line, a pasted chat line) give the note
+# of a re-report: "same_as=WX-713858". Rule 1 quotes it beside the domain's duplicate notes, which those
+# lines never print, so that the field is no gotcha either: it alone ties such a line to its record.
+SAME_AS_KEY = "same_as"
+KEYED_NOTE = f'(among key=value fields, "{SAME_AS_KEY}=")'
+# The phrases that every genre's corrections use besides a domain's own: a new value "revised to", or an old
+# value "revised from" to a new one. The record rules quote them (rule 3), as the earthquake rules off the
+# legacy path do, so that every correction gives its new value after a phrase the rules quote.
+REVISED_TO, REVISED_FROM = "revised to", "revised from"
+# A table states the unit of a column, and the zone of its times, once, in its header row ("depth (km)",
+# "time (UTC)") over bare cells: that row is the one header that carries what its values mean, so the rule on
+# lines without data (rule 9 of every domain's rules off the legacy path) leaves it out.
+TABLE_HEADER_RULE = ("A table's header row is not such a line: it names each column, and a unit or time zone it gives "
+                     "a column holds for every value in that column.")
+# How a value printed in another unit than its field's stored one reads (evalgen.units: every genre prints
+# with the exact codec), which rule 5 of the record rules states for every domain.
+STORED_VALUE_RULE = ("A value written in a unit other than its field's stored unit stands for that value converted "
+                     "into the stored unit and rounded to the decimal places the glossary gives for the field; no "
+                     "value is written so that it converts to exactly halfway between two of them.")
 
 
 def message_time_rule(record: str) -> str:
@@ -1079,7 +1098,11 @@ _AN_BEFORE = ("hour", "honest", "honor", "honour", "heir")
 
 def indefinite(word: str) -> str:
     """The indefinite article before `word`: "an" before a vowel ("an outpost", "an hour"), else "a" ("a
-    unit"). Domains name their words freely and surfaces draw them, so the rules never assume one."""
+    unit"). Domains name their words freely and surfaces draw them, so the rules never assume one. It goes by
+    the first letter and the few exceptions above, which fit every word of the built-in domains and every
+    word an invented surface draws; a plugin's word whose sound its first letter misgives can get the wrong
+    one: an initialism ("a MRI scan"), a number ("a 8-hour reading") or a vowel read as "you" ("an usage
+    record")."""
     folded = word.casefold()
     if folded.startswith(_AN_BEFORE):
         return "an"
@@ -1105,14 +1128,19 @@ def settled_parts(located: bool) -> tuple[str, str]:
 
 def record_rules(domain: Domain) -> str:
     """The reading rules of a domain that prints none of its own, in its words: which report settles a
-    record (its time, position and values), how re-reports, corrections and retractions read, units,
-    positions and times, and that nothing else in a digest carries data. They are genre-neutral: they say
+    record (its time, position and values), how re-reports, corrections and retractions read, units (and
+    what a value printed in another unit than its field's stored one stands for), positions and times, and
+    that nothing else in a digest carries data, but a table's header row. They are genre-neutral: they say
     what a notice, a note, a repeat, a forward and a message time are in any kind of document, and they
-    quote every phrase of the domain's trap vocabulary that a digest prints (the notes of re-reports, and
-    the phrases of corrections and retractions), so that no note or notice is a gotcha. A report's time is
-    defined once, as the domain words it (``Domain.report_time``), and every article fits the word it
-    stands before, whatever words a domain or a drawn surface gives (``indefinite``)."""
-    noun, id_label, source, group = domain.noun, domain.id_label, domain.source_label, domain.group_label
+    quote, word for word, every phrase that a digest prints to note a re-report (the domain's duplicate
+    notes, and the same_as= field of a line of key=value fields) or to announce a correction (the domain's
+    phrases, and "revised to" and "revised from", which every genre uses) or a retraction, so that no note or
+    notice is a gotcha. Rule 1 says nothing of which source files a re-report or an unsettled report: the
+    trap builders file each under the source of the record it stands in for, which may be the record's own.
+    A report's time is defined once, as the domain words it (``Domain.report_time``). Every article is
+    chosen by ``indefinite``, which fits the words of every built-in domain and invented surface but can
+    miss a plugin's (an initialism such as "MRI")."""
+    noun, id_label, group = domain.noun, domain.id_label, domain.group_label
     final, draft = (f'"{status}"' for status in domain.statuses)
     a_final, a_draft = (indefinite(status) for status in domain.statuses)
     vocab = domain.trap_vocab
@@ -1120,24 +1148,24 @@ def record_rules(domain: Domain) -> str:
     position = (" Positions are latitude then longitude in decimal degrees; signed values are negative for south "
                 "and west. Distances are great-circle distances on a sphere of radius 6371 km, given in km or in "
                 "miles (1 mile = 1.609344 km)." if domain.has_location else "")
+    revised = tuple(dict.fromkeys(p for p in (REVISED_TO, *vocab.correction_notices) if p != REVISED_FROM))
     rules = (
         f"Every {noun} has exactly one {id_label}: the ID printed on its {final} report. "
-        f"{indefinite(noun).capitalize()} {noun} may appear in several reports: {a_draft} {draft} report from its "
-        f"own {source}, or a re-report from another {source}, either under the same {id_label} or under its own "
-        f"reference with a note naming the {id_label} it duplicates. Such a note reads "
-        f"{_alternatives(vocab.duplicate_notes)}, followed by that {id_label}. Reports with the same {id_label}, or "
-        f"that name it in such a note, are the same {noun}. Count each {noun} once and refer to it by its "
-        f"{id_label}.",
+        f"{indefinite(noun).capitalize()} {noun} may appear in several reports: {a_draft} {draft} report, or a "
+        f"re-report, either under the same {id_label} or under its own reference with a note naming the {id_label} "
+        f"it duplicates. Such a note reads {_alternatives(vocab.duplicate_notes)} {KEYED_NOTE}, followed by that "
+        f"{id_label}. Reports with the same {id_label}, or that name it in such a note, are the same {noun}. Count "
+        f"each {noun} once and refer to it by its {id_label}.",
         f"If reports of the same {noun} disagree, use the {settled} from its {final} report: {draft} {superseded} "
         "are superseded.",
-        f"{NOTICE_RULE} A correction (a CORRECTION notice, a notice saying that a value was revised, or any notice "
-        f"saying {_alternatives(vocab.correction_notices)}) replaces the stated value for the named {noun}, even on "
-        f"{a_final} {final} report.",
+        f"{NOTICE_RULE} A correction (a CORRECTION notice, or any notice saying that a value was revised: "
+        f"{_alternatives(revised)} a new value, or \"{REVISED_FROM}\" an old value to a new one) replaces the "
+        f"stated value for the named {noun}, even on {a_final} {final} report.",
         f"A retraction (a RETRACTION notice, a notice saying that a report was not a real {noun}, or any notice "
         f"saying {_alternatives(vocab.retraction_notices)}) means the named report was not a real {noun}: ignore "
         "that report completely.",
         "Each value may be given in any unit the glossary lists for its field: convert it as the glossary says. "
-        "Values are compared as plain numbers once rules 2 and 3 have settled them." + position,
+        f"{STORED_VALUE_RULE} Values are compared as plain numbers once rules 2 and 3 have settled them." + position,
         "Times may be in UTC or in another time zone with its UTC offset stated. A report's time is "
         f"{domain.report_time()}; a notice's time is when the notice was issued. "
         f"{message_time_rule(f'{indefinite(noun)} {noun}')} A time window includes its start and excludes its end.",
@@ -1145,7 +1173,7 @@ def record_rules(domain: Domain) -> str:
         f"{indefinite(group).capitalize()} {group} in a question is the {group} printed on the report, matched "
         "exactly as written.",
         "Lines that are neither reports nor notices (headers, section titles, status messages, editor's notes, "
-        "reminders, greetings, signatures) carry no data and change nothing.",
+        f"reminders, greetings, signatures) carry no data and change nothing. {TABLE_HEADER_RULE}",
     )
     return "Reading rules:\n" + numbered_rules(rules)
 

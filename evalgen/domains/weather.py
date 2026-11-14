@@ -262,7 +262,10 @@ LEXICON = Lexicon(
         "below(pressure)": ("with a pressure below {value}", "whose pressure was under {value}"),
         "within_distance": DISTANCE_WORDINGS,  # never read as a range of wind speeds or temperatures
         "time_between": ("recorded between {start} and {end}", "taken from {start} up to {end}"),
-        "in_group": ("in the {group} region", "from stations in {group}", "whose region is {group}"),
+        # A region is the one printed on the report (rule 8), whoever filed it: never "from stations in", which a
+        # reader could take to leave out the observations a relay feed filed (the glossary calls whoever files a
+        # report a feed, and a radio net calls its call-in units stations).
+        "in_group": ("in the {group} region", "taken in the {group} region", "whose region is {group}"),
     },
     questions={
         "count": ("How many distinct {records} are there?", "Count the distinct {records}.",

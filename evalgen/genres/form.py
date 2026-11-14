@@ -2,15 +2,17 @@
 
 A report is one filled-in form: a heading with the form's code and serial number, then labelled
 fields: the record's ID, its source, its status as a pair of checkboxes, its time, group, position
-and values (each value's qualifier in a field of its own), a cross-reference (one of the domain's
-duplicate notes and the ID it names) and a location note, either left blank when the report has none,
-and the form's own noise: when it was sent, forwarded or relayed (a message time, never the record's,
-and never after a notice about it), who prepared it, and blank fields for a checker or a signature. A
-notice is an amendment form that names the record it amends and the serial number of the form it
-amends (when one form alone carries that ID): a CORRECTION gives the field, the entry as first filed
-and the corrected entry; a RETRACTION gives the reason and withdraws the report in a phrase of the
-domain's trap vocabulary. Headings, section titles and chatter lines stand between the forms, never
-inside one.
+and values (each value's qualifier in a field of its own, labelled in the glossary's words for it when
+it gives them: "Magnitude type"), a cross-reference (one of the domain's duplicate notes and the ID it
+names) and a location note, either left blank when the report has none, and the form's own noise: when
+it was sent, forwarded or relayed (a message time, never the record's, and never after a notice about
+it), who prepared it, and blank fields for a checker or a signature. A notice is an amendment form that
+names the record it amends and the serial number of the form it amends (when one form alone carries
+that ID): a CORRECTION gives the field, the entry as first filed and the corrected entry (in the unit
+that form printed the value in), and says that the value was revised; a RETRACTION gives the reason and
+withdraws the report in a phrase of the domain's trap vocabulary. Headings, section titles and chatter
+lines stand between the forms, never inside one, and an amendment among the forms of a batch laid out
+by source stands in the section of a source that filed a report under the ID it names.
 
 A form is drawn in one of four frames, per form, from the rendering's preset:
 
@@ -50,7 +52,7 @@ from __future__ import annotations
 import functools
 import random
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
@@ -516,13 +518,30 @@ def _words(glossary: Glossary) -> dict[str, str]:
     return {**words, **{name[:1].upper() + name[1:]: _cap(word) for name, word in words.items()}}
 
 
-def _label(frame: _Frame, slot: _Slot, glossary: Glossary) -> str:
-    """The label of a slot in a frame, in the glossary's words (a value's unit is not part of it)."""
+QUALIFIER_SLOTS = ("qualifier", "new_qualifier")
+
+
+def _label(frame: _Frame, slot: _Slot, glossary: Glossary, *, keyed: bool = False) -> str:
+    """The label of a slot in a frame, in the glossary's words (a value's unit is not part of it). A qualifier
+    that the glossary names in a reader's words (a "magnitude type") is labelled with them, "Magnitude type"
+    and "Corrected magnitude type", not by its key ("Magnitude, mag_type"), which `keyed` gives: the label
+    forms printed before, which the parser still reads (_labels)."""
     words = _words(glossary)
     if slot.field is not None:
         f = glossary.fields[slot.field]
         words.update(label=f.label, Label=_cap(f.label), qualifier=f.qualifier or "")
+        if slot.key in QUALIFIER_SLOTS and f.qualifier_label is not None and not keyed:
+            if slot.key == "qualifier":
+                return _cap(f.qualifier_label)
+            words["qualifier"] = f.qualifier_label
     return _cap(frame.labels[slot.key].format(**words))
+
+
+def _labels(frame: _Frame, slot: _Slot, glossary: Glossary) -> tuple[str, ...]:
+    """Every label the parser reads for a slot: the one forms print (_label), then, for a qualifier named in a
+    reader's words, the one forms printed before, by its key, so that a run generated then is still read."""
+    labels = (_label(frame, slot, glossary), _label(frame, slot, glossary, keyed=True))
+    return tuple(dict.fromkeys(labels))
 
 
 # ----------------------------------------------------------------------------- writing forms
@@ -573,9 +592,9 @@ def _render(ctx: RenderContext, glossary: Glossary) -> str:
     codes = {frame.name: (_code(rng, frame.codes, glossary), _code(rng, frame.amendment_codes, glossary))
              for frame in FRAMES}
     _number(body, rng, ctx.compiled_at, glossary)
-    forms: dict[str, list[str]] = {}  # the serial numbers of the report forms that carry each ID
+    forms: dict[str, list[_Draft]] = {}  # the report forms that carry each ID
     for draft in reports:
-        forms.setdefault(draft.ref, []).append(draft.number)
+        forms.setdefault(draft.ref, []).append(draft)
     blank = BLANKS[style["blank"]]
     blocks = []
     for item in body:
@@ -590,8 +609,13 @@ def _render(ctx: RenderContext, glossary: Glossary) -> str:
             cells = _report_cells(item, glossary, blank, CHECKBOXES[style["boxes"]], statuses)
         else:  # an amendment names the form it amends when one form alone carries the ID
             original = forms.get(item.ref, [])
+            field = _corrected_field(item.item, glossary)
+            if len(original) == 1 and item.kind == "correction" and field is not None:
+                # its entries in the unit that form wrote the value in, so that the entry "as first filed" is the
+                # one that form shows
+                item.look = replace(item.look, unit=original[0].look.units[field])
             title = frame.amendment.format(code=amendment_code, kind=item.kind.upper())
-            cells = _amendment_cells(item, glossary, blank, original[0] if len(original) == 1 else blank)
+            cells = _amendment_cells(item, glossary, blank, original[0].number if len(original) == 1 else blank)
         blocks.append("\n".join(frame.lay_out(title, item.number, cells)))
     return "\n\n".join([_header(ctx, glossary), *blocks])
 
@@ -693,8 +717,9 @@ def _code(rng: random.Random, codes: Sequence[str], glossary: Glossary) -> str:
 def _arrange(reports: list[_Draft], amendments: list[_Draft], chatter: Sequence[str], rng: random.Random,
              style: Mapping[str, Any], glossary: Glossary) -> list[_Draft | str]:
     """The forms and the lines between them, in the order the style draws: report forms by time, by
-    source (under a heading each) or shuffled; amendments among them or after them; chatter anywhere
-    between two forms."""
+    source (under a heading each) or shuffled; amendments among them (by source: in the section of the
+    source of the first report form that carries the ID an amendment names, never under the heading of
+    another source) or after them; chatter anywhere between two forms."""
     body: list[_Draft | str] = []
     if style["layout"] == "by_time":
         body = sorted(reports, key=lambda d: (d.item.time, d.item.ref, d.item.source))
@@ -712,7 +737,8 @@ def _arrange(reports: list[_Draft], amendments: list[_Draft], chatter: Sequence[
         rng.shuffle(body)
     if style["notices"] == "interleaved":
         for draft in amendments:
-            body.insert(rng.randrange(len(body) + 1), draft)
+            first, last = _section(body, draft, reports) if style["layout"] == "by_source" else (0, len(body))
+            body.insert(rng.randrange(first, last + 1), draft)
     elif amendments:
         rest = list(amendments)
         rng.shuffle(rest)
@@ -720,6 +746,20 @@ def _arrange(reports: list[_Draft], amendments: list[_Draft], chatter: Sequence[
     for text in chatter:
         body.insert(rng.randrange(len(body) + 1), text)
     return body
+
+
+def _section(body: Sequence[_Draft | str], amendment: _Draft, reports: Sequence[_Draft]) -> tuple[int, int]:
+    """Where in a by-source body an amendment may go: from just below the heading of the section that holds
+    the first report form (in planting order) carrying the ID it names, to the end of that section, as
+    (first, last) positions of an insert; anywhere when no report form carries the ID."""
+    source = next((d.item.source for d in reports if d.ref == amendment.ref), None)
+    held = next((i for i, item in enumerate(body) if isinstance(item, _Draft) and item.kind == "report"
+                 and item.item.source == source), None)
+    if held is None:
+        return 0, len(body)
+    heading = max((i for i in range(held) if isinstance(body[i], str)), default=-1)
+    end = next((i for i in range(held, len(body)) if isinstance(body[i], str)), len(body))
+    return heading + 1, end
 
 
 def _report_cells(draft: _Draft, glossary: Glossary, blank: str, marks: tuple[str, str],
@@ -836,7 +876,7 @@ def _grammar(glossary: Glossary) -> _Grammar:
         for row in rows:
             cells = []
             for j, slot in enumerate(row):
-                label = re.escape(_label(frame, slot, glossary))
+                label = f"(?:{alternation(_labels(frame, slot, glossary))})"
                 if slot.key in NUMBER_SLOTS:
                     f = glossary.fields[slot.field if slot.key == "value" else field]
                     if frame.units_in_labels and f.units:

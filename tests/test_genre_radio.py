@@ -49,7 +49,7 @@ DIMENSIONS = {  # every preset of every dimension of a radio style
 # A readback, and a report as its station reads it out, with the readout itself in the group "body".
 READBACK = re.compile(r", (?:I read back|reading back|read back follows): (?P<body>.+?)"
                       r"(?:\. Over\.|\. Is that correct\? Over\.)$")
-REPORT = re.compile(r", (?:report follows|.+ report follows|message follows): (?P<body>.+?)"
+REPORT = re.compile(r", (?:report follows|.+ report follows|.+ details follow): (?P<body>.+?)"
                     r"(?:\. Over\.|, over\.|\. How copy\? Over\.)$")
 
 
@@ -240,7 +240,7 @@ def test_transmission_times_procedure_and_announcements_change_nothing(toys):
 # The words the 0.2.0 rules use to identify each kind of notice (as tests/test_reading_rules.py).
 RULE_WORDS = {"retraction": ("retraction", "retracted", "withdrawn"), "correction": ("correction", "revised")}
 FORMS = {"retraction": ("; disregard it", "; strike it from the log", "RETRACTION, time of issue"),
-         "correction": (" is revised to ", " now reads ", " amended from ")}
+         "correction": (" is revised to ", "CORRECTION, time of issue", " revised from ")}
 
 
 def test_every_broadcast_is_named_by_the_reading_rules_and_reads_back_alone(toys):
@@ -251,8 +251,9 @@ def test_every_broadcast_is_named_by_the_reading_rules_and_reads_back_alone(toys
     for domain in (EARTHQUAKES, toys.toy, dressed):
         rules = " ".join(domain.rules_text().split()).lower()
         if domain is EARTHQUAKES:
-            # its prompts off the legacy path print the 0.2.0 rules 1-8 word for word
-            assert READING_RULES[READING_RULES.index("1. "):READING_RULES.index("\n9. ")] in domain.rules_text()
+            # its prompts off the legacy path print the 0.2.0 rules 5-8 word for word (rules 1, 3 and 4 quote every
+            # note and notice phrase besides)
+            assert READING_RULES[READING_RULES.index("5. "):READING_RULES.index("\n9. ")] in domain.rules_text()
             words = RULE_WORDS
             notices = [Notice("retraction", "us7000abcd", 1_780_000_000, reason="quarry blast"),
                        Notice("correction", "us7000abcd", 1_780_000_900, new_mag=4.2, old_mag=4.57, mag_type="mb")]

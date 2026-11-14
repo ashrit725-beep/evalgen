@@ -253,10 +253,12 @@ def _message_parts(message: str) -> tuple[str, str, str, bool]:
 
 def test_a_reply_quotes_what_it_answers_under_that_messages_subject(toys):
     """A reply quotes the message before it. One that only acknowledges always does, whatever it answers,
-    and comes from someone else ("Thanks, received." once quoted its own sender's message); after a forward,
-    which is titled after its notice, it takes the forward's subject ("Re: Fwd: CORRECTION: ..."), where it
-    was titled after the thread above a quote headed by the forward's subject. A message of reports is titled
-    after the thread and never quotes a forward."""
+    and comes from someone else ("Thanks, received." once quoted its own sender's message); it is titled after
+    the message it answers ("Re: " and its subject, or its subject as it is when that is a reply's already):
+    after a forward, which is titled after its notice, "Re: Fwd: CORRECTION: ...", where it was titled after
+    the thread above a quote headed by the forward's subject, and so after an acknowledgement of a forward,
+    which was titled after the thread. A message of reports is titled after the thread and never quotes a
+    forward."""
     after_forward = acks = 0
     for domain in (toys.toy, EARTHQUAKES):
         for inst in instances_of(domain, seed=9, n=3):
@@ -267,7 +269,10 @@ def test_a_reply_quotes_what_it_answers_under_that_messages_subject(toys):
                     forward = previous[1].startswith("Fwd: ")
                     if first in email.ACKS:
                         assert quotes and sender != previous[0], (sender, previous[0])
-                        assert subject == f"Re: {previous[1] if forward else thread}", (subject, previous[1])
+                        answered = previous[1]
+                        assert subject == (answered if answered.startswith("Re: ") else f"Re: {answered}"), (
+                            subject, previous[1])
+                        assert subject == f"Re: {thread}" or "Fwd: " in subject, (subject, thread)
                         after_forward += forward
                         acks += 1
                     elif not subject.startswith("Fwd: "):  # a message of reports

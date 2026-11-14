@@ -341,21 +341,40 @@ def test_the_registry_serves_the_earthquake_domain():
     assert names == ("earthquakes", "earthquake", "earthquakes", "event ID", "network", "region")
     assert EARTHQUAKES.id_pattern == EVENT_ID_PATTERN
     assert (EARTHQUAKES.id_answer_type, EARTHQUAKES.group_answer_type) == ("event_id", "region")
-    # Its prompts off the legacy path print the 0.2.0 rules 1-8 word for word, headed as every domain's
-    # rules are (a run of several domains prints several rules, so none is "identical for every digest"),
-    # then rule 9 saying what a notice is, as every domain's rules do, and naming every kind of line
-    # without data that the genres print, and the genre-neutral rules on message times (a WIRE line's
-    # bracketed time included) and repeats. Legacy prompts print the 0.2.0 rules alone
-    # (test_regression_020.py).
+    # Its prompts off the legacy path print the 0.2.0 rules 2 and 5-8 word for word, and rules 1, 3 and 4
+    # quoting every note and notice phrase the digests print (rule 1 no longer saying which network files a
+    # re-report or a preliminary report), headed as every domain's rules are (a run of several domains prints
+    # several rules, so none is "identical for every digest"), then rule 9 saying what a notice is, as every
+    # domain's rules do, and naming every kind of line without data that the genres print (a table's header
+    # row is none), and the genre-neutral rules on message times (a WIRE line's bracketed time included) and
+    # repeats. Legacy prompts print the 0.2.0 rules alone (test_regression_020.py).
     rules = EARTHQUAKES.rules_text()
     heading, rule_9 = "Reading rules (identical for every digest):\n", "\n9. Lines that are neither reports nor notices"
     rules_1_to_8 = READING_RULES[len(heading):READING_RULES.index(rule_9) + 1]
     assert READING_RULES.startswith(heading) and rules_1_to_8.startswith("1. Every earthquake has exactly one")
-    assert rules == "Reading rules:\n" + rules_1_to_8 + numbered_rules(
+    kept = [rule for rule in re.split(r"^(?=\d+\. )", rules_1_to_8, flags=re.MULTILINE) if rule]
+    reworded = {
+        1: "Every earthquake has exactly one event ID: the ID printed on its REVIEWED report. An earthquake may appear "
+           "in several reports: a PRELIMINARY report, or a re-report, either under the same event ID or under its own "
+           "reference with a note naming the event ID it duplicates. Such a note reads \"same event as\", \"same "
+           "earthquake as\" or \"Dup of\" (among key=value fields, \"same_as=\"), followed by that event ID. Reports "
+           "that share an event ID, or name it in such a note, are the same earthquake. Count each earthquake once "
+           "and refer to it by its event ID.",
+        3: "A correction (a CORRECTION notice, or any notice saying that a value was revised: \"revised to\" a new "
+           "value, \"revised from\" an old value to a new one, or \"magnitude now\" and a new value) replaces the "
+           "stated value for the named event, even on a reviewed report.",
+        4: "A retraction (a RETRACTION notice, or any notice saying that a report was retracted, \"RETRACTED\" or "
+           "\"withdrawn\", or that it \"was not an earthquake\") means the named report was not a real earthquake "
+           "(for example a quarry blast or a false trigger): ignore that report completely.",
+    }
+    expected = "".join(numbered_rules((reworded[n],), start=n) if n in reworded else rule
+                       for n, rule in enumerate(kept, start=1))
+    assert rules == "Reading rules:\n" + expected + numbered_rules(
         ("A notice is a message about a report, not a report itself, and it applies wherever in the digest it is "
          "printed, before or after that report. Lines that are neither reports nor notices (headers, section "
          "titles, station status, editor's notes, reminders, greetings, signatures) carry no data and change "
-         "nothing.",
+         "nothing. A table's header row is not such a line: it names each column, and a unit or time zone it gives "
+         "a column holds for every value in that column.",
          "The time at which a message was sent, forwarded or relayed is never the time of an earthquake. A WIRE line "
          "is a report, not a message: the time in its brackets is the report's time.",
          REPEAT_RULE), start=9)

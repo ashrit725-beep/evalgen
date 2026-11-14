@@ -95,10 +95,18 @@ NOTE_FRAMES = ("Filing note:", "The {source_label} adds:", "Note from the {sourc
 PLACE_FRAMES = ("Location note:", "Location given:")
 
 # Every notice names itself with words that both the 0.2.0 rules and the record rules name, and none is
-# headed as an editor's note, which the rules count among the lines without data.
+# headed as an editor's note, which the rules count among the lines without data. Every notice was issued
+# before the article was published (the time its byline gives), so none speaks of "this article", as a
+# notice "about report X, listed in this article" did, nor does the heading over them ("Updates to this
+# article" was one).
 RETRACTION_FORMS = (
     "Update ({when}): report {ref} has been retracted{reason}; it was not a real {noun} and should be disregarded.",
     "Update, {when}: report {ref} is now marked {phrase}{reason}. This is a retraction: it was not a real {noun}.",
+    "Retraction notice ({when}): report {ref} was not a real {noun}{reason}; disregard it.",
+)
+# Wordings that articles printed before and no longer print, which the parser still reads, so that a run
+# generated then is still read.
+EARLIER_RETRACTION_FORMS = (
     "Retraction notice ({when}): report {ref}, listed in this article, was not a real {noun}{reason}; disregard it.",
 )
 CORRECTION_FORMS = (
@@ -107,7 +115,7 @@ CORRECTION_FORMS = (
     "Correction notice ({when}): the {label} of report {ref} has been revised to {new}{qualifier}; it was first "
     "given as {old}.",
 )
-END_HEADINGS = ("Corrections and updates", "Updates to this article")  # over the notices at the end
+END_HEADINGS = ("Corrections and updates", "Notices received")  # over the notices at the end
 
 # ------------------------------------------------------------------------- article furniture
 # Lines without data, worded from the records' words: {noun}, {plural}, {Plural}, {source_label} and
@@ -510,7 +518,8 @@ def _grammar(glossary: Glossary) -> _Grammar:
                    "qualifier": "" if f.qualifier is None else r"(?: \((?P<qualifier>[^()]*)\))?"}
         corrections += [(re.compile(_pattern(form, revised)), f) for form in CORRECTION_FORMS]
     return _Grammar(reports=tuple(reports),
-                    retractions=tuple(re.compile(_pattern(form, retracted)) for form in RETRACTION_FORMS),
+                    retractions=tuple(re.compile(_pattern(form, retracted))
+                                      for form in RETRACTION_FORMS + EARLIER_RETRACTION_FORMS),
                     corrections=tuple(corrections))
 
 

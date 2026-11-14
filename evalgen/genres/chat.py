@@ -18,7 +18,9 @@ that the time a message was sent is never a record's time, that a quoted or read
 new report or notice and that lines which are neither change nothing; a repeat carries the ID and the
 values of the message it repeats, so it changes nothing under the 0.2.0 earthquake rules either.
 Every notice wording says RETRACTION or CORRECTION, which both sets of rules name, and quotes the
-domain's own phrases (its trap vocabulary) where they fit.
+domain's own phrases (its trap vocabulary) where they fit; a correction gives its new value after
+"revised to", "revised from <old> to" or a phrase of the domain's, which the rules quote. A re-report's
+note is one of the domain's duplicate notes, or, in a paste, the field same_as=, which rule 1 quotes.
 
 The four voices of a report, here a re-report in the words of the test-only toy domain:
 
@@ -59,14 +61,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 from ..digest import MONTHS, WEEKDAYS
-from ..domains.base import Domain, Glossary, GlossaryField, RecordReport, TrapVocab
+from ..domains.base import SAME_AS_KEY, Domain, Glossary, GlossaryField, RecordReport, TrapVocab
 from ..domains.earthquakes import Earthquakes
 from ..models import Notice
 from ..ops import DigestData
 from ..units import Unit, decode, encode
 from .base import (COORDS_PATTERN, GROUP_PREPOSITION, NUMBER, TIME_FORMATS, TIME_PATTERN, UTC_TIME_FORMATS, Genre,
                    RenderContext, alternation, check_round_trip, domain_items, format_coords, format_time,
-                   format_value, id_pattern, parse_coords, parse_time, read_value, value_pattern)
+                   format_value, generic_items, id_pattern, parse_coords, parse_time, read_value, value_pattern)
 
 # ------------------------------------------------------------------------------ the genre
 
@@ -267,9 +269,10 @@ def _draw_unit(rng: random.Random, field: GlossaryField, preset: str) -> Unit | 
 
 
 def _generic_report(domain: Domain, r: Any) -> RecordReport:
-    """A report as every voice prints it, in its generic form and without the generator's bookkeeping
-    (role, trap), so that it compares equal to the report its message reads back to."""
-    return replace(domain.to_generic(r), role="primary", trap_id=None)
+    """A report as every voice prints it, in its generic form (its place as genres print it, printed_place)
+    and without the generator's bookkeeping (role, trap), so that it compares equal to the report its
+    message reads back to."""
+    return replace(generic_items(domain, [r])[0], role="primary", trap_id=None)
 
 
 def _generic_notice(domain: Domain, n: Notice) -> Notice:
@@ -432,8 +435,8 @@ def _report_body(r: RecordReport, p: _Printed, glossary: Glossary) -> str:
             text += f" {f.key}={format_value(f, r.values[f.key], unit, separator='')}"
             if _qualifier(f, r) is not None:
                 text += f" {f.qualifier}={_token(_qualifier(f, r))}"
-        if r.same_as:
-            text += f" same_as={r.same_as}"
+        if r.same_as:  # the note of a re-report, as rule 1 of the reading rules quotes it
+            text += f" {SAME_AS_KEY}={r.same_as}"
         if r.place is not None:
             text += f" place={_token(r.place)}"
         return f"{p.lead}`{text}`"
@@ -592,7 +595,7 @@ def _grammar(glossary: Glossary) -> _Grammar:
     paste = (rf"{lead}`{when} ref=(?P<ref>{record_id}) src=(?P<source>{TOKEN}) status=(?P<status>{status}) "
              rf"group=(?P<group>{TOKEN})" + (rf" loc=(?P<lat>{NUMBER}),(?P<lon>{NUMBER})" if located else "")
              + "".join(" " + _keyed(f, i) for i, f in enumerate(glossary.fields))
-             + rf"(?: same_as=(?P<same>{record_id}))?(?: place=(?P<place>{TOKEN}))?`")
+             + rf"(?: {SAME_AS_KEY}=(?P<same>{record_id}))?(?: place=(?P<place>{TOKEN}))?`")
 
     slots = {"when": when, "ref": f"(?P<ref>{record_id})", "noun": noun, "phrase": "(?P<phrase>.+?)",
              "reason": r"(?: \((?P<reason>.+)\))?"}
@@ -625,8 +628,11 @@ def _parse_log(text: str, glossary: Glossary) -> DigestData:
 
 
 def _reads_back(body: str, item: RecordReport | Notice, grammar: _Grammar, glossary: Glossary) -> bool:
-    """Whether a message stays on its line and reads back as exactly `item` (generic types)."""
-    return body.splitlines() == [body] and _read_body(body, grammar, glossary) == item
+    """Whether a message stays on its line and reads back as exactly `item` (generic types), as _parse_log
+    reads it: from its line with the whitespace around it stripped, so a body that ends in a space (a word
+    that does) is no body a voice can print, and is pasted instead."""
+    return (body == body.strip() and body.splitlines() == [body]
+            and _read_body(body, grammar, glossary) == item)
 
 
 def _read_body(body: str, grammar: _Grammar, glossary: Glossary) -> RecordReport | Notice | None:
