@@ -360,7 +360,7 @@ whatever text it returned (usually none), flagged in the report, and asked again
 | model spec | what it is |
 |---|---|
 | `oracle` | rule-based solver that reads **only the digest text**, applies the reading rules and runs each question's operation chain; must score 100%. Off the legacy path `run` also gives it the rendering's genre and the instance's domain by name (see the oracle under Genres) |
-| `naive` | the same parser, but every report counts as a separate quake and notices are ignored; it loses points only where traps (alone or combined) change the answer, apart from rare display-rounding effects. Off the legacy path it reads each digest with its genre's parser, as the oracle does, which has already set aside the quoted and read-back repeats and the message times that the rules say are no reports. So it never meets a genre's noise. Its answers depend on which reports a digest holds and on what it prints of them; every rendering prints the same reports, so its consistency across renderings and genres is high by construction, though a time or value that one rendering prints more coarsely than another can break a tie differently (the classic digest of earthquakes prints some times to the minute) |
+| `naive` | the same parser, but every report counts as a separate quake and notices are ignored; it loses points only where traps (alone or combined) change the answer, apart from rare display-rounding effects. Off the legacy path it reads each digest with its genre's parser, as the oracle does, which has already set aside the quoted and read-back repeats and the message times that the rules say are no reports. So it never meets a genre's noise. Its answers depend on which reports a digest holds, on what it prints of them and on how the genre's parser reads them back: the classic digest of earthquakes is read with the 0.2.0 parser, which keeps a converted value such as 6.3 mi as 10.139 km where every other parser rounds it to the stored 10.1 km, and that digest prints some times to the minute. Every rendering prints the same reports, so its consistency across renderings and genres is high by construction, except where such a difference breaks a tie between reports or meets a filter's threshold differently |
 | `mock` | a **simulated** contaminated model, not a language model. It answers public-template questions correctly 92% of the time (80% when paraphrased) and new-template questions 62% of the time; its errors are seeded by the prompt text and usually fall into the traps. It exists to exercise every metric without API keys. `mock:held_out=P` (0.3.0) also lowers each of those chances by P on an instance from a held-out domain and by P on a rendering in a held-out genre, as a model tuned to the public ones would be (`held_out_domains=P` or `held_out_genres=P` for one kind, joined with `+` for different penalties). A chance stops at 0, so where the penalties that apply add up to more than 0.62, the chance on a new template, they lower accuracy by less than they say, and a gap they inject is smaller than the penalty; `run` prints a note for such a mock |
 | `anthropic[:model]` | Anthropic Messages API (`ANTHROPIC_API_KEY`; default model `claude-opus-5-5`, override with `:model` or `EVALGEN_ANTHROPIC_MODEL`) |
 | `openai[:model]` | OpenAI Chat Completions (`OPENAI_API_KEY`; default `gpt-4.1`, override with `:model` or `EVALGEN_OPENAI_MODEL`; `OPENAI_BASE_URL` points it at any compatible server) |
@@ -703,8 +703,9 @@ note naming one, the status, and the notices. Nine more things make that hold:
   (`questions.reanchor_nearest`, seed path `instance/<i>/anchors`). (A place near a planted report keeps
   the key's nearest record clear of the next record, and that record is most often the report that
   comes next; when only those places kept the clearance, the next report stood clear of the one after it
-  more often where a planted report decided, with AUCs of 0.57 to 0.60, and 0.50 in earthquakes after
-  the review's change, measured on its code; see *Reviewed* below.)
+  more often where a planted report decided, with AUCs of 0.57 to 0.60; after the review's change it
+  stood clear as often whoever decided, 1.00 of 25 planted deciders and 0.88 of 128 real ones on the four
+  seeds of `tests/test_trap_tells.py`, measured on its code; see *Reviewed* below.)
   Of the reports that can, one is drawn with the weight of its kind (a record's
   own, a re-report, a phantom, a conflict's line): how many reports of that kind the digest's questions
   about a place ask about, over how many of them can decide one, so that each kind decides these
@@ -918,19 +919,21 @@ in weather (16 seeds). The final checks then changed placement once more (see *R
 counts are not the final code's. What the review left is under Limitations.
 
 *Measured at the final commit* (4179c0c, whose generator is that of the final checks). The scripts and
-seeds of a shortcut measurement made at 8e63aee (5001–5084, three instances and three renderings a seed)
-measured the final code on four samples: every built-in domain with the genre rotating with the seed
-(1,008 instances, G), the same instances in classic (C), `--mix random` (252 instances, R) and the
-legacy path (252, L; see Limitations). Shares are of the gap between the naive reader and the oracle,
+seeds (5001–5084) of a shortcut measurement made at 8e63aee measured the final code on four samples, in
+runs of three instances with three renderings each: every built-in domain with the genre rotating with
+the seed (one run a seed and domain, 1,008 instances, G), the same instances in classic (C), `--mix
+random` (one run a seed, 252 instances, R) and the legacy path (one run a seed, 252, L; see
+Limitations). Shares are of the gap between the naive reader and the oracle,
 with 95% intervals over instances; the 27 rule-free readers (13 single rules and 14 combinations, none
 reading a status, an ID, a note or a notice) are picked after the fact in each slice, which favours
 them:
 
-- Off the legacy path the best of them closes 0.0% [−0.7, +0.8] on G and 0.0% on R and C, where the "best"
-  is the precision rule that never fires and every reader that changes a digest loses (the 40 s and
-  8.5 km merge −0.9%, −1.2% and −0.8%; dropping the relay sources −38% to −41%). The status rule closes
-  38.2% [35.5, 40.8] on G, 37.5% [31.9, 43.2] on R and 38.2% on C, and no shortcut adds to it (with the
-  40 s merge, 36.5% on G).
+- Off the legacy path the best of them closes 0.0% [−0.7, +0.8] on G and 0.0% on R and C. On R and C
+  the "best" is the precision rule that never fires, and every reader that changes a digest loses; on G
+  it is the hour-window value-similarity merge, at +0.02%, and every other reader that changes a digest
+  loses (the 40 s and 8.5 km merge −0.9%, −1.2% and −0.8% on G, R and C; dropping the relay sources −38%
+  to −41%). The status rule closes 38.2% [35.5, 40.8] on G, 37.5% [31.9, 43.2] on R and 38.2% on C, and
+  no shortcut adds to it (with the 40 s merge, 36.5% on G).
 - The largest best reader of a domain is weather's: +1.4% [−1.1, +3.8] on G, +2.0% [+0.0, +5.2] on R and
   +1.3% on C. Of G's 28 domain-by-genre cells (36 instances each) the best is weather/radio, +7.6%
   [−4.7, +17.7], and no cell's interval lies above 0.
@@ -1776,8 +1779,8 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   of the validation table; 17% in a 40-instance run of `weather,neo:email,invented:table` with email
   held out, in which only weather is rendered in genres of both splits) or is n/a (in all 30 runs of
   the fully tied mix of the final calibration), and the raw gaps mix the two kinds (in a fully tied mix
-  they move together: a 30-point penalty on held-out domains raised the raw source and genre gaps by 30
-  and 29 points on average).
+  they move together: a 30-point penalty on held-out domains raised the raw source and genre gaps by
+  about 30 points each, 29.8 and 29.6 on average, to +30.1 and +29.2).
 * **The gaps' intervals count instances, not domains or genres.** With one or two held-out domains,
   the gap compares those particular domains with the public ones. A held-out domain or genre that is
   harder in itself (an invented domain read through its glossary, a genre with more noise) shows a
@@ -1794,8 +1797,9 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   effect of the rows it compares taken as one raw difference, because its strata are too small for a
   cluster-robust variance of their own. In simulation on earlier code its intervals covered 93–96% of
   runs with strong clustering, and at most 4% of the readers with no gap were flagged; in the final
-  calibration, whose mock answers each question independently, they covered the expected gap in 95.9%
-  of 1,800 mock gaps, and the exact spread of a penalised gap was 1.01 to 1.03 times the spread its
+  calibration, whose mock answers each question independently, they covered the expected gap in 95.5%
+  [93.7, 97.1] of the 1,200 source and genre gaps of the five mocks, and the exact spread of a penalised
+  gap was 1.01 to 1.03 times the spread its
   interval implies. With few held-out instances (a demo of 20) every interval is rough. A side whose
   compared rows all come from one
   instance shows no spread between instances, so nothing widens its interval: one misread digest of a
