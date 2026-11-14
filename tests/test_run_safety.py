@@ -137,6 +137,33 @@ def test_a_received_run_with_a_symbolic_link_is_refused(answered, tmp_path, caps
     assert victim.read_text(encoding="utf-8") == "original\n" and list(elsewhere.iterdir()) == []
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no named pipes here")
+def test_a_received_run_with_a_named_pipe_is_refused(answered, tmp_path, capsys):
+    """Before the fix, a named pipe in place of an instance or a scores file made `report` wait for ever: the
+    run check refused links only."""
+    for name in ("instances/inst-000.json", "scores/oracle.json"):
+        run = tmp_path / name.replace("/", "-") / "run"
+        shutil.copytree(answered, run)
+        (run / name).unlink()
+        os.mkfifo(run / name)
+        for argv in (["report", str(run)], ["score", str(run)], ["resolve", str(run)]):
+            assert cli.main(argv) == 2, (name, argv)
+            err = capsys.readouterr().err
+            assert err.startswith("error: ") and "is neither a file nor a folder" in err, (name, argv, err)
+
+
+def test_an_instance_named_with_digits_of_another_script_is_refused(answered, tmp_path):
+    """IDs and variants are evalgen's own, in ASCII digits: \\d took "v\\u0660" (an Arabic-Indic zero) as well."""
+    run = tmp_path / "run"
+    shutil.copytree(answered, run)
+    path = run / "instances" / "inst-000.json"
+    data = read_json(path)
+    data["renderings"][0]["variant"] = "v٠"
+    write_json(path, data)
+    with pytest.raises(RunDirError, match="names its renderings"):
+        load_instances(run)
+
+
 def test_the_one_writer_never_writes_through_a_link_or_out_of_the_run(tmp_path):
     root = tmp_path / "run"
     (root / "scores").mkdir(parents=True)
@@ -223,6 +250,36 @@ def test_generate_force_never_deletes_what_the_run_reads(tmp_path, capsys):
     assert (again / "prompts").is_dir() and read_json(again / "manifest.json")["config"]["snapshot_dir"]
 
 
+def test_generate_force_knows_the_run_folder_by_any_spelling(tmp_path, capsys):
+    """macOS and Windows file systems take "WL/snapshot" and "wl/snapshot" for the same folder. Before the fix,
+    `--snapshot-dir WL/snapshot --out wl --force` passed the check (it compared the names as text), deleted
+    the frozen feed's only copy and then failed to read it; `--private-config C1/private.json --out c1 --force`
+    deleted the config that the new manifest commits to, and exited 0. Skipped on a file system that tells
+    the two spellings apart, where they are two folders."""
+    probe = tmp_path / "Probe"
+    probe.mkdir()
+    if not (tmp_path / "probe").exists():
+        pytest.skip("this file system tells letter cases apart")
+    live = tmp_path / "wl"
+    assert cli.main(["generate", "--seed", "21", "--instances", "2", "--mix", "weather", "--source", "live",
+                     "--snapshot-file", str(WEATHER_FEED), "--out", str(live)]) == 0
+    config = tmp_path / "c1" / "private.json"
+    pipeline.generate(pipeline.GenerateConfig(seed=5, instances=1, mix="earthquakes"), config.parent, log=quiet)
+    config.write_text(json.dumps({"nonce": "3f9a6c1e8b2d4f7a0c5e9b1d3f6a8c2e", "domains": {
+        "public": ["earthquakes"], "held_out": ["neo"]}, "genres": {"public": ["classic"], "held_out": ["news"]},
+        "plugins": []}), encoding="utf-8")
+    capsys.readouterr()
+    cases = [(live, ["--mix", "weather", "--source", "live", "--snapshot-dir", str(tmp_path / "WL" / "snapshot")]),
+             (live, ["--mix", "weather", "--source", "live", "--snapshot-file",
+                     str(tmp_path / "WL" / "snapshot" / "raw_feed.json")]),
+             (config.parent, ["--mix", "random", "--private-config", str(tmp_path / "C1" / "private.json")])]
+    for run, options in cases:
+        before = {path: path.read_bytes() for path in run.rglob("*") if path.is_file()}
+        assert cli.main(["generate", "--seed", "21", "--instances", "1", *options, "--out", str(run), "--force"]) == 2
+        assert capsys.readouterr().err.startswith(f"error: {run} holds what this run reads")
+        assert {path: path.read_bytes() for path in run.rglob("*") if path.is_file()} == before, options
+
+
 # ------------------------------------------------------------------------- committed runs
 
 
@@ -263,6 +320,17 @@ def test_resolve_refuses_a_path_that_is_not_a_run(answered, tmp_path, capsys):
         assert err.startswith("error: ") and "is not an evalgen run directory" in err
     assert cli.main(["resolve", str(answered)]) == 0
     assert "--source live with earthquakes in the mix" in capsys.readouterr().out
+    # A committed run, as a fresh clone has it, keeps neither its instances nor its forecasts.json (whose
+    # report lists 20 pending forecasts): before the fix, resolve said it had no forecast questions and exited 0.
+    source, committed = ROOT / "runs" / "usgs-live-seed5", tmp_path / "usgs-live-seed5"
+    committed.mkdir()
+    kept = [name for name in COMMITTED_RUN_FILES if (source / name).is_file()]
+    for name in kept:
+        shutil.copyfile(source / name, committed / name)
+    assert cli.main(["resolve", str(committed)]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: ") and "of the 20 instances its manifest lists" in err and "regenerate it" in err
+    assert sorted(p.name for p in committed.iterdir()) == sorted(kept)  # nothing written
 
 
 # ---------------------------------------------------------------------------- missing replies

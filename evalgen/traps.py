@@ -34,10 +34,11 @@ share its H); a correction shows a value of a slot, or, for a value tied to the 
 station's temperature), one that agrees with them as a real one does (_twin_values). Only the signals the
 rules name set a planted line apart: a shared ID or a note naming one, the status, and the notices. Each
 trap also draws the scopes of a real record of the digest, how many of the counting questions' scopes and
-how many of the others' it lies in, and how far a real record that decides a question leads the next one
-(``TrapConfig.match_scope``), and its planted report lies in as many and leads as far, so that placing traps
-where they change answers neither puts planted reports in counting questions' scopes more often than real
-ones nor has them pass the reports they take a question from by less than real ones lead. A digest's traps
+how many of the others' it lies in, and for each question how far a real record that decides another
+question leads the next one (``TrapConfig.match_scope``), and its planted report lies in as many and leads as
+far, so that placing traps where they change answers neither puts planted reports in counting questions'
+scopes more often than real ones nor has them pass the reports they take a question from by less than real
+ones lead (nor by just about what the record they pass leads the next by, see _Leads). A digest's traps
 are planned before its records, each kind on its own, with as many records less as they add reports
 (draw_plan): how many reports a digest plants varies widely, none about as often as any number in a
 question's scope, so that no share or number taken off a count does better than the count, and none,
@@ -177,11 +178,12 @@ class TrapConfig:
     # questions' scopes (it passes all of a question's filters), and in more of the counting questions' ones,
     # than a real record does, and one that changes the record a question names, or its value, by taking its
     # place leads the next report by less than a real one does. So each trap draws the scopes of a real record of
-    # the digest, how many of the counting questions' and how many of the others' it lies in, and how far a real
-    # record that decides a question leads the next one, and prefers a placement whose readings all hold, whose
-    # planted report lies in exactly as many counting questions' scopes, and in as many of the others' give or
-    # take one, and whose planted report, where it decides a question, leads as far give or take a factor of two,
-    # to any placement of a higher rank (_fit). False on the legacy path, which draws nothing for it.
+    # the digest, how many of the counting questions' and how many of the others' it lies in, and for each
+    # question how far a real record that decides another question leads the next one (_Leads), and prefers a
+    # placement whose readings all hold, whose planted report lies in exactly as many counting questions' scopes,
+    # and in as many of the others' give or take one, and whose planted report, where it decides a question,
+    # leads as far give or take a factor of two, to any placement of a higher rank (_fit). False on the legacy
+    # path, which draws nothing for it.
     match_scope: bool = False
     # Off the legacy path: the digest's traps, planned before its records (draw_plan), in place of the 0.2.0
     # plan above (duplicates, retractions, conflicts, and a form drawn for each).
@@ -409,53 +411,49 @@ def _matched_placement(candidates: Sequence[_Candidate | None], target: tuple[in
 
 
 LEAD_KINDS = ("argmax", "max", "min", "time_of_max", "rank")
-NEAREST_KINDS = ("nearest_to", "nearest_distance")
 LEAD_FACTOR = 2.0  # a planted report that decides a question leads the next one this close to a real one's
 
 
 class _Leads:
     """How far the report that decides a question leads the next one (TrapConfig.match_scope), as a reader who
     takes every report for a record of its own sees it: for a question that names a record or a value of one
-    (its highest or lowest value, the k-th, the one nearest a place), the report that holds it, and how far it
-    leads the next report of the question's scope, in shares of the field's spread over the digest's records
-    (in km for a place). The real records' own leads, the key's, are what a real report that decides a
-    question leads by: each trap draws one of them for each kind of question (of the same unit where the
-    digest asks no other question of the kind), and prefers a placement whose planted report, wherever it
-    decides a question, leads within a factor of LEAD_FACTOR of the lead drawn for its kind, and in which every
-    report planted before still does (a report its scope holds alone leads infinitely far, as a real one alone
-    in its scope does)."""
+    (its highest or lowest value, the k-th), the report that holds it, and how far it leads the next report of
+    the question's scope, in shares of the field's spread over the digest's records. A report its scope holds
+    alone leads infinitely far, as a real one alone in its scope does.
+
+    The real records' own leads, the key's, are what a real report that decides a question leads by. For each
+    question, each trap draws the lead by which a real record decides *another* question, one that a
+    different record decides, of the same kind where the digest asks one (else of any of these kinds), and
+    prefers a placement whose planted report, wherever it decides a question, leads within a factor of
+    LEAD_FACTOR of the lead drawn for that question, and in which every report planted before still does. A
+    question for which no other question can lend a lead draws none, and its deciders are not held to one.
+
+    The lead lent is never the question's own, nor that of a question its own decider decides. A planted report
+    that takes the record a question names passes the key's decider, so the next report's lead over the third
+    is the key's own lead: matched to that very lead (as the lead first drawn from the kind's own questions was,
+    in a digest that asks one question of a kind), a planted decider led the next by about what the next led
+    the third by, within a factor of two for 58-72% of planted deciders against 31-36% of real ones (an AUC of
+    0.28 to 0.36 for |log2| of the ratio of the two leads), though no reader gained by it."""
 
     def __init__(self, questions: Sequence[Question], records: Sequence[Any], units: Mapping[str, Sequence[Unit]],
                  domain: Domain) -> None:
         self.units = units
-        self.terms = []
-        for q in questions:
+        self.terms = []  # each question of a LEAD_KINDS kind: its number, its filters and its terminal
+        for number, q in enumerate(questions):
             term = Step(next(raw for raw in q.chain if role(raw["op"]) == "terminal"), units)
             if term.kind in LEAD_KINDS:
-                self.terms.append(([raw for raw in q.chain if role(raw["op"]) == "filter"], term))
+                self.terms.append((number, [raw for raw in q.chain if role(raw["op"]) == "filter"], term))
         self.spread = {spec.key: _spread(records, spec) for spec in domain.fields} if records else {}
-        self.real: dict[str, list[float]] = {}
-        for kind, lead, _ in self.decided(records):
-            self.real.setdefault(kind, []).append(lead)
-            self.real.setdefault(self.unit(kind), []).append(lead)
-        self.planted: list[tuple[int, dict[str, float]]] = []  # each planted report's index, and its trap's leads
+        self.real = self.decided(records) if records else []
+        self.planted: list[tuple[int, dict[int, float]]] = []  # each planted report's index, and its trap's leads
 
-    @staticmethod
-    def unit(kind: str) -> str:
-        return "km" if kind in NEAREST_KINDS else "value"
-
-    def decided(self, rows: Sequence[Any]) -> list[tuple[str, float, int]]:
-        """(the question's kind, the lead, the index of the row that decides) for each question that one of
-        `rows` (generic records or reports) decides."""
+    def decided(self, rows: Sequence[Any]) -> list[tuple[int, str, float, int]]:
+        """(the question's number, its kind, the lead, the index of the row that decides it) for each question
+        that one of `rows` (generic records or reports) decides."""
         out = []
-        for filters, term in self.terms:
+        for number, filters, term in self.terms:
             inside = [i for i, r in enumerate(rows) if all(passes(step, r, self.units) for step in filters)]
             if not inside:
-                continue
-            if term.kind in NEAREST_KINDS:
-                at = sorted((distance_km(term.raw, rows[i]), i) for i in inside)
-                lead = at[1][0] - at[0][0] if len(at) > 1 else math.inf
-                out.append((term.kind, lead, at[0][1]))
                 continue
             key, low = term.field, term.kind == "min"
             ordered = sorted(inside, key=lambda i: (rows[i].values[key] if low else -rows[i].values[key], i))
@@ -464,22 +462,28 @@ class _Leads:
                 continue
             gap = (abs(rows[ordered[k]].values[key] - rows[ordered[k + 1]].values[key]) / self.spread[key]
                    if len(ordered) > k + 1 else math.inf)
-            out.append((term.kind, gap, ordered[k]))
+            out.append((number, term.kind, gap, ordered[k]))
         return out
 
-    def draw(self, rng: random.Random) -> dict[str, float]:
-        """A lead that a real record of the digest decides a question by, of each kind and unit, for one trap."""
-        return {kind: rng.choice(leads) for kind, leads in sorted(self.real.items())}
+    def draw(self, rng: random.Random) -> dict[int, float]:
+        """For one trap, a lead for each question the key's records decide: the lead by which a real record
+        decides another question, decided by another record, of the same kind where there is one."""
+        targets = {}
+        for number, kind, _, at in self.real:
+            others = [(other, lead) for q, other, lead, by in self.real if q != number and by != at]
+            pool = [lead for other, lead in others if other == kind] or [lead for _, lead in others]
+            if pool:
+                targets[number] = rng.choice(pool)
+        return targets
 
-    def like(self, rows: Sequence[Any], index: int, target: Mapping[str, float]) -> bool:
+    def like(self, rows: Sequence[Any], index: int, target: Mapping[int, float]) -> bool:
         """Whether, in the digest `rows`, the row numbered `index` (planted with the leads `target`) and every
         report planted before lead, wherever they decide a question, within a factor of LEAD_FACTOR of their
-        trap's lead for its kind (both infinite, or both finite)."""
+        trap's lead for that question (both infinite, or both finite)."""
         wanted = dict(self.planted)
         wanted[index] = dict(target)
-        for kind, lead, at in self.decided(rows):
-            leads = wanted.get(at)
-            want = None if leads is None else leads.get(kind, leads.get(self.unit(kind)))
+        for number, _, lead, at in self.decided(rows):
+            want = wanted.get(at, {}).get(number)
             if want is None:
                 continue
             if math.isinf(lead) or math.isinf(want):

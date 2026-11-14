@@ -428,11 +428,12 @@ def test_removing_a_planted_report_changes_as_many_answers_as_removing_a_real_on
 LEAD_TERMINALS = ("argmax", "max", "min", "time_of_max", "rank", "nearest_to", "nearest_distance")
 
 
-def deciders(digest) -> list[tuple[str, int, float]]:
-    """(the kind of question, the report that decides it, how far it leads the next) for each question whose
-    naive answer one report decides (every report a record of its own): the largest (smallest: min) value of
-    its field in scope, the k-th, or the report nearest its place; the lead in shares of the field's spread
-    over the digest's reports, or in km."""
+def deciders(digest) -> list[tuple[str, int, float, float]]:
+    """(the kind of question, the report that decides it, how far it leads the next, how far the next leads the
+    one after it) for each question whose naive answer one report decides (every report a record of its own):
+    the largest (smallest: min) value of its field in scope, the k-th, or the report nearest its place; the
+    leads in shares of the field's spread over the digest's reports, or in km (infinite where there is no next
+    report)."""
     reports, units = digest["reports"], digest["units"]
     out = []
     for q in digest["inst"].questions:
@@ -446,7 +447,7 @@ def deciders(digest) -> list[tuple[str, int, float]]:
         if term.kind in ("nearest_to", "nearest_distance"):
             d = sorted((haversine_km(term.raw["lat"], term.raw["lon"], reports[i].lat, reports[i].lon), i)
                        for i in inside)
-            out.append((term.kind, d[0][1], d[1][0] - d[0][0]))
+            out.append((term.kind, d[0][1], d[1][0] - d[0][0], d[2][0] - d[1][0] if len(d) > 2 else math.inf))
             continue
         key = term.field
         values = [r.values[key] for r in reports]
@@ -454,8 +455,9 @@ def deciders(digest) -> list[tuple[str, int, float]]:
         ordered = sorted(inside, key=lambda i: (reports[i].values[key] if term.kind == "min" else -reports[i].values[key], i))
         k = term["k"] - 1 if term.kind == "rank" else 0
         if len(ordered) > k + 1:
-            out.append((term.kind, ordered[k], abs(reports[ordered[k]].values[key] - reports[ordered[k + 1]].values[key])
-                        / spread))
+            v = [reports[i].values[key] for i in ordered]
+            out.append((term.kind, ordered[k], abs(v[k] - v[k + 1]) / spread,
+                        abs(v[k + 1] - v[k + 2]) / spread if len(v) > k + 2 else math.inf))
     return out
 
 
@@ -464,21 +466,38 @@ def test_a_report_that_decides_a_question_leads_the_next_as_a_real_one_does(samp
     that holds it; placed where it changes an answer, it passed it by little (a station's next observation
     passes its last one by a degree), and the report a question about a place was drawn near was a real record,
     so that real reports decided those questions, by tens or hundreds of km, and planted ones almost never.
-    Each trap now draws how far a real record that decides a question leads the next one, of each kind of
-    question, and prefers a placement whose planted report, where it decides one, leads within a factor of two
-    of it (traps._Leads); and a question about a place is asked about a place near a report of the digest that
-    then decides it, planted or real (questions.reanchor_nearest, and the test that follows). (Before: an AUC
-    of 0.27 in weather for how far a report that decides a question leads the next, and of 0.18 to 0.23 for
-    the report nearest a place in earthquakes.)"""
+    Each trap now draws, for each question, how far a real record decides another question, decided by
+    another record, and prefers a placement whose planted report, where it decides the question, leads within
+    a factor of two of it (traps._Leads); and a question about a place is asked about a place near a report of
+    the digest that then decides it, planted or real (questions.reanchor_nearest, and the test that follows).
+    (Before: an AUC of 0.27 in weather for how far a report that decides a question leads the next, and of 0.18
+    to 0.23 for the report nearest a place in earthquakes.)
+
+    The lead drawn is never the question's own, nor that of a question its decider decides. A planted report
+    that decides a question passes the key's decider, whose lead over the next is then the planted report's
+    runner-up's lead: matched to the question's own lead, a planted decider led its runner-up by about what the
+    runner-up led the next by, within a factor of two for 58-72% of planted deciders against 31-36% of real
+    ones (an AUC of 0.28 to 0.36 for |log2| of the ratio of the two leads)."""
     planted, real, nearest = [], [], Counter()
+    ratio_planted, ratio_real, within = [], [], defaultdict(list)
     for digest in sample:
-        for kind, i, lead in deciders(digest):
+        for kind, i, lead, lead2 in deciders(digest):
             label = digest["labels"][i]
             if kind in ("nearest_to", "nearest_distance"):
                 nearest[label in REMOVABLE] += 1
                 continue
             (planted if label in REMOVABLE else real if label == "real" else []).append(lead)
-    assert len(planted) >= 40 and 0.38 <= auc(planted, real) <= 0.62, (len(planted), auc(planted, real))
+            if math.isfinite(lead) and math.isfinite(lead2) and label in REMOVABLE + ("real",):
+                ratio = abs(math.log2(max(lead, 1e-9) / max(lead2, 1e-9)))
+                (ratio_planted if label in REMOVABLE else ratio_real).append(ratio)
+                within[label in REMOVABLE].append(ratio <= 1)
+    assert len(planted) >= 40 and 0.38 <= auc(planted, real) <= 0.62, (len(planted), auc(planted, real))  # (0.49)
+    # the ratio of the two leads: 0.47 on this sample (0.36 when the lead was matched to the question's own), and
+    # within a factor of two for 0.39 of 54 planted deciders and 0.32 of 173 real ones (0.59 and 0.35 before; 0.35
+    # and 0.33 over 12 more seeds)
+    assert 0.38 <= auc(ratio_planted, ratio_real) <= 0.62, auc(ratio_planted, ratio_real)
+    share = {k: sum(v) / len(v) for k, v in within.items()}
+    assert abs(share[True] - share[False]) <= 0.18, share
     assert nearest[True] > 0 and nearest[False] > 0, nearest  # the report nearest a place is sometimes planted
 
 
@@ -504,6 +523,7 @@ def test_a_place_lies_near_the_report_that_decides_it_planted_or_real(places):
     reports deciding a fifth as many of these questions as their share of the reports asked about, where they
     now decide half as many, and in earthquakes four fifths.)"""
     band, named, leads, decided, asked = defaultdict(list), defaultdict(list), defaultdict(list), Counter(), Counter()
+    clear = defaultdict(list)
     for digest in places:
         spatial = digest["domain"].spatial
         reports, units, labels = digest["reports"], digest["units"], digest["labels"]
@@ -522,6 +542,8 @@ def test_a_place_lies_near_the_report_that_decides_it_planted_or_real(places):
             named[planted].append(bool(re.search(rf"\b{re.escape(reports[i].source.upper())}\b",
                                                  str(term.raw["label"]).upper())))
             leads[planted].append(d[1][0] - d[0][0] if len(d) > 1 else math.inf)
+            clear[planted].append(len(d) < 3 or d[2][0] - d[1][0] >= max(spatial.nearest_gap[0],
+                                                                         spatial.nearest_gap[1] * d[1][0]))
             decided[planted] += 1
             for j in inside:
                 asked[labels[j] in REMOVABLE] += 1
@@ -529,10 +551,15 @@ def test_a_place_lies_near_the_report_that_decides_it_planted_or_real(places):
     assert all(abs(r[True] - r[False]) <= 0.1 for r in rate.values()) and rate["band"][False] >= 0.9, rate
     share = decided[True] / sum(decided.values()) / (asked[True] / sum(asked.values()))
     assert decided[True] >= 10 and share >= 0.4, (decided, asked, share)  # (0.57 on this sample)
-    # (0.29 on this sample, from 14 planted deciders, whose AUC moves by 0.07 from sample to sample; 0.39 over 16
-    # seeds, 0.37 over 8 before the guards of the questions-and-genres fixes redrew which questions are asked;
-    # before, 0.22)
+    # (0.41 on this sample, from 25 planted deciders, whose AUC moves by 0.07 from sample to sample, and 0.49 and
+    # 0.48 within earthquakes and within weather; 0.39 over 16 seeds; before, 0.22)
     assert 0.25 <= auc(leads[True], leads[False]) <= 0.75, auc(leads[True], leads[False])
+    # the report that comes next after a place's nearest stands clear of the one after it, whoever decides it: a
+    # place drawn near a planted report keeps the key's nearest record, most often that next report, clear of the
+    # record after it, and a place drawn near any report now keeps the next report clear of the one after it
+    # (before, it stood clear more often when a planted report decided, with AUCs of 0.57 to 0.60)
+    rate = {p: sum(v[p]) / len(v[p]) for v in (clear,) for p in (True, False)}
+    assert abs(rate[True] - rate[False]) <= 0.15, rate
 
 
 def test_a_notice_follows_its_report_later_than_any_genre_sends_it(sample, monkeypatch):

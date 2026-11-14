@@ -198,6 +198,12 @@ def test_a_time_of_the_largest_whose_runner_up_is_a_minute_away_is_refused_off_t
     assert guards_ok(largest, near) and not guards_ok(largest, near, strict=True)
     apart = [quake("nc1", mag=4.0, time=1_780_000_000), quake("nc2", mag=3.5, time=1_780_000_600)]
     assert guards_ok(largest, apart, strict=True)
+    # A time does not follow its value: the runner-up lies an hour away, but a smaller event 30 s from the
+    # largest one answers its minute too, so a reader who takes it would be counted right.
+    third = [quake("nc1", mag=4.0, time=1_780_000_000), quake("nc2", mag=3.0, time=1_780_003_600),
+             quake("nc3", mag=2.0, time=1_780_000_030)]
+    assert guards_ok(largest, third) and not guards_ok(largest, third, strict=True)
+    assert guards_ok(largest, third[:2], strict=True)
 
 
 def runner_up(q, records, domain):
@@ -228,7 +234,10 @@ def test_no_value_answer_off_the_legacy_path_is_shared_by_another_record(runs, n
                 continue
             asked += 1
             other = runner_up(q, records, domain)
-            if other is not None:
+            others = [other] if other is not None else []
+            if term.kind == "time_of_max":  # every other record's time, not only the runner-up's
+                others = by_field(rows_after_filters(q.chain, records, units=domain.units), term.field)[1:]
+            for other in others:
                 wrong = execute(q.chain, [other], units=domain.units)
                 assert not is_correct(q.answer_type, inst.answer_key[q.qid], wrong, unit=q.unit), (inst.instance_id,
                                                                                                     q.qid)
@@ -260,11 +269,23 @@ def test_a_point_label_off_the_legacy_path_names_no_source(runs, name):
 
 
 def test_a_domain_whose_point_label_names_a_source_is_refused(toys):
+    """A point label that names the source however it is written, or that has no number to keep an instance's
+    points apart (questions._draw_point draws numbers until a label is new, and would draw for ever), or a
+    field that questions do not fill, is refused."""
     toys.toy.validate()
+    for label, why in (("buoy {source}-{number}", "names the source"), ("buoy {source!s}-{number}", "names the source"),
+                       ("buoy {number} of {source:>2}", "names the source"), ("buoy {source.upper}{number}", "names"),
+                       ("buoy", "has no {number}"), ("buoy {}", "do not fill"), ("buoy {station}-{number}", "do not fill"),
+                       ("buoy {number", "not a format string")):
+        domain = copy.copy(toys.toy)
+        domain.spatial = replace(toys.toy.spatial, point_label=label)
+        with pytest.raises(ValueError, match=re.escape(why)):
+            domain.validate()
     domain = copy.copy(toys.toy)
-    domain.spatial = replace(toys.toy.spatial, point_label="buoy {source}-{number}")
-    with pytest.raises(ValueError, match="point label"):
+    domain.spatial = replace(toys.toy.spatial, point_label="buoy {number}", legacy_point_label="buoy {source}")
+    with pytest.raises(ValueError, match=re.escape("legacy point label 'buoy {source}' has no {number}")):
         domain.validate()
+    EARTHQUAKES.validate()  # the 0.2.0 label, "station {source}-{number}", stays for the legacy path
 
 
 # ------------------------------------------------------------------------------ question wording

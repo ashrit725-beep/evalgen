@@ -563,9 +563,14 @@ def test_the_naive_reader_falls_for_the_traps_and_only_for_them(toy_runs):
 
 
 def test_the_mocks_mistakes_on_record_types_are_real_mistakes(toy_runs, answer_registry):
+    """The simulated model errs on some of a toy run's questions and not on others, over every rendering (its
+    accuracy, of the 15 or so original renderings' questions alone, came out 100% by chance once the traps'
+    placement changed what toy-dressed's prompts print: its errors are seeded by the prompt text), and every
+    wrong answer it gives is wrong for the scorer."""
     for name, run in toy_runs.items():
         mock = {m["model"]: m for m in read_json(run / "report.json")["models"]}["mock"]
-        assert 0 < mock["accuracy"]["rate"] < 1 and mock["format"]["replies"] == 12
+        rows = read_json(run / "scores" / "mock.json")["rows"]
+        assert 0 < sum(row["correct"] for row in rows) < len(rows) and mock["format"]["replies"] == 12
         for inst in load_instances(run):
             task = Task(inst.instance_id, "v1", question_specs(inst), hidden=inst, domain=name, genre="classic")
             for q in question_specs(inst):

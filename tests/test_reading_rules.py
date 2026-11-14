@@ -13,6 +13,7 @@ from evalgen.domains import base, get_domain
 from evalgen.domains.base import REPEAT_RULE, Surface, indefinite
 from evalgen.domains.invented import DUPLICATE_NOTES, INVENTED
 from evalgen.genres import all_genres, chat, email, get_genre, radio
+from evalgen.genres.base import parse_glossary, render_glossary
 from evalgen.models import Notice
 from evalgen.pipeline import GenerateConfig, build_instance
 from evalgen.questions import Context, compose_new_templates
@@ -288,6 +289,10 @@ def test_every_article_in_the_rules_fits_the_word_it_stands_before(toys):
     vowels = copy.copy(toys.toy)
     vowels.noun, vowels.group_label, vowels.statuses = "event", "inlet", ("authoritative", "estimated")
     texts.add(vowels.rules_text())
+    glossary = render_glossary(vowels.glossary())  # the glossary words its statuses as the rules do
+    assert ('- Statuses: an "authoritative" report settles a record\'s values; an "estimated" report does not.'
+            in glossary) and parse_glossary(glossary) == vowels.glossary()
+    texts.add(glossary)
     flat = {" ".join(text.split()) for text in texts}
     assert any("An outpost in a question" in text for text in flat)  # the surfaces drew one
     assert any("An observation may appear" in text for text in flat)

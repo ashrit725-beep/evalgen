@@ -28,13 +28,15 @@ from __future__ import annotations
 
 import copy
 import random
+import re
+import string
 import textwrap
 from dataclasses import asdict, dataclass, field, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence
 
 from ..geo import utc_offset_hours
-from ..scoring import AnswerType, answer_type_conflict
+from ..scoring import AnswerType, answer_type_conflict, read_answer
 from ..units import LENGTH, ExactValues, Unit
 
 if TYPE_CHECKING:
@@ -572,9 +574,11 @@ class Domain:
         if self.group_preposition not in GROUP_PREPOSITIONS:
             problems.append(f"its group preposition {self.group_preposition!r} is none of {GROUP_PREPOSITIONS}, which "
                             "the genres' parsers read")
-        if self.spatial is not None and "{source}" in self.spatial.point_label:
-            problems.append(f"its point label {self.spatial.point_label!r} names the source of the record a question's "
-                            "point is drawn near, which is almost always the answer's")
+        if self.spatial is not None:
+            problems += _point_label_problems(self.spatial.point_label, "point label", allowed=("number",))
+            if self.spatial.legacy_point_label is not None:
+                problems += _point_label_problems(self.spatial.legacy_point_label, "legacy point label",
+                                                  allowed=("number", "source"))
         problems += [f"its trap vocabulary has no {name.replace('_', ' ')}"
                      for name, words in asdict(self.trap_vocab).items() if not words]
         return problems
@@ -702,11 +706,20 @@ class Domain:
         if drawn.group_label is not None and drawn.group_label.casefold() not in words:
             problems.append(f"the surface calls its groups {drawn.group_label!r}, a word the scorer does not strip "
                             "from group answers: declare it among the domain's surface_group_labels")
+        group_type = AnswerType(self.group_answer_type, "group", suffixes=words)  # as it is registered
+        label = drawn.group_label or self.group_label
         for name in drawn.groups.values():
             ending = next((word for word in words if " ".join(name.casefold().split()).endswith(" " + word)), None)
             if ending is not None:
                 problems.append(f"the surface names a group {name!r}, which ends in {ending!r}, a group word the "
                                 "scorer strips from group answers")
+                continue
+            # The scorer must read the name, and the name followed by its label, as the key: a label that ends
+            # a longer group word ("area" in "sea area") would strip a part of the name with it.
+            key, labelled = read_answer(group_type, name), read_answer(group_type, f"{name} {label}")
+            if key is None or labelled != key:
+                problems.append(f"the surface names a group {name!r}, whose answer '{name} {label}' the scorer "
+                                f"reads as {labelled!r}, not as {key!r}")
         for name in ("groups", "sources"):
             names = list(getattr(drawn, name).values())
             if len(set(names)) != len(names):
@@ -856,6 +869,30 @@ class Domain:
         """A RecordReport or Notice that a genre read from a digest, as this domain's digests hold it:
         the inverse of ``to_generic``."""
         return item
+
+
+def _point_label_problems(label: str, what: str, *, allowed: Sequence[str]) -> list[str]:
+    """What is wrong with a point label, a format string that questions fill with `number` (and the legacy one
+    with `source`, the source of the record the point is drawn near): a field other than those `allowed`, by
+    whatever conversion, format spec, attribute or index it is written with ("{source!s}", "{source.upper}"),
+    which off the legacy path would name the source of the record a question's point is drawn near, almost
+    always the answer's (or which formatting would refuse); and no number, without which no two points of an
+    instance could have labels of their own (questions._draw_point draws numbers until a label is new)."""
+    try:
+        fields = [name for _, name, _, _ in string.Formatter().parse(label) if name is not None]
+    except ValueError as exc:
+        return [f"its {what} {label!r} is not a format string ({exc})"]
+    roots = {re.split(r"[.\[]", name, maxsplit=1)[0] for name in fields}
+    problems = []
+    if "source" in roots and "source" not in allowed:
+        problems.append(f"its {what} {label!r} names the source of the record a question's point is drawn near, "
+                        "which is almost always the answer's")
+    others = sorted(root for root in roots if root not in ("number", "source"))
+    if others:
+        problems.append(f"its {what} {label!r} has fields {others!r}, which questions do not fill")
+    if "number" not in roots:
+        problems.append(f"its {what} {label!r} has no {{number}}, which keeps the points of an instance apart")
+    return problems
 
 
 def stored_places(value: float, decimals: int) -> int:

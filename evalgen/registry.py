@@ -51,6 +51,7 @@ class Registry(Generic[T]):
         self._entries: dict[str, T] = {}
         self._builtin: set[str] = set()  # the names of the package's own entries
         self._private: set[str] = set()  # the names of entries that a private run config's plugins define
+        self._origin: dict[str, Path] = {}  # the file each plugin entry was loaded from (load_plugin)
         self._discovered = False
 
     def get(self, name: str | None = None) -> T:
@@ -108,7 +109,14 @@ class Registry(Generic[T]):
         names these files (evalgen.mix); loading the same file again returns the same entry."""
         path = Path(path).resolve()
         self._discover()  # built-ins first, so that a plugin cannot take a built-in name
-        return self.register(self._entry_in(load_module(path)))
+        entry = self.register(self._entry_in(load_module(path)))
+        self._origin.setdefault(entry.name, path)
+        return entry
+
+    def origin(self, name: str) -> Path | None:
+        """The file that the plugin entry `name` was loaded from (load_plugin, resolved); None for a built-in
+        entry, one registered directly, or no entry at all."""
+        return self._origin.get(name)
 
     def _discover(self) -> None:
         """Register the package's entry modules in sorted order, all or none: when one fails to import

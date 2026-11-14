@@ -47,8 +47,8 @@ ANSWER_TYPE_ORDER = ("count", "event_id", "magnitude", "depth", "distance", "reg
 MODEL_ORDER = {"oracle": 0, "naive": 1, "mock": 2}
 
 
-INSTANCE_ID = re.compile(r"inst-\d+")  # f"inst-{index:03d}": the names evalgen gives instances
-VARIANT = re.compile(r"v\d+")  # "v0" is the original, then "v1", "v2", ...
+INSTANCE_ID = re.compile(r"inst-[0-9]+")  # f"inst-{index:03d}": the names evalgen gives instances (ASCII digits)
+VARIANT = re.compile(r"v[0-9]+")  # "v0" is the original, then "v1", "v2", ... (\d takes any script's digits)
 
 
 def load_instances(run_dir: Path, manifest: Mapping[str, Any] | None = None) -> list[Instance]:
@@ -71,6 +71,8 @@ def load_instances(run_dir: Path, manifest: Mapping[str, Any] | None = None) -> 
         if not variants or not all(isinstance(v, str) and VARIANT.fullmatch(v) for v in variants) or (
                 len(set(variants)) != len(variants)):
             raise RunDirError(f"{path} names its renderings {variants!r}: they are v0, v1, ..., each once")
+        if not isinstance(inst.answer_key, dict) or not all(q.qid in inst.answer_key for q in inst.questions):
+            raise RunDirError(f"{path} holds no answer key for each of its questions")
         instances.append(inst)
     if manifest is not None:
         listed, found = manifest.get("instances", []), {inst.instance_id for inst in instances}
@@ -99,9 +101,27 @@ def read_run_json(path: Path) -> Any:
 
 
 def read_scores(run_dir: Path) -> list[dict]:
-    """The scores of every model of a run (scores/<model>.json, by file name); [] for a run without any."""
+    """The scores of every model of a run (scores/<model>.json, by file name); [] for a run without any. A
+    file that is not an object with its rows and replies (lists), as `score` writes it, is refused
+    (RunDirError): a run received from someone else may hold one, and the report would stop on a traceback."""
     folder = Path(run_dir) / "scores"
-    return [read_run_json(path) for path in sorted(folder.glob("*.json"))] if folder.is_dir() else []
+    scores = [(path, read_run_json(path)) for path in sorted(folder.glob("*.json"))] if folder.is_dir() else []
+    for path, data in scores:
+        if not isinstance(data, dict) or not all(isinstance(data.get(key), list) for key in ("rows", "replies")):
+            raise RunDirError(f"{path} is not the scores of a model as evalgen writes them (rows and replies)")
+    return [data for _, data in scores]
+
+
+def read_forecasts(run_dir: Path) -> list[dict]:
+    """The forecasts of a run (forecasts.json); [] for a run without one. A file that is not a list of
+    objects, as generate and resolve write it, is refused (RunDirError)."""
+    path = Path(run_dir) / "forecasts.json"
+    if not path.exists():
+        return []
+    forecasts = read_run_json(path)
+    if not isinstance(forecasts, list) or not all(isinstance(f, dict) for f in forecasts):
+        raise RunDirError(f"{path} is not a list of forecasts as evalgen writes it")
+    return forecasts
 
 
 def legacy_run(instances: Iterable[Instance]) -> bool:
@@ -407,7 +427,13 @@ def split_gap(rows: list[dict], split_of: Callable[[dict], str | None],
     independent unit than with every row independent), and the stratified interval of the adjusted gap
     by the design effect of the rows that it compares. The adjusted gap's strata are too small for a
     cluster-robust variance of their own (a stratum of one row has no residual), so the design effect
-    is taken over its rows as one raw difference."""
+    is taken over its rows as one raw difference.
+
+    A side whose compared rows all come from one instance shows no spread between instances (its rows'
+    residuals sum to zero within it), so no design effect widens its interval: one misread digest of a
+    held-out domain, five wrong answers beside thirty public instances, made an adjusted gap of +80 points
+    whose interval excluded 0. The gap is flagged only when the compared rows of each side come from two
+    instances or more."""
     sides = {PUBLIC: [0, 0], HELD_OUT: [0, 0]}
     cells: dict[tuple, list[int]] = {}
     units: list[tuple] = []  # (instance, stratum, on the public side, correct): for the design effects
@@ -429,13 +455,15 @@ def split_gap(rows: list[dict], split_of: Callable[[dict], str | None],
     gap, lo, hi = difference_ci(k1, n1, k2, n2)
     lo, hi = widened(gap, lo, hi, math.sqrt(design_effect((iid, public, y) for iid, _, public, y in units)))
     adjusted = stratified_difference(list(cells.values()))
+    compared: list[tuple] = []
     if adjusted is not None:
         compared = [(iid, public, y) for iid, stratum, public, y in units if all(cells[stratum][1::2])]
         adjusted = (adjusted[0], *widened(*adjusted[:3], math.sqrt(design_effect(compared))), adjusted[3])
+    spread = min(len({iid for iid, public, _ in compared if public == side}) for side in (True, False))
     return {"public": _rate(k1, n1), "held_out": _rate(k2, n2), "public_minus_held_out": gap, "ci95": [lo, hi],
             "adjusted": None if adjusted is None else
             {"public_minus_held_out": adjusted[0], "ci95": [adjusted[1], adjusted[2]], "coverage": adjusted[3]},
-            "flagged": _flagged(adjusted)}
+            "flagged": _flagged(adjusted) and spread >= 2}
 
 
 def answers_agree(q: Question, a: Mapping[str, Any], b: Mapping[str, Any], *, legacy: bool = False) -> bool:
@@ -543,6 +571,26 @@ def _ordered(splits: Mapping[str, str]) -> list[tuple[str, str]]:
     return sorted(splits.items(), key=lambda item: _split_rank(item[1]))
 
 
+PUBLISHED_PLUGINS = PACKAGE_DIR.parent / "tests"  # the test-only plugins published in evalgen's repository
+
+
+def published_held_out(inventory: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> dict[str, list[str]]:
+    """The held-out domains and genres of an inventory (as mix_summary words it) that plugin files of
+    evalgen's own tests/ folder define (PUBLISHED_PLUGINS): the test-only toy domain and genre, which
+    configs/private.example.json holds out. They are published with evalgen, as its built-in ones are
+    (built_in_held_out), whatever nonce the config that holds them out draws. (Only tests/: an evaluator may
+    keep private plugins in a folder of their own checkout that is never published.) A plugin that this
+    process has not loaded is not known to be one of them (registry.Registry.origin)."""
+    registries = {"domains": domains.REGISTRY, "genres": genres.REGISTRY}
+    out = {}
+    for kind, registry in registries.items():
+        origins = {name: registry.origin(name) for name, entry in inventory[kind].items()
+                   if entry["split"] == HELD_OUT and not registry.is_builtin(name)}
+        out[kind] = [name for name, origin in origins.items()
+                     if origin is not None and origin.is_relative_to(PUBLISHED_PLUGINS)]
+    return out
+
+
 def built_in_held_out(inventory: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> dict[str, list[str]]:
     """The held-out domains and genres of an inventory (as mix_summary words it) that are built into
     evalgen rather than defined in a plugin: their code is public, so a gap on them tests nothing that
@@ -575,6 +623,7 @@ def mix_summary(manifest: Mapping[str, Any], instances: list[Instance]) -> dict:
         "private_config_commitment": manifest.get("private_config_commitment"),
     }
     summary["held_out_built_in"] = built_in_held_out(summary["inventory"])
+    summary["held_out_published"] = published_held_out(summary["inventory"])
     if manifest.get("private_config_example"):  # the config keeps a published EXAMPLE's nonce
         summary["private_config_example"] = True
     if "snapshots" in manifest:
@@ -628,7 +677,7 @@ def compute(run_dir: Path, *, private_config: str | Path | None = None,
     if not scores:
         raise FileNotFoundError(f"no scores in {run_dir}; run `python cli.py run {run_dir}` and `python cli.py score "
                                 f"{run_dir}` first")
-    forecasts = read_run_json(run_dir / "forecasts.json") if (run_dir / "forecasts.json").exists() else []
+    forecasts = read_forecasts(run_dir)
     inventory = Inventory.of_run(manifest)
     models = [model_metrics(s, instances, forecasts, inventory) for s in scores]
     models.sort(key=lambda m: (MODEL_ORDER.get(m["model"], 9), m["model"]))
@@ -760,7 +809,7 @@ def _mix_lines(run: dict) -> list[str]:
               f"- **Genres:** {listed(inventory['genres'], 'renderings')}."]
     commitment = run.get("private_config_commitment")
     if commitment:
-        lines.append(f"- **Private run config:** committed as `{commitment[:24]}…`, the SHA-256 of its canonical JSON, "
+        lines.append(f"- **Private run config:** committed as `{commitment}`, the SHA-256 of its canonical JSON, "
                      "which can be published before the evaluation; once the config is revealed, "
                      f"`python cli.py verify-config RUN_DIR CONFIG`, with RUN_DIR the folder of this run "
                      f"(`{run['run_id']}`), checks it. The domains and genres it holds out are marked held out above.")
@@ -788,25 +837,29 @@ def _cross_genre_section(models: list[dict]) -> list[str]:
 
 def _public_held_out_note(run: dict) -> list[str]:
     """A warning, for a run whose held-out domains or genres are public, that its gaps test nothing held
-    out: those built into evalgen (held_out_built_in), and every one when the run's private config keeps
-    the nonce of a published EXAMPLE (configs/private.example.json, whose held-out sets are public test
-    code). Nothing when every held-out set comes from a private plugin."""
-    built_in = run.get("held_out_built_in") or {}
+    out: those built into evalgen (held_out_built_in), those that plugin files published with evalgen define
+    (held_out_published: its tests' toy plugins), and every one when the run's private config keeps the nonce
+    of a published EXAMPLE (configs/private.example.json, whose held-out sets are public test code). Nothing
+    when every held-out set comes from a private plugin."""
     example = bool(run.get("private_config_example"))
-    parts, count = [], 0
-    for kind in ("domains", "genres"):
-        names = built_in.get(kind) or []
-        if names:
-            parts.append(f"the {kind if len(names) > 1 else kind[:-1]} {_listed(names)}")
-            count += len(names)
-    if not parts and not example:
+    said, count = [], 0
+    for listing, where in (("held_out_built_in", "built into evalgen, whose code is published"),
+                           ("held_out_published", "defined by plugin files published with evalgen (the test-only "
+                                                  "plugins of its tests/ folder)")):
+        found = run.get(listing) or {}
+        parts, number = [], 0
+        for kind in ("domains", "genres"):
+            names = found.get(kind) or []
+            if names:
+                parts.append(f"the {kind if len(names) > 1 else kind[:-1]} {_listed(names)}")
+                number += len(names)
+        if parts:
+            said.append(f"{' and '.join(parts)} {'are' if number > 1 else 'is'} held out in this run but {where}.")
+            count += number
+    if not said and not example:
         return []
     held_out = sum(1 for kind in ("domains", "genres") for e in run["inventory"][kind].values()
                    if e["split"] == HELD_OUT)
-    said = []
-    if parts:
-        said.append(f"{' and '.join(parts)} {'are' if count > 1 else 'is'} held out in this run but built into "
-                    "evalgen, whose code is published.")
     if example:
         said.append("This run's private run config keeps the nonce of a published EXAMPLE: it is for demos, its "
                     "commitment can be guessed, and the published example holds out test code that is public too.")

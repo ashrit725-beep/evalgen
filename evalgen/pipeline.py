@@ -55,7 +55,7 @@ from .ops import execute, role
 from .prompt import build_prompt, domain_prompt
 from .questions import (Context, Template, compose_new_templates, compose_questions, phrase_question, public_templates,
                         reanchor_nearest)
-from .report import code_fingerprint, load_instances, read_run_json, read_scores, write_report
+from .report import code_fingerprint, load_instances, read_forecasts, read_scores, write_report
 from .rules import READING_RULES
 from .scoring import is_correct, normalize, same_answer
 from .seeds import SeedLog, derive_seed, fresh_nonce, seed_commitment
@@ -452,9 +452,12 @@ def _replay_check(frozen: str | None, log: Log, *, seed: int | None = None, draw
     path = Path(frozen).resolve()
     source_run = next((folder for folder in [path, *path.parents][:4]
                        if is_run_dir(folder) and (folder / "manifest.json").exists()), None)
-    if source_run is None:
+    try:
+        manifest = None if source_run is None else read_json(source_run / "manifest.json")
+    except (OSError, ValueError):  # not UTF-8, not JSON, not a file: no run that evalgen wrote
+        manifest = None
+    if not isinstance(manifest, dict):  # a manifest that evalgen did not write is no source run's
         return {"source_run": None, "same_code": None, **({} if seed is None else {"same_seed": None})}
-    manifest = read_json(source_run / "manifest.json")
     same = manifest.get("code_sha256") == code_fingerprint()
     if not same:
         log("[generate] warning: the source run was generated with different code, so a replay "
@@ -530,7 +533,9 @@ def _inputs_in(run_dir: Path, cfg: GenerateConfig, plan: Plan, frozen: Mapping[s
     private run config and the config's plugins. Replacing `run_dir` would delete them: the frozen bytes
     before they are read (a run folder may hold the only copy of a live feed), the config after the new
     manifest has committed to it. A path is in `run_dir` as written or as it resolves: deleting the folder
-    removes the entry below it, and the file that a link elsewhere points to below it."""
+    removes the entry below it, and the file that a link elsewhere points to below it. It is also in it when a
+    folder above it is `run_dir` named otherwise, in another letter case or Unicode form, which the file
+    systems of macOS and Windows take for the same name: the file system says which folder each is."""
     feeds = [Path(cfg.snapshot_file)] if cfg.snapshot_file else []
     feeds += [Path(feed) for feed in frozen.values() if feed is not None]
     inputs = [Path(p) for p in (cfg.snapshot_dir, cfg.private_config) if p is not None]
@@ -539,8 +544,24 @@ def _inputs_in(run_dir: Path, cfg: GenerateConfig, plan: Plan, frozen: Mapping[s
         named = [e if isinstance(e, str) else e["path"] for e in plan.config.data.get("plugins", [])]
         inputs += [plan.config.path.parent / name for name in named] + list(plan.config.plugins)
 
+    try:
+        folder = os.stat(run_dir)
+    except OSError:
+        folder = None
+
     def within(path: Path) -> bool:
-        return any(Path(where(path)).is_relative_to(where(run_dir)) for where in (os.path.abspath, os.path.realpath))
+        if any(Path(where(path)).is_relative_to(where(run_dir)) for where in (os.path.abspath, os.path.realpath)):
+            return True
+        if folder is None:
+            return False
+        for named in (Path(os.path.abspath(path)), Path(os.path.realpath(path))):
+            for above in (named, *named.parents):
+                try:
+                    if os.path.samestat(os.stat(above), folder):
+                        return True
+                except OSError:
+                    continue
+        return False
 
     return list(dict.fromkeys(str(path) for path in inputs if within(path)))
 
@@ -619,6 +640,9 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
         if not is_run_dir(run_dir):
             raise FileExistsError(f"{run_dir} is not an evalgen run directory; refusing to delete it")
         shutil.rmtree(run_dir)
+    # The run that the frozen feed or snapshots come from, read before the run folder is made.
+    replay = _replay_check(cfg.snapshot_file or cfg.snapshot_dir, log, seed=None if plan.legacy else cfg.seed,
+                           drawn=[name for name, feed in frozen.items() if feed is None])
     run_dir.mkdir(parents=True, exist_ok=True)
     write_in(run_dir, run_dir / RUN_MARKER, "evalgen run directory\n")
 
@@ -662,8 +686,6 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
             f"{'events' if plan.legacy else 'records'}, "
             f"sha256 {snapshot.events_sha256[:16]}…")
 
-    replay = _replay_check(cfg.snapshot_file or cfg.snapshot_dir, log, seed=None if plan.legacy else cfg.seed,
-                           drawn=[name for name, feed in frozen.items() if feed is None])
     if plan.legacy:
         new_templates = {EARTHQUAKES.name: compose_new_templates(seedlog.rng("templates", "new"), EARTHQUAKES)}
     else:
@@ -912,17 +934,20 @@ def resolve_run(run_dir: Path, *, now: int | None = None, fetch: Callable | None
     """Grade the pending forecasts whose window has passed, each with the forecaster of the domain
     that asked it, and refresh the report. A run's plugins are loaded from its private run config. A path
     that is not a run raises FileNotFoundError, so that a scheduled resolve with a mistyped path fails
-    instead of reporting a run without forecasts."""
+    instead of reporting a run without forecasts, and so does a run whose instances are missing (a committed
+    run keeps only its manifest and report, and its forecasts.json is not kept either): it may well have
+    forecasts to resolve, which only the files it lacks hold."""
     run_dir = Path(run_dir)
     manifest = read_manifest(run_dir)
+    load_instances(run_dir, manifest)
     path = run_dir / "forecasts.json"
     if not path.exists():
         log("[resolve] this run has no forecast questions (only earthquake instances read from the USGS feed ask "
             "one: --source usgs, or --source live with earthquakes in the mix, or a frozen USGS feed replayed with "
             "--snapshot-file or --snapshot-dir)")
         return {}
+    forecasts = read_forecasts(run_dir)
     load_run_plugins(manifest, private_config, log=log)  # a plugin domain resolves its own forecasts
-    forecasts = read_run_json(path)
     by_domain: dict[str | None, list[dict]] = {}  # a legacy run records no domain: its forecasts are earthquake ones
     for forecast in forecasts:
         by_domain.setdefault(forecast.get("domain"), []).append(forecast)

@@ -74,3 +74,20 @@ def test_a_gap_whose_answers_go_together_in_each_instance_gets_an_interval_as_wi
     assert twice["public_minus_held_out"] == once["public_minus_held_out"]
     assert twice["ci95"] == pytest.approx(once["ci95"])  # counting each row twice adds no information
     assert twice["adjusted"]["ci95"] == pytest.approx(once["adjusted"]["ci95"], rel=0.05)
+
+
+def test_a_gap_whose_side_holds_one_instance_is_never_flagged():
+    """One held-out instance gets no widening from the design effect (its rows' residuals sum to zero within
+    it), so one misread digest beside thirty public instances made a flagged adjusted gap of +80 points. A
+    gap is flagged only when each side's compared rows come from two instances or more."""
+    def rows(held_out: list[list[bool]]) -> list[dict]:
+        out = [{"instance_id": f"inst-{i:03d}", "side": PUBLIC, "correct": q != 0} for i in range(30) for q in range(5)]
+        out += [{"instance_id": f"inst-{100 + i:03d}", "side": HELD_OUT, "correct": y}
+                for i, answers in enumerate(held_out) for y in answers]
+        return out
+
+    one = split_gap(rows([[False] * 5]), lambda row: row["side"], lambda row: ())
+    assert one["adjusted"]["public_minus_held_out"] == pytest.approx(0.8)
+    assert one["adjusted"]["ci95"][0] > 0 and not one["flagged"]  # the interval excludes 0, but rests on one instance
+    three = split_gap(rows([[False] * 5] * 3), lambda row: row["side"], lambda row: ())
+    assert three["flagged"]  # three digests misread alike are flagged

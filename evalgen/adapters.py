@@ -192,8 +192,10 @@ def _mock_name(held_out_domains: float, held_out_genres: float) -> str:
 
 
 def _mock(seed: int, options: str) -> MockAdapter:
-    """A simulated model from the options of its spec: none, or option=penalty pairs joined with "+"."""
+    """A simulated model from the options of its spec: none, or option=penalty pairs joined with "+", each
+    penalty set once (held_out sets both)."""
     penalties = {"held_out_domains": 0.0, "held_out_genres": 0.0}
+    given: set[str] = set()
     for part in filter(None, (piece.strip() for piece in options.split("+"))):
         option, equals, value = (piece.strip() for piece in part.partition("="))
         try:
@@ -204,6 +206,9 @@ def _mock(seed: int, options: str) -> MockAdapter:
             raise UnknownModel(f"unknown mock option {part!r} (use held_out=P, held_out_domains=P or "
                                "held_out_genres=P, joined with +)")
         for key in ("held_out_domains", "held_out_genres") if option == "held_out" else (option,):
+            if key in given:
+                raise UnknownModel(f"the mock option {part!r} sets {key} a second time")
+            given.add(key)
             penalties[key] = amount
     return MockAdapter(seed, **penalties)
 
@@ -419,6 +424,8 @@ class OpenAIAdapter(Adapter):
 def make_adapter(spec: str, seed: int = 0, max_tokens: int = DEFAULT_MAX_TOKENS) -> Adapter:
     name, _, model = spec.strip().partition(":")
     name = name.lower()
+    if name in ("oracle", "naive") and model.strip():
+        raise UnknownModel(f"the {name} model takes no options: {spec!r}")
     if name == "oracle":
         return OracleAdapter()
     if name == "naive":

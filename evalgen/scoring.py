@@ -125,7 +125,7 @@ def _read_id(t: AnswerType, value: Any) -> str | None:
 
 
 def _read_group(t: AnswerType, value: Any) -> str | None:
-    text = re.sub(r"\s+", " ", str(value)).strip().strip(".\"'").casefold()
+    text = re.sub(r"\s+", " ", str(value)).strip().strip(".\"'\u201c\u201d\u2018\u2019").casefold()  # “” ‘’ too
     if text.startswith("the "):
         text = text[4:]
     if text in TIE_WORDS or re.search(r"\btied?\b", text):
@@ -203,14 +203,18 @@ def get_answer_type(name: str) -> AnswerType:
 
 def normalize(answer_type: str, value: Any) -> Any:
     """Bring an answer (from a model, or the key) into a comparable canonical form, or None."""
-    known = get_answer_type(answer_type)
+    return read_answer(get_answer_type(answer_type), value)
+
+
+def read_answer(answer_type: AnswerType, value: Any) -> Any:
+    """normalize, for an answer type given as itself (one that need not be registered)."""
     if value is None:
         return None
     if isinstance(value, list):
         if len(value) != 1:
             return None  # several values offered: ambiguous
         value = value[0]
-    return _READERS[known.kind](known, value)
+    return _READERS[answer_type.kind](answer_type, value)
 
 
 def equivalent(answer_type: str, a: Any, b: Any, reference: Any = None, *, unit: str | None = None) -> bool:

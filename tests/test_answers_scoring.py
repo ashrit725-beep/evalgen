@@ -96,6 +96,9 @@ def test_unusable_replies_fail(text):
     # unambiguous strings are read
     ("distance", 5088.8, "5,088.8 km", True), ("count", 7, "7 events", True), ("depth", -0.7, "-0.7 km", True),
     ("region", "Fiji Islands", "Fiji Islands region", True), ("region", "tie", "It's a tie", True),
+    # compared groups are quoted off the legacy path, and a reply may echo the quotes typographically
+    ("region", "Southern Alaska", "\u201cSouthern Alaska\u201d", True),
+    ("region", "Southern Alaska", "\u2018Southern Alaska\u2019.", True),
 ])
 def test_scoring_rules(answer_type, key, given, ok):
     assert is_correct(answer_type, key, given) is ok

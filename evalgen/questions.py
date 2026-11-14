@@ -461,11 +461,13 @@ def strict_answer_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *
     """Whether a value answer belongs to its own record, and to that record's exact value, alone
     (guards_ok, strict). For the terminals whose answer is a value of a record rather than its ID:
 
-      - max, min, time_of_max, nearest_distance: the runner-up record's answer (the next value down, or
-        up for a min; the time of the second-largest value; the distance of the second-nearest record),
-        computed as the key is, is scored wrong (scoring.is_correct), so that a reader who takes the
-        wrong record is never counted right. A nearest record's runner-up lies beyond the nearest gap
-        already, which this checks in the asked unit and rounding;
+      - max, min, time_of_max, nearest_distance: the answer of a record that is not the key's, computed as
+        the key is, is scored wrong (scoring.is_correct), so that a reader who takes the wrong record is
+        never counted right: the runner-up's (the next value down, or up for a min; the distance of the
+        second-nearest record), whose answer lies nearest the key's, and for the time of the largest value
+        every other record's, as a time does not follow its value (a record with a smaller value can lie a
+        minute from the largest one). A nearest record's runner-up lies beyond the nearest gap already, which
+        this checks in the asked unit and rounding;
       - max, min: the answer is settled by its record's exact value (_rounding_settled), so the key never
         rests on how a tie is rounded, or on the binary rounding of a conversion.
 
@@ -489,10 +491,12 @@ def strict_answer_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *
     if term.kind in ("max", "min"):
         if not _rounding_settled(best.values[term.field], domain.field(term.field), unit, key):
             return False
-        ordered = [r for r in ordered if r.values[term.field] != best.values[term.field]]  # ties answer alike
+        others = [r for r in ordered if r.values[term.field] != best.values[term.field]][:1]  # ties answer alike
+    elif term.kind == "time_of_max":
+        others = ordered[1:]  # the rank gap rules out a tie for the largest value
     else:
-        ordered = ordered[1:]
-    return not ordered or not is_correct(answer_type, key, execute(chain, [ordered[0]], units=units), unit=unit)
+        others = ordered[1:2]
+    return not any(is_correct(answer_type, key, execute(chain, [r], units=units), unit=unit) for r in others)
 
 
 def _exact(x: float) -> Fraction:
@@ -634,10 +638,12 @@ NEAREST_TERMINALS = ("nearest_to", "nearest_distance")
 def _nearest_clear(chain: Sequence[dict], rows: Sequence[Any], spatial: Spatial, units: Mapping[str, Any]) -> bool:
     """Whether, among `rows` (a digest's reports, each read as a record of its own), the one nearest to a
     nearest question's place stands clear of the next by the domain's nearest gap, as the key's guards ask of
-    its records: no tie, at the same place or a hair apart, that a careless reader could break either way."""
+    its records: no tie, at the same place or a hair apart, that a careless reader could break either way;
+    and whether the next stands clear of the one after it as well (see reanchor_nearest)."""
     term = Step(terminal_step(chain), units)
     d = sorted(distance_km(term.raw, r) for r in rows_after_filters(chain, rows, units=units))
-    return len(d) < 2 or d[1] - d[0] >= max(spatial.nearest_gap[0], spatial.nearest_gap[1] * d[0])
+    return all(d[i + 1] - d[i] >= max(spatial.nearest_gap[0], spatial.nearest_gap[1] * d[i])
+               for i in range(min(2, len(d) - 1)))
 
 
 def reanchor_nearest(questions: Sequence[Question], records: Sequence[ResolvedRecord], reports: Sequence[Any],
@@ -651,8 +657,12 @@ def reanchor_nearest(questions: Sequence[Question], records: Sequence[ResolvedRe
 
     A report the question asks about (one its filters keep) can decide it when one of `tries` places drawn
     near it, as far from it as _draw_point draws a place from a record, has it for the nearest of the reports
-    the question asks about, clear of the next (_nearest_clear), keeps every guard of the key (guards_ok,
-    strict), with no bound on how far the key's nearest record lies, and is new to the run (`used_chains`).
+    the question asks about, clear of the next, and the next clear of the one after it (_nearest_clear), keeps
+    every guard of the key (guards_ok, strict), with no bound on how far the key's nearest record lies, and is
+    new to the run (`used_chains`). (Near a planted report, the next report is most often the key's nearest
+    record, which its guards keep clear of the record after it; when only a planted decider's place had to
+    keep that clearance, the report after the decider stood clear of the next one more often when the decider
+    was planted, with AUCs of 0.57 to 0.60.)
     One of the reports that can is drawn to decide it, with the weight of its kind: how many reports of that
     kind the digest's questions about a place ask about, over how many of them can decide one. So each kind
     decides these questions about as often as its share of the reports they ask about, though a place near a

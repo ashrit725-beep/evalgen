@@ -59,8 +59,10 @@ def inside(root: Path, path: Path) -> Path:
 
 def check_run_dir(run_dir: Path) -> None:
     """Refuse (RunDirError) a run directory that holds a symbolic link, at any depth: a run received from
-    someone else could link a file or a folder anywhere, and a later step would read or write it there. A
-    run directory that does not exist passes: the step that reads it says what is missing."""
+    someone else could link a file or a folder anywhere, and a later step would read or write it there. It
+    refuses as well an entry that is neither a file nor a folder (a named pipe, a socket, a device), which a
+    step would block on, or read from without end, where it expects a file. A run directory that does not
+    exist passes: the step that reads it says what is missing."""
     folders = [Path(run_dir)] if Path(run_dir).is_dir() else []
     while folders:
         with os.scandir(folders.pop()) as listing:
@@ -71,6 +73,9 @@ def check_run_dir(run_dir: Path) -> None:
                                   "that holds one, since a run received from someone else could point it anywhere")
             if entry.is_dir(follow_symlinks=False):
                 folders.append(Path(entry.path))
+            elif not entry.is_file(follow_symlinks=False):
+                raise RunDirError(f"{entry.path} is neither a file nor a folder: evalgen does not read or write a run "
+                                  "directory that holds one (a named pipe would block the step that reads it)")
 
 
 def write_in(root: Path, path: Path, data: str | bytes) -> None:
@@ -127,7 +132,35 @@ def read_manifest(run_dir: Path) -> dict[str, Any]:
         raise RunDirError(f"{path} is not JSON ({exc})") from None
     if not isinstance(manifest, dict) or not set(MANIFEST_KEYS) <= set(manifest):
         raise RunDirError(f"{path} is not the manifest of an evalgen run")
+    problems = _manifest_problems(manifest)
+    if problems:
+        raise RunDirError(f"{path} is not the manifest of an evalgen run: {'; '.join(problems)}")
     return manifest
+
+
+def _manifest_problems(manifest: dict[str, Any]) -> list[str]:
+    """What is wrong with the keys of a manifest that later steps index: the seed (a whole number), the
+    instances (a list of IDs), and where they are given, the plugins (files, each with its path), the
+    inventory (of domains and of genres) and the config (an object). evalgen writes them so; a run
+    received from someone else may not, and a step would then stop on a traceback."""
+    problems = []
+    seed = manifest.get("seed")
+    if not isinstance(seed, int) or isinstance(seed, bool):
+        problems.append(f"its seed is {seed!r}, not a whole number")
+    instances = manifest.get("instances")
+    if not isinstance(instances, list) or not all(isinstance(iid, str) for iid in instances):
+        problems.append("it lists no instances by their IDs")
+    plugins = manifest.get("plugins")
+    if plugins is not None and (not isinstance(plugins, list) or not all(
+            isinstance(entry, dict) and isinstance(entry.get("path"), str) for entry in plugins)):
+        problems.append("its plugins are not files, each with its path")
+    inventory = manifest.get("inventory")
+    if inventory is not None and (not isinstance(inventory, dict) or not all(
+            isinstance(inventory.get(kind), dict) for kind in ("domains", "genres"))):
+        problems.append("its inventory is not one of domains and of genres")
+    if "config" in manifest and not isinstance(manifest["config"], dict):
+        problems.append("its config is not an object")
+    return problems
 
 
 def plain_number(x: float | int) -> str:

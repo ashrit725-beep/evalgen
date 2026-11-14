@@ -386,7 +386,8 @@ class Weather(Domain):
     """Observations from US airport weather stations (see the module docstring)."""
 
     name = "weather"
-    # "weather observation", not "observation": the generic rules write "A {noun} may appear ...".
+    # The records' noun in every rule, glossary and question ("a weather observation"); the generic rules give
+    # whatever noun a domain names its records by the article that fits it (domains.base.indefinite).
     noun = "weather observation"
     plural = "weather observations"
     id_label = "observation ID"

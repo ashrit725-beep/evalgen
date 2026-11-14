@@ -14,6 +14,7 @@ import json
 import random
 import re
 import secrets
+import shutil
 import sys
 from collections import Counter, defaultdict
 from dataclasses import replace
@@ -1205,22 +1206,31 @@ def test_the_report_records_the_inventory_the_commitment_and_the_gaps(held_out_r
     markdown = (held_out_run.run / "report.md").read_text(encoding="utf-8")
     for text in ("- **Mix:** `random`", f"earthquakes (public, {per_domain['earthquakes']} instances)",
                  f"toy (held out, {per_domain['toy']} instances)", f"toy-telex (held out, {per_genre['toy-telex']} renderings)",
-                 f"committed as `{commitment[:24]}…`", "## Cross-genre consistency",
+                 f"committed as `{commitment}`, the SHA-256", "## Cross-genre consistency",
                  "## Public vs held-out domains and genres", "**Sources** (original renderings):",
                  "**Genres** (every rendering):", "## Accuracy by domain and genre", "| model | earthquakes (public) | toy (held out) |",
                  "| model | classic (public) | toy-telex (held out) |", "in the toy-telex genre"):
         assert text in markdown, text
     assert any(commitment[:16] in line for line in held_out_run.log)
-    # Every held-out set of this run comes from a plugin, so the report gives no warning that one is public.
-    assert run["held_out_built_in"] == {"domains": [], "genres": []} and "Held out, but public" not in markdown
+    # Every held-out set of this run comes from a plugin, but from the toy plugins published in tests/, so the
+    # report warns that they are public, though the config draws a nonce of its own.
+    assert run["held_out_built_in"] == {"domains": [], "genres": []}
+    assert run["held_out_published"] == {"domains": ["toy"], "genres": ["toy-telex"]}
+    assert ("> ⚠ **Held out, but public:** the domain toy and the genre toy-telex are held out in this run but "
+            "defined by plugin files published with evalgen" in markdown)
+    assert "Anyone can practise on what this run holds out" in markdown
 
 
 def test_a_report_says_which_held_out_sets_are_public_code_and_shows_what_the_models_read(registries, tmp_path):
     """Off the legacy path a report says which held-out domains and genres are built into evalgen (their
     code is public), prints each example's glossary before its digest, words the balance of the template
     pools and the naive reader as they are, says what the answer types that 0.2.0 did not have ask for, and
-    names the run by its ID, never by its folder."""
-    config = write_config(tmp_path / "private.json", held_out_genres=("news",), plugins=(TOY_PLUGIN,))
+    names the run by its ID, never by its folder. (The toy domain is held out from a copy of its plugin kept
+    outside evalgen's repository, as a private plugin is: from tests/ itself, it is public too.)"""
+    private = tmp_path / "plugins" / "toy_domain.py"
+    private.parent.mkdir()
+    shutil.copyfile(TOY_PLUGIN, private)
+    config = write_config(tmp_path / "private.json", held_out_genres=("news",), plugins=(private,))
     run = pipeline.generate(GenerateConfig(seed=5, instances=10, mix="random", private_config=str(config)),
                             tmp_path / "run", log=quiet)
     pipeline.run_models(run, ["oracle", "naive", "mock"], log=quiet)
@@ -1229,6 +1239,7 @@ def test_a_report_says_which_held_out_sets_are_public_code_and_shows_what_the_mo
     data = read_json(run / "report.json")
     markdown = (run / "report.md").read_text(encoding="utf-8")
     assert data["run"]["held_out_built_in"] == {"domains": [], "genres": ["news"]}
+    assert data["run"]["held_out_published"] == {"domains": [], "genres": []}
     assert any(m.get("genre_gap") for m in data["models"]) and "## Public vs held-out domains and genres" in markdown
     assert ("> ⚠ **Held out, but public:** the genre news is held out in this run but built into evalgen" in markdown
             and "only the held-out domains and genres that private plugins define are new to a model" in markdown)
@@ -1261,6 +1272,11 @@ def test_the_warning_on_public_held_out_sets_says_whether_anything_is_held_out_a
     assert "the genre radio is held out" in note and "Anyone can practise on it: only the held-out domains" in note
     none = {"inventory": inventory, "held_out_built_in": {"domains": [], "genres": []}}
     assert _public_held_out_note(none) == []
+    # Held out from plugin files published with evalgen (its tests' toy plugins): public too, whatever the nonce.
+    published = dict(none, held_out_published={"domains": ["weather"], "genres": []})
+    note = _public_held_out_note(published)[0]
+    assert ("the domain weather is held out in this run but defined by plugin files published with evalgen" in note
+            and "Anyone can practise on it: only the held-out domains" in note)
     # A config that keeps the published example's nonce: whatever it holds out is public.
     note = _public_held_out_note(dict(none, private_config_example=True))[0]
     assert "keeps the nonce of a published EXAMPLE" in note and "Anyone can practise on what this run holds out" in note

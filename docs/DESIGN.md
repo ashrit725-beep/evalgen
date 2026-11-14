@@ -21,7 +21,7 @@ Without the new options, 0.3.0 writes the 0.2.0 run byte for byte.
 python3 -m pip install -r requirements.txt     # requests + pytest (Python 3.10+)
 python3 cli.py demo --seed 42 --instances 20  # fully offline, no API keys, ~1 second
 python3 cli.py demo --mix random               # 0.3.0: every domain and genre, offline, ~3 seconds
-python3 -m pytest -q                           # 845 tests, ~3 minutes
+python3 -m pytest -q                           # 854 tests, ~4 minutes
 ```
 
 The demo writes `runs/demo-synthetic-seed42/report.md` (and `report.json`); with `--mix random` it
@@ -55,7 +55,8 @@ Why fine-tuning on the benchmark buys nothing beyond the real skill:
    sequence) but not where real lines lie, which a reader can use instead (see Limitations).
 4. **Metamorphic consistency.** The same snapshot is re-rendered with different units, line order,
    formats and question wording. Correct answers cannot change, so any change in a model's answer
-   is an inconsistency. This needs no ground truth and catches surface-pattern memorisation.
+   is an inconsistency. This needs no ground truth on the legacy path, and none beyond the scores off
+   it, where two answers that are both scored right agree; it catches surface-pattern memorisation.
 5. **Seen vs new templates.** Public templates are assumed to be in training data. Each run
    composes a "twin" of every public template, with the same final operation and the same number
    of filters but a different filter combination, and the composer keeps the two pools in balance:
@@ -113,7 +114,8 @@ What this adds to the list above:
    the template gap flags one tuned to the public skeletons.
 3. **Cross-genre consistency.** A variant is rendered in another genre than its original, so the
    same question asked of an email thread and of a radio transcript must get the same answer. Like
-   metamorphic consistency, this needs no ground truth.
+   metamorphic consistency, this needs no ground truth beyond the scores (two answers agree when they
+   are equal within the tolerance or both scored right).
 
 **The private run config is committed like the seed.** The evaluator keeps it private until the
 evaluation is over. It looks like this (`configs/private.example.json` is a published example):
@@ -196,13 +198,18 @@ none of its code.
 before it reads or writes anything else. It refuses, with `error: ...` (exit status 2):
 
 - a run directory that holds a symbolic link anywhere, which could point at any file (the folder
-  itself may be reached through a link: the evaluator names it);
+  itself may be reached through a link: the evaluator names it), or an entry that is neither a file
+  nor a folder (a named pipe in a file's place would make a step wait for ever);
 - a folder without a `manifest.json` that evalgen wrote, so that a mistyped path is an error, never a
-  run with nothing to do;
+  run with nothing to do, and a manifest whose seed, instances, plugins, inventory or config are not
+  of the shape evalgen writes;
 - an instance file whose instance ID is not its file name (`instances/inst-007.json` holds
   `inst-007`), or whose renderings are not `v0`, `v1`, ... each once. These IDs name the files that
   `run` writes and `score` reads (`responses/<model>/<instance>__<variant>.json`), so an ID such as
-  `../../x` would otherwise send them outside the run;
+  `../../x` would otherwise send them outside the run (in ASCII digits: `\d` would take any
+  script's);
+- an instance file without an answer key for each of its questions, a scores file that is not an
+  object with its rows and replies, and a `forecasts.json` that is not a list of forecasts;
 - instance files that the manifest does not list, or listed ones that are missing.
 
 Every file evalgen writes into a run directory goes through one writer (`util.write_in`). It refuses a
@@ -315,17 +322,23 @@ python3 cli.py generate --seed 7 --mix random --snapshot-dir runs/random-live-se
 `--force` overwrites an existing run directory, but only one that evalgen created (it carries
 evalgen's marker file or its own manifest); any other folder is left untouched. Nor does it replace a
 folder that holds what the new run reads: the frozen feed or snapshots it replays (`--snapshot-file`,
-`--snapshot-dir`), its private config or a plugin. A run folder can hold the only copy of a live feed,
-so `generate` stops with `error: ...` (exit status 2) before deleting anything and asks for another
-`--out`. `--instances` is at least 1 and `--variants` at least 0.
+`--snapshot-dir`), its private config or a plugin, however the path names it: as written, as it
+resolves, or with another letter case or Unicode form, which the file systems of macOS and Windows
+take for the same name (the file system says which folder each is). A run folder can hold the only
+copy of a live feed, so `generate` stops with `error: ...` (exit status 2) before deleting anything
+and asks for another `--out`. A frozen snapshot whose `snapshot.json` is not the object evalgen
+writes, and a plugin whose own code fails (a syntax error, an import it lacks, an exception it raises),
+stop it before the run folder is made. `--instances` is at least 1 and `--variants` at least 0.
 
 Each step needs what the steps before it wrote, and says so with `error: ...` (exit status 2) instead
 of writing less. `report` refuses a run whose instance files are missing, as in a committed run (git
 keeps only a run's manifest and report: regenerate it from the manifest's seed and config first), and
 a run that has no scores yet, so that it never replaces a report with an empty one. `resolve` refuses
-a path that is not a run. `run` reads every model spec before it asks any model: a spec that names no
-model, or options its model does not take, is refused; an API model whose key is not set is skipped
-with a note, and a `run` with no model left to ask is an error.
+a path that is not a run, and a run whose instance files are missing: a committed run keeps no
+`forecasts.json` either, so it cannot tell whether the run asked any forecast. `run` reads every model
+spec before it asks any model: a spec that names no model, or options its model does not take
+(`oracle:x`, a mock penalty given twice), is refused; an API model whose key is not set is skipped with
+a note, and a `run` with no model left to ask is an error.
 
 `--max-tokens` (default 16000) is the output budget per reply for API models. Models that think
 before answering need room: at 4,096 tokens, Claude Haiku 5.5 hit the limit on two thirds of its
@@ -568,7 +581,7 @@ A domain module exports `DOMAIN`, an instance of a `Domain` subclass. The regist
 | near twins, planted values | `twin_seconds`, `twin_share` and `twin_key`: which real records lie as close together as a re-report and its record, and how often a digest draws them together; `twin_fields`: the fields whose values a record shares, give or take, with its twins (a station's temperature and pressure, an object's distance, speed and H), so that a corrected value agrees with them as a real one does (`validate` refuses a field it does not have, or twin fields without twins); `planted_value` and `rereport_values`: how a value planted on a real record's report is written, and what a report filed in a slot's place gives for a record (a close approach's own H, under its ID: see Traps) |
 | `chatter`, `lexicon` | lines without data, which never say what a digest holds (a status line says when a station was offline, with its date, not that its reports were left out, which the digest's own reports could contradict), and the wording of questions (`standard_lexicon` words any domain from its own words) |
 | `rules_text()`, `report_time()`, `glossary(surface)` | the reading rules (in which `report_time` says what a report's time is) and the glossary its prompts print |
-| `draw_surface(rng)`, `bind(surface)`, `surface_group_labels` | per-instance surface words, for a domain that draws them, and every group label they can draw: the scorer, which reads answers by the types registered when the domain was loaded, lets a group answer end in any of them ("Nerm Halt berth" is "Nerm Halt"), and `bind` refuses a surface that calls its groups anything else or names a group with one |
+| `draw_surface(rng)`, `bind(surface)`, `surface_group_labels` | per-instance surface words, for a domain that draws them, and every group label they can draw: the scorer, which reads answers by the types registered when the domain was loaded, lets a group answer end in any of them ("Nerm Halt berth" is "Nerm Halt"), and `bind` refuses a surface that calls its groups anything else, names a group with one, or names one that the scorer would not read alike with its label after it (with "area" and "sea area" both group words, "Kessel Sea area" reads as "kessel") |
 | `resolve`, `to_generic`, `from_generic` | the reading rules in code, and the map between a domain's own record types and the generic ones that genres write and read (every genre but classic, through `genres.base.generic_items` and `domain_items`) |
 | `group_preposition`, `utc_offset` | how prose places a record in its group ("in" a region, "near" a body approached), and the UTC offset of the local time a located record is written in (the whole hour nearest the solar time of its longitude, unless the domain knows its records' real zones, as weather does) |
 
@@ -648,20 +661,34 @@ note naming one, the status, and the notices. Nine more things make that hold:
   smallest, the k-th), from a real one must pass it, but need pass it only by the question's gap: placed
   where it changes answers, it led the report it passed by half as much as a real record that decides a
   question leads the next one (a station's next observation is the likeliest to pass it by a degree).
-  So each trap also draws how far a real record decides a question by, for each kind of question (the
-  key's own leads, `traps._Leads`), and prefers, before its scopes, a placement in which its planted
-  report, and every report planted before, leads within a factor of two of the lead drawn for the kind of
-  question it decides (`traps.LEAD_FACTOR`); a report that decides no question leads alike.
+  So each trap also draws, for each question, how far a real record decides *another* question by (the
+  key's own leads, of the same kind of question where the digest asks one, `traps._Leads`), and
+  prefers, before its scopes, a placement in which its planted report, and every report planted
+  before, leads within a factor of two of the lead drawn for the question it decides
+  (`traps.LEAD_FACTOR`); a report that decides no question leads alike, and so does one that decides
+  a question for which no other question, decided by another record, lends a lead. The lead lent is
+  never the question's own, nor that of a question its decider decides: a planted report that takes the
+  record a question names passes the key's decider, whose lead over the next report is then the planted
+  report's runner-up's lead. Matched to that very lead (as the third round matched it, wherever the
+  digest asked one question of a kind), a planted decider led its runner-up by about what the runner-up
+  led the next report by: within a factor of two for 58-72% of planted deciders against 31-36% of real
+  ones (an AUC of 0.28 to 0.36 for |log2| of the ratio of the two leads, on every sample, held-out toy
+  and CAD replay included), though no reader gained by it.
 - *Places.* A question about the record nearest to a place, or how far it lies, was asked about a
   place drawn near a real record, which a planted report could take only by lying nearer still, so
   real reports decided those questions, by tens or hundreds of km, and planted ones almost never. Once
   the traps are planted, such a question is asked about a place drawn near a report it asks about, real
-  or planted, that then lies nearest to it, clear of the next (`questions.reanchor_nearest`, seed path
-  `instance/<i>/anchors`). Of the reports that can, one is drawn with the weight of its kind (a record's
+  or planted, that then lies nearest to it, clear of the next, with the next clear of the one after it
+  (`questions.reanchor_nearest`, seed path `instance/<i>/anchors`). (A place near a planted report keeps
+  the key's nearest record clear of the next record, and that record is most often the report that
+  comes next; when only those places kept the clearance, the next report stood clear of the one after it
+  more often where a planted report decided, with AUCs of 0.57 to 0.60, and 0.50 in earthquakes since.)
+  Of the reports that can, one is drawn with the weight of its kind (a record's
   own, a re-report, a phantom, a conflict's line): how many reports of that kind the digest's questions
   about a place ask about, over how many of them can decide one, so that each kind decides these
-  questions about as often as its share of the reports they ask about. The place gets a label drawn for
-  that report, as a place drawn near a record does, and its key's nearest record may lie any distance
+  questions about as often as its share of the reports they ask about. The place gets a label of its
+  own, drawn as for a place drawn near a record (a number that names no source), and its key's nearest
+  record may lie any distance
   away: near a planted report the key's answer is a record further away, and the bound a place drawn
   near a record keeps (`Spatial.nearest_max_km`) let a planted report that decides such a question lead
   the next by no more than it, where a real one, its own key's answer, leads by any distance. Its answer
@@ -789,7 +816,8 @@ the toy plugin and the CAD replay; `traps-measure/measure3.sh`):
   0.43 for re-reports), 0.48 to 0.56 for earthquake phantoms and 0.47 to 0.56 on the CAD replay;
   planted reports decide questions about a place half as often as their share in weather and four
   fifths as often in earthquakes (`traps-measure/nearest_share.py`), and the report that decides one
-  lies in the band of a drawn place, named by its label, whether planted or real (see Limitations).
+  lies in the band of a drawn place, whether planted or real (see Limitations); no label names a
+  source any more (see Question wording).
 - A phantom's form was sent sooner than a real one (0.29; 0.36 for a correction). Now 0.55 [0.51, 0.58]
   and 0.51 (`traps-measure/form_sent.py`).
 
@@ -802,6 +830,28 @@ two samples on the same side. A model of every unintended feature tells removabl
 from real ones with an AUC of 0.58 to 0.61. The oracle scores 100% (45,420 questions, and 9,084 of the
 toy plugin's), every careless reading a trap records is reproduced from the text (44,502 and 7,269),
 and every rendering reads back to its reports and notices (11,340 and 2,268).
+
+*Reviewed.* A red team on fresh samples (seeds 8201–8284, 9301–9384 and 11401–11484, with the toy
+plugin and the CAD replay) confirmed the third round's targets, and found one tell of its own making:
+the leads were matched to the key's own lead of the question decided, which is the lead of the
+report a planted decider passes, so a planted decider led its runner-up by about what the runner-up
+led the next report by (|log2| of the ratio of the two leads: AUCs of 0.28 to 0.36 for phantoms and
+cross-referenced re-reports in every domain, on every sample, the held-out toy plugin and the CAD
+replay; 0.47 with the matching switched off). *Leads* now lends each question a lead of another
+question decided by another record. Measured on 1,344 instances in memory (seeds 107–118, 28 a
+domain a seed, read from the prompts) and 840 of the CAD replay (seeds 201–230), removable deciders
+against real ones, before and after:
+
+| value questions | lead | ratio of the two leads | within a factor of two (removable, real) |
+|---|---|---|---|
+| built-in domains | 0.508 → 0.514 | 0.332 → 0.477 | 0.61, 0.31 → 0.35, 0.33 |
+| CAD replay | 0.489 → 0.507 | 0.360 → 0.485 | 0.50, 0.25 → 0.32, 0.28 |
+
+Without any matching the ratio is 0.48 but the lead 0.45 (weather 0.41). Of the questions about a
+place, the next report now stands clear of the one after it as often whoever decides (*Places*; the
+four seeds of `tests/test_trap_tells.py`: 1.00 of 25 planted deciders and 0.88 of 128 real ones,
+against 0.93 and 0.65), and how far the decider leads keeps an AUC of 0.50 in earthquakes and 0.47
+in weather (16 seeds). What the review left is under Limitations.
 
 Off the legacy path, placement is also *guarded*. A careless reading counts only where the misread
 digest passes the key's own guards: margins that hold with the planted values, rank and nearest
@@ -829,10 +879,13 @@ genre-neutral and say:
 - that group names are matched as printed;
 - that lines which are neither reports nor notices change nothing.
 
-Every article fits the word it stands before, whatever words a domain or a drawn surface gives ("an
-outpost"). No duplicate note borrows a word that the rules give a meaning of their own: weather's
-notes are "same observation as", "duplicate of" and "mirror of", since a re-report noted "relay of"
-an ID would read as the relayed report that rule 7 counts on its own.
+Every article fits the word it stands before in the words of every built-in domain and of every
+surface the invented domain draws ("an outpost"), in the rules and in the glossary's line on
+statuses. A plugin's words get theirs from `domains.base.indefinite`, which goes by the first letter,
+with a short list of exceptions ("an hour", "a unit"), and can miss others (it gives "a" before
+"MRI"). No duplicate note borrows a word that the rules give a meaning of their own: weather's notes
+are "same observation as", "duplicate of" and "mirror of", since a re-report noted "relay of" an ID
+would read as the relayed report that rule 7 counts on its own.
 
 Weather, neo and invented add rules of their own. Earthquake prompts off the legacy path print the
 0.2.0 rules 1–8 word for word, followed by three rules: rule 9, which now opens with what a notice
@@ -865,7 +918,8 @@ path, too:
   source (0.2.0's "station PR-34", weather's "COOP site 51 near KPIT") named the answer's: in 39 of 43
   nearest questions of three 20-instance weather runs, where 12% of the candidate observations came
   from that station, and in 38 of 38 earthquake questions, against 39%. `Domain.validate` refuses a
-  point label that names a source.
+  point label that names a source, however it is written (`{source!s}`, `{source.upper}`), or that has
+  no `{number}`, which keeps an instance's points apart.
 
 **One answer, from one record, however a tie is rounded.** Off the legacy path a question whose answer
 is a value of one record (the largest or smallest value of a field, the time of the largest, the
@@ -874,7 +928,9 @@ would be scored right: a reader who takes the wrong record must not be counted r
 already keeps a nearest distance clear of its tolerance; a max, a min or a time had no such guard, and
 12 of 333 such questions in twelve runs of 15 instances (three per domain) accepted the runner-up's
 answer (a shallowest depth of 26.4 km beside one of 26.8 km, within the 2% depth tolerance; the closest
-approaches of the fastest two objects a minute apart). A question about the largest or smallest value,
+approaches of the fastest two objects a minute apart). The time of the largest value checks every other
+record's time, not the runner-up's alone: a time does not follow its value, so a smaller record half a
+minute from the largest one answered its minute too. A question about the largest or smallest value,
 asked in a unit, is also redrawn when that value, converted exactly into the unit (a printed value
 stands for the stored one), lies exactly halfway between two answers of the asked places; when the
 number that genres print for it does (82.8 km is printed 51.45 mi, which a reader asked for one decimal
@@ -1206,17 +1262,21 @@ the share of rows in strata that both sides have.
   cluster, the design effect is close to 1 and the intervals hardly change; the simulations below
   measure both cases. The template gap keeps its 0.2.0 interval: every instance asks both pools.
 - **The flag** is the template gap's: an adjusted gap above 10 points whose 95% interval excludes
-  0. A gap needs rows on both sides, so it exists only when the private config holds something out.
+  0, and, for the source and genre gaps, compared rows from two instances or more on each side (see
+  Limitations: one instance leaves its side's interval unwidened). A gap needs rows on both sides, so
+  it exists only when the private config holds something out.
 
 The run section adds the mix, the inventory (each domain with its instances, each genre with its
 renderings), each domain's snapshot and the config's commitment. The console summary shows each
 model's adjusted source and genre gaps and its cross-genre consistency. Besides:
 
 - **Held-out sets that are public code.** `report.json` lists the held-out domains and genres that
-  are built into evalgen (`run.held_out_built_in`), and the held-out section then warns that anyone
-  can practise on them. It warns, too, when the run's config keeps the nonce of the published example
-  (the manifest's `private_config_example`), whose held-out sets are public test code. So a demo is
-  not taken for a test of anything held out.
+  are built into evalgen (`run.held_out_built_in`), and those that plugin files of evalgen's own
+  `tests/` folder define (`run.held_out_published`: the test-only toy domain and genre, which the
+  example config holds out), and the held-out section then warns that anyone can practise on them,
+  whatever nonce the config draws. It warns, too, when the run's config keeps the nonce of the
+  published example (the manifest's `private_config_example`), whose held-out sets are public test
+  code. So a demo is not taken for a test of anything held out.
 - **What the models read.** Each example instance prints its glossary before its digest, exactly as
   the prompts print it: an invented domain's digest cannot be read without it. The answer types that
   0.2.0 did not have (`weather_temperature`, `invented_f1`, ...) are explained under their table.
@@ -1282,7 +1342,7 @@ and be flagged in at most 5%:
 
 The template gap needs neither change: every instance asks both pools, so an instance's own
 difficulty cancels in it (with a random effect per rendering or per instance of SD 2, its interval
-covered the gap of 0 in 98% of 1,000 runs, and flagged at most 1%).
+covered the gap of 0 in 97-98% of 1,000 runs, and flagged 1-2% at 40 instances).
 
 ### The 0.2.0 regression guarantee
 
@@ -1344,8 +1404,11 @@ So the 0.2.0 study in the README regenerates byte for byte under 0.3.0.
   round changed them again: every digest's trap plan (a seed path of its own, `instance/<i>/plan`, in
   place of `instance/<i>/retractions`), how far a planted report that decides a question leads, a
   corrected value tied to its record's twins, the places and labels of the questions about the record
-  nearest to one (`instance/<i>/anchors`) and when a notice is issued. Legacy runs from every one of
-  those versions do regenerate.
+  nearest to one (`instance/<i>/anchors`) and when a notice is issued. The review that followed
+  changed them again: the leads that traps are matched to (another question's), which places the
+  questions about the nearest record are asked about (the next report clear of the one after it),
+  which questions the guard on the time of the largest value keeps, and a form header's wording.
+  Legacy runs from every one of those versions do regenerate.
 * Python 3.9 for 0.3.0 was checked by script, because pytest is not installed for the system
   Python 3.9 of the machine that built it. `tests/test_python39.py` scans the code for what 3.9
   cannot run. Under Python 3.9.6, the 0.2.0 regression run matches the hashes its test pins, and
@@ -1382,7 +1445,7 @@ evalgen/
   forecast.py           delayed-resolution questions and resolution (USGS FDSN)
   audit.py report.py    audit sample; report.md / report.json
   pipeline.py           one cycle end to end
-tests/                  845 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
+tests/                  854 pytest tests: hand-built key cases, determinism, traps and oracle, guards,
                         digest parsing, reply parsing and scoring, USGS and forecasts, adapters, report,
                         gap intervals, head to head, reading-rules coverage, CLI and its errors, received
                         runs that try to reach outside their folder; each domain and genre, every domain in
@@ -1515,7 +1578,10 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   effect of the rows it compares taken as one raw difference, because its strata are too small for a
   cluster-robust variance of their own. In simulation its intervals covered 93–96% of runs with
   strong clustering, and at most 4% of the readers with no gap were flagged; with few held-out
-  instances (a demo of 20) every interval is rough.
+  instances (a demo of 20) every interval is rough. A side whose compared rows all come from one
+  instance shows no spread between instances, so nothing widens its interval: one misread digest of a
+  held-out domain beside thirty public instances made an adjusted gap of +80 points (+49 to +111). A
+  gap is therefore flagged only when the compared rows of each side come from two instances or more.
 * **Legacy consistency compares as 0.2.0 did.** A legacy report's metamorphic consistency compares
   two answers by the scoring tolerance alone, so two right answers on either side of the key (4.96
   and 5.04 for a magnitude of 5.0) count as an inconsistency there. Off the legacy path both
@@ -1539,8 +1605,17 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   words (a unit called "halls"), and the list of offensive parts that no coined word may contain is a
   list: it is not a filter of every word that gives offence.
 * **Live sources: USGS, NWS and JPL only.** The invented domain has none, by design. The NWS and
-  JPL CAD adapters have been exercised only against recorded API responses and fake transports,
-  not yet against the live APIs.
+  JPL CAD adapters have one run against the real APIs behind them, besides the recorded API responses
+  and fake transports that the tests use. On 2026-11-12 (at 8ef8657), `generate --mix
+  "weather:classic,neo:table,earthquakes:news" --source live --instances 6` fetched 532 observations
+  from the 24 NWS stations (a 24-hour window), 69 close approaches from the JPL CAD API (1,344 hours)
+  and 240 events from the USGS day feed, none falling back to synthetic data; the oracle's
+  self-check passed 56 of 56 questions. Replayed with `--snapshot-dir` while every request went to an
+  unusable proxy, each frozen feed's SHA-256 checked, and every instance, prompt and audit file came
+  out byte-identical; only the snapshots' metadata differed (the time of the fetch, which a replay
+  has kept since, and a note that says it is a replay), with the manifest's volatile and replay keys.
+  One run is not a record of how the APIs behave over time: their formats or limits may still change,
+  which the frozen bytes and the fallback to synthetic data are there for.
 * **What is left of the trap tells off the legacy path.** A planted report is a record drawn with the
   digest (see Traps), so it is told apart only by what the rules name, and by what follows from them or
   from placing traps where they change answers (AUCs within [0.35, 0.65] in every domain, on the
@@ -1576,8 +1651,24 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
     over renderings, a phantom's form was sent sooner than a real one (an AUC of 0.42 [0.39, 0.45] on the
     first samples; on the second round's, 0.29 for a phantom and 0.36 for a correction); within its own
     rendering, all a reader can compare, alike. A notice now follows its report by 92 minutes at least
-    (`traps.NOTICE_DELAY`), later than any form is sent, so the limit never binds: 0.547 [0.512, 0.584]
-    for a phantom and 0.512 for a correction, pooled, and 0.535 within a rendering.
+    (`traps.NOTICE_DELAY`), later than any form is sent, so the limit binds only in a rendering that
+    holds a correction of a record that close to the compilation (issued just before it), and then
+    for every form of the rendering alike: 0.547 [0.512, 0.584] for a phantom and 0.512 for a
+    correction, pooled, and 0.535 within a rendering.
+  - The leads, the questions about a place and the count, as the review left them. In weather, a
+    planted report that decides the time of the warmest observation, or the k-th warmest, still leads
+    by less than a real one (AUCs of 0.32 and 0.40 on 21 and 19 planted deciders; 0.46 for weather's
+    value questions together). Where no report of a digest can be the clear nearest of a place (a
+    weather station with two observations in the scope ties), the question keeps the place drawn near a
+    record, whose next report need not stand clear of the one after it, so in weather a planted decider's
+    next report still stands clear more often (an AUC of 0.62 on 23 planted deciders). A count factor
+    fitted on one sample closes 2 to 5% of the gap on another (6.6% at most in a domain, on the CAD
+    replay); single genres of single samples reach 10 to 16%, none of them again on another sample, so
+    the plan's weights were not spread further (which would plant fewer traps that change an answer)
+    before they are measured on more seeds. A model of the unintended features of a pair of reports that
+    share an ID (their gaps in time to their group's other reports, a weather temperature's jump) breaks
+    the pair's tie 3.6 to 6.0% of the gap better than a coin (6.4 to 9.3% on the CAD replay, where the
+    status breaks it 24%); this predates the third round, and the slot choice behind it is not found yet.
 * **Fewer placements change an answer.** A re-report used to copy its record's values give or take a
   little, so a re-report of the largest record often changed the largest answer; a slot's values are
   its own. A digest of a built-in synthetic domain keeps as many traps that change answers as before,

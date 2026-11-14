@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import re
 import secrets
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -93,7 +94,8 @@ def test_run_refuses_a_spec_that_names_no_model_before_asking_any(tmp_path, caps
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     run = pipeline.generate(pipeline.GenerateConfig(seed=4, instances=1), tmp_path / "run", log=quiet)
     for specs in (["orcale"], ["oracle", "orcale"], ["mock:foo=1"], ["mock:held_out=-0.1"], ["mock:held_out=nan"],
-                  ["mock:held_out=abc"]):
+                  ["mock:held_out=abc"], ["oracle:x"], ["naive:anything"], ["oracle", "naive:x"],
+                  ["mock:held_out=0.2+held_out=0.3"], ["mock:held_out_genres=0.5+held_out=0.3"]):
         with pytest.raises(UnknownModel):
             pipeline.run_models(run, specs, log=quiet)
         assert cli.main(["run", str(run), "--models", ",".join(specs)]) == 2
@@ -146,6 +148,99 @@ def test_misuse_ends_in_an_error_not_a_traceback(tmp_path, capsys):
 
 
 # ------------------------------------------------------------------------------ live sources
+
+
+def test_a_received_run_of_the_wrong_shape_ends_in_an_error(tmp_path, capsys):
+    """A run received from someone else may hold files that evalgen did not write as they are. Before the
+    fix, a manifest without a seed, with plugins or an inventory of the wrong shape, a scores file or a
+    forecasts.json of the wrong shape, or an instance whose answer key is a list, ended in a traceback."""
+    base = tmp_path / "base"
+    pipeline.generate(pipeline.GenerateConfig(seed=4, instances=1), base, log=quiet)
+    pipeline.run_models(base, ["oracle"], log=quiet)
+    pipeline.score_run(base, log=quiet)
+
+    def edited(name: str, relative: str, change) -> Path:
+        run = tmp_path / name
+        shutil.copytree(base, run)
+        path = run / relative
+        data = read_json(path) if path.exists() else None
+        path.write_text(json.dumps(change(data)), encoding="utf-8")
+        return run
+
+    without = lambda key: lambda d: {k: v for k, v in d.items() if k != key}  # noqa: E731
+    with_ = lambda key, value: lambda d: dict(d, **{key: value})  # noqa: E731
+    cases = {
+        "no-seed": ("manifest.json", without("seed"), "seed"),
+        "seed-list": ("manifest.json", with_("seed", [1]), "seed"),
+        "plugins-str": ("manifest.json", with_("plugins", "x.py"), "plugins"),
+        "plugins-strs": ("manifest.json", with_("plugins", ["x.py"]), "plugins"),
+        "inventory-list": ("manifest.json", with_("inventory", [1]), "inventory"),
+        "inventory-empty": ("manifest.json", with_("inventory", {}), "inventory"),
+        "key-list": ("instances/inst-000.json", with_("answer_key", []), "answer key"),
+        "scores-list": ("scores/oracle.json", lambda d: [1], "scores"),
+        "scores-no-rows": ("scores/oracle.json", without("rows"), "scores"),
+        "forecasts-object": ("forecasts.json", lambda d: {}, "forecasts"),
+        "forecasts-ints": ("forecasts.json", lambda d: [1, 2], "forecasts"),
+    }
+    for name, (relative, change, said) in cases.items():
+        run = edited(name, relative, change)
+        commands = [["report", str(run)]]  # each step that reads the file
+        if not relative.startswith("scores"):  # resolve reads no scores of a run without forecasts
+            commands.append(["resolve", str(run)])
+        if relative == "manifest.json" or "instances" in relative:
+            commands += [["run", str(run), "--models", "oracle", "--force"], ["score", str(run)]]
+        for argv in commands:
+            assert cli.main(argv) == 2, (name, argv)
+            err = no_traceback(capsys)
+            assert said in err, (name, argv, err)
+
+
+def test_frozen_inputs_of_the_wrong_shape_are_refused_before_anything_is_written(tmp_path, capsys):
+    """A frozen snapshot's snapshot.json that is not a JSON object, names no source, or gives its window as
+    text, is refused before the run folder is made (before the fix: a traceback, some after the folder was
+    made); a source run's manifest that is not an object makes the replay one of an unknown run."""
+    source = tmp_path / "source"
+    assert cli.main(["generate", "--seed", "21", "--instances", "1", "--mix", "weather", "--source", "live",
+                     "--snapshot-file", str(WEATHER_FEED), "--out", str(source)]) == 0
+    capsys.readouterr()
+    sidecar = source / "snapshot" / "snapshot.json"
+    good = sidecar.read_text(encoding="utf-8")
+    meta = json.loads(good)
+    for body in ("[1]", json.dumps({"domain": "weather"}), json.dumps(dict(meta, window_hours="x")), "{nope"):
+        sidecar.write_text(body, encoding="utf-8")
+        options = [["--snapshot-dir", str(source / "snapshot")]]  # a replay of frozen snapshots reads the source
+        if "source" in body or body in ("[1]", "{nope"):  # a bare feed's replay reads its window, origin and hash
+            options.append(["--snapshot-file", str(source / "snapshot" / "raw_feed.json")])
+        for option in options:
+            out = tmp_path / "out"
+            assert cli.main(["generate", "--seed", "21", "--instances", "1", "--mix", "weather", "--source", "live",
+                             *option, "--out", str(out)]) == 2, (body, option)
+            assert "snapshot.json" in no_traceback(capsys) and not out.exists()
+    sidecar.write_text(good, encoding="utf-8")
+    for body in ("[1]", "{x"):
+        (source / "manifest.json").write_text(body, encoding="utf-8")
+        out = tmp_path / f"replay-{len(body)}"
+        assert cli.main(["generate", "--seed", "21", "--instances", "1", "--mix", "weather", "--source", "live",
+                         "--snapshot-dir", str(source / "snapshot"), "--out", str(out)]) == 0
+        assert read_json(out / "manifest.json")["replay"]["source_run"] is None
+        capsys.readouterr()
+
+
+def test_a_plugin_whose_own_code_fails_ends_in_an_error(tmp_path, capsys):
+    """Before the fix, a plugin with a syntax error, a missing import or an exception at import ended in a
+    traceback; now the error names the plugin and what failed."""
+    for name, body in (("syntax", "def (:\n"), ("raises", "raise RuntimeError('boom')\n"),
+                       ("imports", "import no_such_module_xyz\n")):
+        folder = tmp_path / name
+        folder.mkdir()
+        (folder / "plug.py").write_text(body, encoding="utf-8")
+        (folder / "private.json").write_text(json.dumps({
+            "nonce": secrets.token_hex(16), "domains": {"public": ["earthquakes"], "held_out": []},
+            "genres": {"public": ["classic"], "held_out": []}, "plugins": ["plug.py"]}), encoding="utf-8")
+        assert cli.main(["generate", "--seed", "3", "--instances", "1", "--mix", "random", "--private-config",
+                         str(folder / "private.json"), "--out", str(folder / "run")]) == 2
+        err = no_traceback(capsys)
+        assert "plug.py failed to run" in err and not (folder / "run").exists(), err
 
 
 def test_every_live_source_falls_back_on_bytes_that_it_cannot_read():
@@ -209,11 +304,13 @@ def test_generate_prints_the_whole_commitments_and_where_they_are(tmp_path):
         assert re.search(r"\b[0-9a-f]{64}\b", line) and field in line and "publishable" in line
 
 
-def test_a_small_seed_is_warned_about_on_the_console_only(tmp_path, capsys):
+def test_a_small_seed_is_warned_about_on_the_console_only(tmp_path, capsys, monkeypatch):
     """A small seed can be recovered from one prompt in seconds (below: from a list of candidates), so an
-    explicit seed of fewer than 48 bits draws a warning, which changes no file of the run."""
+    explicit seed of fewer than 48 bits draws a warning, which changes no file of the run. (The fresh seed
+    is fixed here: a real one is below 2**47 once in 131,072 draws.)"""
     assert cli.main(["generate", "--seed", "37", "--instances", "1", "--out", str(tmp_path / "small")]) == 0
     assert "a seed this small can be guessed" in capsys.readouterr().err
+    monkeypatch.setattr(cli, "fresh_seed", lambda: 16222556419173536875)
     assert cli.main(["generate", "--instances", "1", "--out", str(tmp_path / "fresh")]) == 0
     assert "can be guessed" not in capsys.readouterr().err
     assert [guessable_seed(s) for s in (0, 42, -5, 2 ** 47 - 1, 2 ** 47, 16222556419173536875)] == [

@@ -509,6 +509,13 @@ def test_binding_refuses_a_surface_that_does_not_hold_together(toys):
     for drawn, message in cases:
         with pytest.raises(ValueError, match=re.escape(message)):
             dressed.bind(drawn)
+    # Group words that overlap: with "area" and "sea area" both stripped, "Kessel Sea area" is read as "kessel",
+    # so a group named "Kessel Sea" under the label "area" would never be answered right with its label.
+    overlapping = copy.copy(dressed)
+    overlapping.surface_group_labels = (*dressed.surface_group_labels, "area")
+    with pytest.raises(ValueError, match=re.escape("whose answer 'Kessel Sea area' the scorer reads as 'kessel'")):
+        overlapping.bind({**surface, "group_label": "area", "groups": {**surface["groups"], "North Sea": "Kessel Sea"}})
+    overlapping.bind({**surface, "group_label": "area"})  # the drawn names themselves hold together
     prefixless = copy.copy(toys.flat)
     prefixless.id_prefix = None
     with pytest.raises(ValueError, match="its IDs have no prefix to replace"):

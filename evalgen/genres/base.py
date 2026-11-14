@@ -39,7 +39,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
 from ..digest import MONTHS, MONTHS_LONG, WEEKDAYS
-from ..domains.base import GROUP_PREPOSITIONS, Domain, Glossary, GlossaryField, RecordReport
+from ..domains.base import GROUP_PREPOSITIONS, Domain, Glossary, GlossaryField, RecordReport, indefinite
 from ..models import Notice, Report
 from ..ops import DigestData
 from ..units import Unit, decode, encode, find_unit
@@ -328,7 +328,8 @@ def render_glossary(glossary: Glossary) -> str:
              f"{_quote(glossary.id_label)}; IDs match the pattern {glossary.id_pattern}, {ID_CASE}.",
              f"- Sources: each report is filed by one {_quote(glossary.source_label)}.",
              f"- Groups: each record belongs to one {_quote(glossary.group_label)}.",
-             f"- Statuses: a {_quote(final)} report settles a record's values; a {_quote(draft)} report does not."]
+             f"- Statuses: {indefinite(final)} {_quote(final)} report settles a record's values; {indefinite(draft)} "
+             f"{_quote(draft)} report does not."]
     if glossary.coord_decimals is not None:
         lines.append(f"- Positions: latitude and longitude, stored to {_places(glossary.coord_decimals)} of a degree.")
     for f in glossary.fields:
@@ -356,7 +357,7 @@ _RECORDS = re.compile(rf"- Records: each is one (?P<noun>{_QUOTED}) \(plural (?P
                       rf"its (?P<id_label>{_QUOTED}); IDs match the pattern (?P<pattern>.+), {ID_CASE}\.")
 _SOURCES = re.compile(rf"- Sources: each report is filed by one (?P<label>{_QUOTED})\.")
 _GROUPS = re.compile(rf"- Groups: each record belongs to one (?P<label>{_QUOTED})\.")
-_STATUSES = re.compile(rf"- Statuses: a (?P<final>{_QUOTED}) report settles a record's values; a "
+_STATUSES = re.compile(rf"- Statuses: an? (?P<final>{_QUOTED}) report settles a record's values; an? "
                        rf"(?P<draft>{_QUOTED}) report does not\.")
 _POSITIONS = re.compile(r"- Positions: latitude and longitude, stored to (?P<decimals>\d+) decimal places? of a "
                         r"degree\.")

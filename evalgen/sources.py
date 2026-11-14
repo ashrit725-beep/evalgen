@@ -337,14 +337,37 @@ def _synthetic_snapshot(seedlog: SeedLog, pool_size: int, note: str | None = Non
     )
 
 
+SIDECAR_TYPES = {"source": (str,), "domain": (str,), "url": (str, type(None)), "window_hours": (int,),
+                 "fetched_at": (str, type(None)), "raw_sha256": (str, type(None))}
+
+
+def read_sidecar(path: Path) -> dict[str, Any]:
+    """The snapshot.json at `path`, as a replay reads it beside frozen bytes: a JSON object whose keys that
+    a replay reads have the types that save_snapshot writes (SIDECAR_TYPES; a window is a whole number of
+    hours). ValueError, naming the file, otherwise: frozen snapshots come from someone else's run as often
+    as from one's own."""
+    try:
+        meta = read_json(path)
+    except (OSError, ValueError) as exc:  # not readable, not UTF-8, not JSON
+        raise ValueError(f"{path} is not the snapshot.json of a frozen snapshot ({type(exc).__name__}: {exc})") from None
+    if not isinstance(meta, dict):
+        raise ValueError(f"{path} is not the snapshot.json of a frozen snapshot: it holds no JSON object")
+    wrong = [key for key, types in SIDECAR_TYPES.items() if key in meta and (
+        not isinstance(meta[key], types) or isinstance(meta[key], bool))]
+    if wrong:
+        raise ValueError(f"{path} is not the snapshot.json of a frozen snapshot: {', '.join(wrong)} "
+                         f"{'is' if len(wrong) == 1 else 'are'} not as evalgen writes {'it' if len(wrong) == 1 else 'them'}")
+    return meta
+
+
 def _replayed(path: Path, raw: bytes, window_hours: int) -> tuple[int, str, str, str | None]:
     """(window_hours, url, note, fetched_at) for frozen feed bytes read from `path`. Replaying a run's own
-    frozen snapshot keeps its window, its origin and when it was fetched, from the snapshot.json beside it,
-    and checks its hash; a bare frozen file says nothing of when it was fetched (None)."""
+    frozen snapshot keeps its window, its origin and when it was fetched, from the snapshot.json beside it
+    (read_sidecar), and checks its hash; a bare frozen file says nothing of when it was fetched (None)."""
     url, note, fetched_at = f"file:{path.name}", f"frozen feed file {path.name}", None
     sidecar = path.with_name("snapshot.json")
     if sidecar.exists():
-        meta = read_json(sidecar)
+        meta = read_sidecar(sidecar)
         window_hours, url = meta.get("window_hours", window_hours), meta.get("url") or url
         fetched_at = meta.get("fetched_at")
         if meta.get("raw_sha256") and meta["raw_sha256"] != sha256_hex(raw):
@@ -376,7 +399,7 @@ def build_snapshot(source: str, seedlog: SeedLog, *, feed: str = "day", pool_siz
                 raise ValueError(f"only {len(snapshot.events)} usable events in the feed")
             return snapshot, raw
         except (requests.RequestException, ValueError, KeyError) as exc:
-            note = f"USGS feed unavailable ({type(exc).__name__}: {exc}); fell back to synthetic data"
+            note = f"USGS feed unavailable ({failure_text(exc)}); fell back to synthetic data"  # no object address
             return _synthetic_snapshot(seedlog, pool_size, note=note), None
     if source != "synthetic":
         raise ValueError(f"unknown source {source!r}")
@@ -454,6 +477,8 @@ def read_frozen_feed(domain: Domain, snapshot_file: str | Path) -> tuple[bytes, 
     path = Path(snapshot_file)
     if not path.is_file():
         raise FileNotFoundError(f"the frozen feed {path} is not a file")
+    if path.with_name("snapshot.json").exists():  # what the replay will read beside the bytes (_replayed)
+        read_sidecar(path.with_name("snapshot.json"))
     raw = path.read_bytes()
     source = f"the live source of {domain.name} ({live.source})"
     try:
@@ -480,11 +505,13 @@ def frozen_feed(directory: str | Path, domain: Domain) -> Path | None:
     snapshot of the domain, or no frozen bytes of the live source its snapshot came from."""
     directory = Path(directory)
     for folder in (directory / domain.name, directory, directory / "snapshot" / domain.name, directory / "snapshot"):
-        meta = read_json(folder / "snapshot.json") if (folder / "snapshot.json").is_file() else None
+        meta = read_sidecar(folder / "snapshot.json") if (folder / "snapshot.json").is_file() else None
         if meta is not None and meta.get("domain", DEFAULT_DOMAIN) == domain.name:
             break
     else:
         raise ValueError(f"{directory} holds no frozen snapshot of {domain.name}")
+    if "source" not in meta:
+        raise ValueError(f"{folder / 'snapshot.json'} is not the snapshot.json of a frozen snapshot: it names no source")
     source = meta["source"]
     if source == "synthetic":
         return None

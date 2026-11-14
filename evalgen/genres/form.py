@@ -161,7 +161,7 @@ HEADERS = (
      "left blank by the sender."),
     ("Incident and field report forms: {title}",
      "Form batch {batch}, compiled {compiled}; covers the {window} before compilation. Each form is one report, "
-     "or one amendment of an earlier report."),
+     "or one amendment of a report filed before it."),
     ("REPORT FORM BATCH {batch} — {TITLE}",
      "Compiled {compiled} from the forms each {source_label} filed in the {window} before compilation."),
 )

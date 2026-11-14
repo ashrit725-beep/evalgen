@@ -438,6 +438,8 @@ def load_plugin(path: str | Path, sha256: str | None = None, *, private: bool = 
         module = registry.load_module(path, source)
     except registry.PluginChanged as exc:
         raise MixError(str(exc)) from None
+    except Exception as exc:  # the plugin's own code failed: a syntax error, a missing import, what it raised
+        raise MixError(f"the plugin {path} failed to run: {type(exc).__name__}: {exc}") from exc
     return _register_module(path, module, private=private)
 
 

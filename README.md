@@ -111,7 +111,7 @@ details are in each run's miss analysis: [0.1.0](runs/compare-100/miss_analysis.
 
 ## Reproduce it
 
-Install the dependencies (requests and pytest; Python 3.10 or later), run the 845 tests (about 3
+Install the dependencies (requests and pytest; Python 3.10 or later), run the 854 tests (about 4
 minutes), and run a full cycle offline, with no API key and no cost:
 
 ```bash
@@ -184,7 +184,8 @@ python3 cli.py demo --mix random
 
 Adding `--private-config configs/private.example.json` shows the held-out metrics, with the
 test-only toy domain and genre held out. Those are public code, so the gaps exercise the metrics
-and test nothing held out, and the report says so, as it does whenever a held-out set is built in.
+and test nothing held out, and the report says so, as it does whenever a held-out set is built in or
+defined by a test plugin published in this repository, whatever nonce the config draws.
 Without the new options nothing changes: the 0.2.0 comparison above regenerates byte for byte, which
 `tests/test_regression_020.py` checks.
 [`docs/DESIGN.md`](docs/DESIGN.md) describes the threat model, the domains and genres, the new
@@ -197,7 +198,7 @@ metrics and their limitations.
   `verify-config`).
 - `configs/private.example.json`: the format of a private run config (an example only: real
   held-out sets must stay private).
-- `tests/`: 845 tests.
+- `tests/`: 854 tests.
 - `runs/compare-100/` and `runs/compare-100-v2/`: each comparison's report (`report.md` and
   `report.json`), miss analysis and `manifest.json` (seed, settings, code fingerprint). The raw
   prompts and replies are not committed. The 0.1.0 run cannot be regenerated with the current code,
