@@ -44,7 +44,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from ..domains.base import Domain, Glossary, GlossaryField, RecordReport, TrapVocab
+from ..domains.base import REVISED_TO, Domain, Glossary, GlossaryField, RecordReport, TrapVocab
 from ..models import Notice
 from ..ops import DigestData
 from ..units import Unit, decode, encode
@@ -451,7 +451,9 @@ def _sections(rows: Sequence[_Row], order: str, rng: random.Random) -> list[_Sec
 def _notice_text(n: Notice, rng: random.Random, glossary: Glossary, vocab: TrapVocab, unit_mix: str) -> str:
     """A notice as a footnote says it: its keyword, when it was issued, and the wording of its keyword,
     with a retraction phrase of the domain's trap vocabulary or the reading rules' own words; a
-    correction gives both values in one drawn unit."""
+    correction gives both values in one drawn unit, its new value after "revised to", or after "revised
+    from" and the old value, which the rules quote (the Correction wording gave it after "now", which they
+    do not)."""
     when = format_time(n.time, rng.choice(UTC_TIME_FORMATS))
     head = rng.choice(NOTICE_HEADS).format(when=when)
     form = rng.randrange(3)
@@ -473,7 +475,7 @@ def _notice_text(n: Notice, rng: random.Random, glossary: Glossary, vocab: TrapV
     return CORRECTION_KEYWORDS[form] + head + (
         f"the {field.label} of {n.target} is revised to {new_text}{q}; it was first given as {old_text}.",
         f"{field.label} for {n.target} revised from {old_text} to {new_text}{q}.",
-        f"{n.target} {field.label} now {new_text}{q} (was {old_text}).")[form]
+        f"{n.target} {field.label} {REVISED_TO} {new_text}{q} (was {old_text}).")[form]
 
 
 def _window(hours: int) -> str:
@@ -794,7 +796,8 @@ def _grammar(glossary: Glossary) -> _Grammar:
         q = "" if f.qualifier is None else r"(?: \((?P<qualifier>[^()]*)\))?"
         corrections = (rf"the {label} of (?P<ref>{record_id}) is revised to {new}{q}; it was first given as {old}\.",
                        rf"{label} for (?P<ref>{record_id}) revised from {old} to {new}{q}\.",
-                       rf"(?P<ref>{record_id}) {label} now {new}{q} \(was {old}\)\.")
+                       # "now": as tables printed it before, so that a run generated then is still read
+                       rf"(?P<ref>{record_id}) {label} (?:{REVISED_TO}|now) {new}{q} \(was {old}\)\.")
         for keyword, pattern in zip(CORRECTION_KEYWORDS, corrections):
             bodies.setdefault(keyword, []).append((re.compile(pattern), f))
     keywords = alternation(RETRACTION_KEYWORDS + CORRECTION_KEYWORDS)

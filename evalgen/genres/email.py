@@ -54,7 +54,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 from ..digest import MONTHS, WEEKDAYS
-from ..domains.base import Domain, Glossary, GlossaryField, RecordReport, TrapVocab
+from ..domains.base import REVISED_TO, Domain, Glossary, GlossaryField, RecordReport, TrapVocab
 from ..models import Notice
 from ..ops import DigestData
 from ..units import Unit
@@ -184,6 +184,9 @@ ROLES = ("Duty officer", "Data manager", "Operations analyst", "Watch supervisor
          "Liaison officer", "Shift lead")
 # The wording of messages. None of it names a record, a value or a notice: it changes nothing.
 GREETINGS = ("Hi all,", "Hello all,", "Hi everyone,", "Morning all,", "Dear colleagues,", "Hi team,", "Hello,")
+# A greeting that names a part of the day, and the local hours (from, to) of the messages that may open with
+# it: a message whose own Date header says 20:43 never opens "Morning all,".
+TIMED_GREETINGS = {"Morning all,": (5, 12)}
 INTROS = ("Here are the {plural} received since the last update:", "Please find the latest {plural} below.",
           "Sharing the {plural} we have so far:", "{Plural} from our side:", "The next set of {plural} is below.")
 EMPTY_INTROS = ("Nothing to add from our side yet.", "No {plural} from us in this window.")
@@ -194,6 +197,10 @@ FORWARD_INTROS = ("Forwarding the notice below for the record.", "FYI, see the n
                   "Forwarding this notice; please see below.")
 ATTACHED_INTROS = ("I am also forwarding a notice that reached us; see below.",
                    "A notice also came in; it is forwarded below.")
+# The same, for a message that forwards more than one notice: a singular intro over two forwards read as if
+# the second were nested in the first.
+ATTACHED_INTROS_PLURAL = ("I am also forwarding the notices that reached us; see below.",
+                          "Notices also came in; they are forwarded below.")
 REMARKS = ("", "FYI: ", "For information: ")  # what a chatter line without a label of its own opens with
 LABELLED = re.compile(r"[A-Z][\w' ]{0,24}: ")  # "Reminder: ...", "Editor's note: ..."
 SIGN_OFFS = ("Thanks,", "Best,", "Regards,", "Cheers,", "Kind regards,", "Many thanks,", "Best wishes,")
@@ -235,10 +242,17 @@ def _rfc2822(ts: int, zone: int) -> str:
             f"{local.hour:02d}:{local.minute:02d}:{local.second:02d} {'+' if zone >= 0 else '-'}{abs(zone):02d}00")
 
 
-def _day(ts: int) -> str:
-    """The UTC day of `ts`, as a subject line names it: "14 Apr 2026"."""
-    utc = datetime.fromtimestamp(ts, tz=timezone.utc)
-    return f"{utc.day} {MONTHS[utc.month - 1]} {utc.year}"
+def _day(ts: int, zone: int) -> str:
+    """The day of `ts` in the zone `zone` hours from UTC, as a subject line names it: "14 Apr 2026". A thread's
+    subject is dated by the day its first message's own Date header gives, in its sender's zone: dated by the
+    UTC day, it could name the next day under a header that says the evening before."""
+    local = datetime.fromtimestamp(ts, tz=timezone.utc) + timedelta(hours=zone)
+    return f"{local.day} {MONTHS[local.month - 1]} {local.year}"
+
+
+def _local_hour(ts: int, zone: int) -> int:
+    """The hour of `ts` on the clock of the zone `zone` hours from UTC."""
+    return (datetime.fromtimestamp(ts, tz=timezone.utc) + timedelta(hours=zone)).hour
 
 
 def _short_date(ts: int, zone: int) -> str:
@@ -344,7 +358,8 @@ def _notice_text(n: Notice, rng: random.Random, glossary: Glossary, vocab: TrapV
     """A notice in one of three wordings of its kind. Each calls itself a RETRACTION or a CORRECTION,
     or says that a value was revised, as the reading rules of every domain name notices; a retraction
     may use a phrase of the domain's trap vocabulary, and a correction gives both values in one drawn
-    unit (and the new qualifier, when it has one)."""
+    unit (and the new qualifier, when it has one), its new value after a phrase the rules quote: one of
+    the domain's that ends in "to", "revised to", or "revised from" and the old value."""
     form = rng.randrange(3)
     when = format_time(n.time, rng.choice(UTC_TIME_FORMATS))
     if n.kind == "retraction":
@@ -369,8 +384,8 @@ def _notice_text(n: Notice, rng: random.Random, glossary: Glossary, vocab: TrapV
         phrase = rng.choice([p for p in vocab.correction_notices if p.endswith(" to")] or ["revised to"])
         return (f"CORRECTION, issued {when}: the {f.label} of {n.target} is {phrase} {new}{q}; it was first given as "
                 f"{old}.")
-    if form == 1:
-        return f"CORRECTION NOTICE ({when}): {n.target} {f.label} now {new}{q}, not {old}."
+    if form == 1:  # "revised to", which the rules quote: this wording gave its value after "now", which they do not
+        return f"CORRECTION NOTICE ({when}): {n.target} {f.label} {REVISED_TO} {new}{q}, not {old}."
     return f"Notice of a revised value, {when}. Report {n.target}: {f.label} revised from {old} to {new}{q}."
 
 
@@ -447,8 +462,10 @@ def _render(ctx: RenderContext, glossary: Glossary) -> str:
     styles, the notices, the replies that only acknowledge (each from someone other than the sender of
     the message it answers), the order, the dates, the chatter (each line in a message sent after the
     window it tells of: _remark), the subjects, and the text. A reply that only acknowledges answers the
-    message before it, a forward included, and takes its subject ("Re: Fwd: CORRECTION: ..."); every
-    other reply is titled after the thread. Reports and notices are written in their generic form
+    message before it, a forward included, and is titled after it: "Re: " and its subject, or its subject
+    as it is when that is a reply's already ("Re: Fwd: CORRECTION: ..." after a forward, and after an
+    acknowledgement of one); every other reply is titled after the thread, whose subject is dated by the
+    day of its first message's own Date header. Reports and notices are written in their generic form
     (generic_items)."""
     rng, style, vocab = ctx.rng, ctx.style, ctx.domain.trap_vocab
     reports: list[RecordReport] = generic_items(ctx.domain, ctx.reports)
@@ -490,14 +507,15 @@ def _render(ctx: RenderContext, glossary: Glossary) -> str:
             m.sender = rng.choice([p for p in people if p != previous.sender])
     _date(messages, ctx.compiled_at, rng)
     _remark(messages, ctx.chatter, ctx.chatter_after, people, rng)
-    subject = words.fill(rng.choice(SUBJECTS), date=_day(messages[0].date))
+    subject = words.fill(rng.choice(SUBJECTS), date=_day(messages[0].date, messages[0].sender.zone))
     for k, m in enumerate(messages):
         if m.kind == "forward":
             m.subject = f"Fwd: {m.forwards[0].subject}"
         elif k == 0:
             m.subject = subject
-        elif m.kind == "ack" and messages[k - 1].kind == "forward":  # it answers, and quotes, the forward
-            m.subject = f"Re: {messages[k - 1].subject}"
+        elif m.kind == "ack":  # it answers, and quotes, the message before it: under that message's subject
+            answered = messages[k - 1].subject
+            m.subject = answered if answered.startswith("Re: ") else f"Re: {answered}"
         else:
             m.subject = f"Re: {subject}"
         if rng.random() < 0.3:
@@ -656,17 +674,22 @@ def _headers(m: _Message, style: Mapping[str, Any], words: _Words) -> list[str]:
 
 
 def _own_text(m: _Message, style: Mapping[str, Any], rng: random.Random, words: _Words) -> list[str]:
-    """What a message says itself: a greeting and an introduction, its items, remarks, a sign-off and a
-    signature (an acknowledgement or a forward says less), then any forwarded notices."""
+    """What a message says itself: a greeting (one that names a part of the day only at that time of its
+    sender's day, TIMED_GREETINGS) and an introduction, its items, remarks, a sign-off and a signature (an
+    acknowledgement or a forward says less), then any forwarded notices, under an introduction that counts
+    them as one or as several."""
     sender, glossary = m.sender, words.glossary
     lines: list[str] = []
     if m.kind == "reports":
-        lines += [rng.choice(GREETINGS), ""]
+        hour = _local_hour(m.date, sender.zone)
+        greetings = [g for g in GREETINGS if g not in TIMED_GREETINGS
+                     or TIMED_GREETINGS[g][0] <= hour < TIMED_GREETINGS[g][1]]
+        lines += [rng.choice(greetings), ""]
         intro = rng.choice(INTROS if m.items else EMPTY_INTROS)
         lines += [words.fill(intro), ""]
         lines += _items(m, glossary, words.preposition)
         if m.forwards:
-            lines += [rng.choice(ATTACHED_INTROS), ""]
+            lines += [rng.choice(ATTACHED_INTROS if len(m.forwards) == 1 else ATTACHED_INTROS_PLURAL), ""]
     elif m.kind == "ack":
         lines += [rng.choice(ACKS), ""]
     else:
@@ -782,7 +805,9 @@ def _grammar(glossary: Glossary) -> _Grammar:
         qualifier = r"(?: \((?P<qualifier>[^()]*)\))?"
         for body in (rf"CORRECTION, issued {when}: the {label} of (?P<ref>{record_id}) is (?P<phrase>.+?) {new}"
                      rf"{qualifier}; it was first given as {old}\.",
-                     rf"CORRECTION NOTICE \({when}\): (?P<ref>{record_id}) {label} now {new}{qualifier}, not {old}\.",
+                     # "now": as threads printed it before, so that a run generated then is still read
+                     rf"CORRECTION NOTICE \({when}\): (?P<ref>{record_id}) {label} (?:{REVISED_TO}|now) {new}"
+                     rf"{qualifier}, not {old}\.",
                      rf"Notice of a revised value, {when}\. Report (?P<ref>{record_id}): {label} revised from {old} to "
                      rf"{new}{qualifier}\."):
             notices.append((re.compile(body), f))

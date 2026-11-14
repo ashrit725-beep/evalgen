@@ -50,7 +50,7 @@ RULE_WORDS_020 = {"retraction": ("retraction", "retracted", "withdrawn"), "corre
 RECORD_RULE_WORDS = {"retraction": ("retraction", "was not a real"), "correction": ("correction", "revised")}
 NOTICE_FORMS = {  # how each wording opens, and a phrase only it has
     ("retraction", "Update ("): "has been retracted", ("retraction", "Update, "): "is now marked",
-    ("retraction", "Retraction notice ("): "listed in this article", ("correction", "Correction ("): "was revised to",
+    ("retraction", "Retraction notice ("): "; disregard it.", ("correction", "Correction ("): "was revised to",
     ("correction", "Update, "): "in a correction", ("correction", "Correction notice ("): "has been revised to",
 }
 FORM_MARKERS = {

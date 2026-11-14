@@ -523,15 +523,12 @@ class Invented(Domain):
 
     def rules_text(self) -> str:
         """The reading rules of every record domain (record_rules), and one more: the glossary is the
-        only definition of an invented domain's words, and a value in another unit stands for its
-        stored value."""
+        only definition of an invented domain's words. What a value in another unit stands for is rule 5
+        of every record domain's rules (it was this rule's, which only this domain printed)."""
         rules = record_rules(self)
         number = len(re.findall(r"^\d+\. ", rules, flags=re.MULTILINE)) + 1
         rule = (f"The glossary is the only definition of the words in this digest: what {indefinite(self.noun)} "
-                f"{self.noun} is, what each field label means, and every unit with its conversion. A value written "
-                "in a unit other than its field's stored unit stands for that value converted into the stored unit "
-                "and rounded to the decimal places the glossary gives for the field; no value is written so that it "
-                "converts to exactly halfway between two of them.")
+                f"{self.noun} is, what each field label means, and every unit with its conversion.")
         wrapped = textwrap.fill(f"{number}. {rule}", width=RULES_WIDTH, subsequent_indent=" " * (len(str(number)) + 2),
                                 break_long_words=False, break_on_hyphens=False)
         return rules + wrapped + "\n"

@@ -244,19 +244,24 @@ def test_the_record_rules_quote_every_duplicate_note_a_digest_prints(toys):
     """Rules 3 and 4 quote the phrases of a domain's corrections and retractions; rule 1 quotes the notes
     of its re-reports too ("same observation as", "mirror of" ... followed by the ID), so that a note that
     alone decides an answer ("also logged as QBM/25342", which the invented domain draws per instance) is
-    never a gotcha either. The earthquake rules off the legacy path keep the 0.2.0 rules 1-8, whose rule 1
-    names the note by what it does, as 0.2.0 did."""
+    never a gotcha either, and so the field same_as= of a line of key=value fields (a classic log line, a
+    pasted chat line), where it is a re-report's only link to its record. The earthquake rules off the legacy
+    path keep the 0.2.0 rules 2 and 5-8 word for word; their rules 1, 3 and 4 quote every note and notice
+    phrase too (the 0.2.0 rules name them only by what they do), and the legacy rules stay the 0.2.0 text."""
     bound = [INVENTED.bind(INVENTED.draw_surface(random.Random(seed))) for seed in range(40)]
     dressed = toys.dressed
     bound += [dressed.bind(dressed.draw_surface(random.Random(seed))) for seed in range(10)]
-    for domain in (get_domain("weather"), get_domain("neo"), toys.toy, toys.flat, *bound):
+    for domain in (get_domain("weather"), get_domain("neo"), get_domain("earthquakes"), toys.toy, toys.flat, *bound):
         rules = " ".join(domain.rules_text().split())
         rule_1 = rules[rules.index("1. "):rules.index("2. ")]
         notes = domain.trap_vocab.duplicate_notes
         assert notes and all(f'"{note}"' in rule_1 for note in notes), (domain.name, notes)
+        assert '(among key=value fields, "same_as="), followed by that' in rule_1
         assert f"followed by that {domain.id_label}." in rule_1
     earthquakes = " ".join(get_domain("earthquakes").rules_text().split())
-    assert RULES[RULES.index("1. "):RULES.index("9. ")] in earthquakes  # 0.2.0 rules 1-8, word for word
+    assert RULES[RULES.index("2. "):RULES.index("3. ")] in earthquakes  # 0.2.0 rule 2, word for word
+    assert RULES[RULES.index("5. "):RULES.index("9. ")] in earthquakes  # 0.2.0 rules 5-8, word for word
+    assert "same_as=" not in RULES and '"' not in RULES[:RULES.index("8. ")]  # the 0.2.0 rules quote no phrase
 
 
 def test_a_settling_report_settles_a_records_time_and_position_as_well_as_its_values(toys):

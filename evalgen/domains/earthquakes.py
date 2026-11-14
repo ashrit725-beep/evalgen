@@ -5,10 +5,11 @@ margins, the op names are the 0.2.0 operation names (``ops.ALIASES``), the lexic
 question wording, and the trap vocabulary is the one the 0.2.0 digests print. Legacy prompts print the
 0.2.0 reading rules (``rules.READING_RULES``) alone; a prompt off the legacy path, in any genre, prints
 them as every other domain's prompts head theirs ("Reading rules:", since the rules of a run's domains
-differ), with rule 9 naming the greetings and signatures that emails and chats print, followed by the
-two genre-neutral rules that every genre's quotes, read-backs, forwards and message times need
-(``GENRE_READING_RULES``, ``rules_text``). Its questions there drop the one 0.2.0 wording that reads as
-a range beside a depth ("with a depth of 16 km or more and no more than 40 km from ..."):
+differ), with rules 1, 3 and 4 quoting every note and notice phrase the digests print, rule 9 naming the
+greetings and signatures that emails and chats print, followed by the two genre-neutral rules that every
+genre's quotes, read-backs, forwards and message times need (``GENRE_READING_RULES``, ``rules_text``).
+Its questions there drop the one 0.2.0 wording that reads as a range beside a depth ("with a depth of
+16 km or more and no more than 40 km from ..."):
 ``GENRE_LEXICON``, ``prompt_lexicon``. Records stay the 0.2.0 types: ``models.Event`` (the snapshot)
 and ``models.Report`` (a digest line); genres other than classic write and read Reports and magnitude
 corrections in the generic form of every domain (``to_generic``, ``from_generic``).
@@ -36,8 +37,9 @@ from ..rules import READING_RULES, Mishandle, resolve
 from ..sources import (COORD_DECIMALS, MIN_POOL_EVENTS, USER_AGENT, fetch_usgs, generate_synthetic, mimic_event_id,
                        new_event_id, parse_usgs_geojson, synthetic_mag_type)
 from ..units import LENGTH
-from .base import (DISTANCE_WORDINGS, NOTICE_RULE, REPEAT_RULE, Domain, FieldSpec, Forecaster, Lexicon, Record,
-                   RecordReport, Spatial, TrapVocab, message_time_rule, numbered_rules)
+from .base import (DISTANCE_WORDINGS, KEYED_NOTE, NOTICE_RULE, REPEAT_RULE, REVISED_FROM, REVISED_TO, TABLE_HEADER_RULE,
+                   Domain, FieldSpec, Forecaster, Lexicon, Record, RecordReport, Spatial, TrapVocab, _alternatives,
+                   message_time_rule, numbered_rules)
 
 # Margin guards: no event may sit this close to a threshold, so that display rounding (0.1 km or mi,
 # 0.001 degrees, minute-precision times) can never change a correct answer. Magnitudes need no
@@ -154,7 +156,11 @@ def genre_lexicon(lexicon: Lexicon) -> Lexicon:
 GENRE_LEXICON = genre_lexicon(LEXICON)
 
 # The wording of the 0.2.0 traps. traps.py plants with the sources and reasons; digest.py prints the
-# notes and notices (solver.py parses exactly these phrases), and rules.READING_RULES names them.
+# notes and notices (solver.py parses exactly these phrases), and every other genre prints them too. The
+# 0.2.0 rules (rules.READING_RULES) quote none of them: they name a note by what it does ("a note naming the
+# event ID it duplicates") and a notice by its label (CORRECTION, RETRACTION) or by what it says ("a value
+# was revised", "retracted or withdrawn"). GENRE_READING_RULES, which every prompt off the legacy path prints,
+# quotes every one of them, word for word, as the record rules of every other domain quote theirs.
 TRAP_VOCAB = TrapVocab(
     rereporting_sources=("us", "at", "pt", "ew"),
     duplicate_notes=("same event as", "same earthquake as", "Dup of"),
@@ -170,30 +176,70 @@ TRAP_VOCAB = TrapVocab(
 # email threads and radio transcripts all carry repeats and message times; a legacy prompt is the 0.2.0
 # classic digest, which carries neither, and prints READING_RULES alone.
 #
-# Two parts of the 0.2.0 text change off the legacy path. Its heading says the rules are "identical for
+# Some parts of the 0.2.0 text change off the legacy path. Its heading says the rules are "identical for
 # every digest", which a run of several domains contradicts (each prints its own), so the rules are
-# headed as every domain's are (record_rules). And rule 9 lists the lines without data that the 0.2.0
-# digest prints; the other genres also print section titles (subheads, captions), greetings and
-# signatures, which the rule now names as the record rules do. It opens with what a notice is
-# (NOTICE_RULE, as the record rules' rule 3 does), which the 0.2.0 rules leave to the notices' keywords:
-# in an email thread, a radio net, a form or a table a notice looks like any other message, and it may
-# be printed before the report it names. Rule 10 also says that a WIRE line's bracketed time is its
-# report's own (message_time_rule).
+# headed as every domain's are (record_rules). Rules 1, 3 and 4 quote, word for word, every note and
+# notice phrase that the digests print (TRAP_VOCAB, the same_as= field of a line of key=value fields, and
+# the "revised to" and "revised from" of every genre's corrections), as the record rules of every other
+# domain do: the 0.2.0 rules name them by what they do or by their labels only, so a log line's
+# "same_as=<ID>" was the one link from a re-report to its earthquake that no rule named. And rule 1 no
+# longer says which network files a preliminary report or a re-report: off the legacy path the trap builders
+# file each under the network of the event it stands in for, which may be the earthquake's own (REWORDED_RULES;
+# the other 0.2.0 rules keep their lines). Rule 9 lists the lines without data that the 0.2.0 digest prints;
+# the other genres also print section titles (subheads, captions), greetings and signatures, which the rule
+# now names as the record rules do, and a table's header row, which gives the units of its columns, is not
+# one of them (TABLE_HEADER_RULE). It opens with what a notice is (NOTICE_RULE, as the record rules' rule 3
+# does), which the 0.2.0 rules leave to the notices' keywords: in an email thread, a radio net, a form or a
+# table a notice looks like any other message, and it may be printed before the report it names. Rule 10
+# also says that a WIRE line's bracketed time is its report's own (message_time_rule).
 LEGACY_RULES_HEADING = "Reading rules (identical for every digest):\n"
 RULES_HEADING = "Reading rules:\n"
 LEGACY_RULE_9 = ("9. Lines that are neither reports nor notices (headers, station status, editor's notes,\n"
                  "   reminders) carry no data and change nothing.\n")
 OTHER_LINES_RULE = (f"{NOTICE_RULE} Lines that are neither reports nor notices (headers, section titles, station "
-                    "status, editor's notes, reminders, greetings, signatures) carry no data and change nothing.")
+                    f"status, editor's notes, reminders, greetings, signatures) carry no data and change nothing. "
+                    f"{TABLE_HEADER_RULE}")
+# The 0.2.0 rules that change off the legacy path, by number: each as the 0.2.0 text words it (its lines
+# joined), then as every prompt off the legacy path prints it.
+REWORDED_RULES = {
+    1: ("Every earthquake has exactly one event ID: the ID printed on its REVIEWED report. An earthquake may appear "
+        "in several reports: a PRELIMINARY report from its own network, or a re-report from another network, either "
+        "under the same event ID or under its own reference with a note naming the event ID it duplicates. Reports "
+        "that share an event ID, or name it in such a note, are the same earthquake. Count each earthquake once and "
+        "refer to it by its event ID.",
+        "Every earthquake has exactly one event ID: the ID printed on its REVIEWED report. An earthquake may appear "
+        "in several reports: a PRELIMINARY report, or a re-report, either under the same event ID or under its own "
+        "reference with a note naming the event ID it duplicates. Such a note reads "
+        f"{_alternatives(TRAP_VOCAB.duplicate_notes)} {KEYED_NOTE}, followed by that event ID. Reports that share an "
+        "event ID, or name it in such a note, are the same earthquake. Count each earthquake once and refer to it by "
+        "its event ID."),
+    3: ("A correction (a CORRECTION notice, or any notice saying that a value was revised) replaces the stated value "
+        "for the named event, even on a reviewed report.",
+        f'A correction (a CORRECTION notice, or any notice saying that a value was revised: "{REVISED_TO}" a new '
+        f'value, "{REVISED_FROM}" an old value to a new one, or "magnitude now" and a new value) replaces the stated '
+        "value for the named event, even on a reviewed report."),
+    4: ("A retraction (a RETRACTION notice, or any notice saying that a report was retracted or withdrawn) means the "
+        "named report was not a real earthquake (for example a quarry blast or a false trigger): ignore that report "
+        "completely.",
+        'A retraction (a RETRACTION notice, or any notice saying that a report was retracted, "RETRACTED" or '
+        '"withdrawn", or that it "was not an earthquake") means the named report was not a real earthquake (for '
+        "example a quarry blast or a false trigger): ignore that report completely."),
+}
 
 
 def _genre_reading_rules() -> str:
     """GENRE_READING_RULES, from the 0.2.0 text: refuses to build if that text ever changes."""
     if not READING_RULES.startswith(LEGACY_RULES_HEADING) or not READING_RULES.endswith(LEGACY_RULE_9):
         raise ValueError("the 0.2.0 reading rules no longer open and end as GENRE_READING_RULES expects")
-    rules_1_to_8 = READING_RULES[len(LEGACY_RULES_HEADING):-len(LEGACY_RULE_9)]
+    rules_1_to_8 = [rule for rule in re.split(r"^(?=\d+\. )", READING_RULES[len(LEGACY_RULES_HEADING):
+                                                                           -len(LEGACY_RULE_9)], flags=re.MULTILINE)
+                    if rule]
+    for number, (legacy, text) in REWORDED_RULES.items():
+        if " ".join(rules_1_to_8[number - 1].split()) != f"{number}. {legacy}":
+            raise ValueError(f"the 0.2.0 rule {number} no longer reads as GENRE_READING_RULES expects")
+        rules_1_to_8[number - 1] = numbered_rules((text,), start=number)
     last = len(re.findall(r"^\d+\. ", READING_RULES, flags=re.MULTILINE))
-    return RULES_HEADING + rules_1_to_8 + numbered_rules(
+    return RULES_HEADING + "".join(rules_1_to_8) + numbered_rules(
         (OTHER_LINES_RULE, message_time_rule("an earthquake"), REPEAT_RULE), start=last)
 
 
@@ -328,9 +374,9 @@ class Earthquakes(Domain):
 
     def rules_text(self) -> str:
         """The reading rules of an earthquake prompt off the legacy path (GENRE_READING_RULES): the 0.2.0
-        rules, headed as every domain's are and with rule 9 saying what a notice is and naming every kind
-        of line without data, and the genre-neutral rules on message times and repeats. A legacy prompt
-        prints the 0.2.0 rules (rules.READING_RULES) alone."""
+        rules, headed as every domain's are, with rules 1, 3 and 4 quoting every note and notice phrase and
+        rule 9 saying what a notice is and naming every kind of line without data, and the genre-neutral rules
+        on message times and repeats. A legacy prompt prints the 0.2.0 rules (rules.READING_RULES) alone."""
         return GENRE_READING_RULES
 
     def prompt_lexicon(self) -> Lexicon:

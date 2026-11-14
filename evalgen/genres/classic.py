@@ -12,9 +12,11 @@ prompt's glossary: its record noun, field labels (bulletin, prose, wire) or keys
 value in a unit the style draws, with the exact codec of evalgen.units), qualifiers, status words and
 ID pattern. Times are given to the second, in UTC or with their UTC offset stated; positions in
 hemispheres or signed; duplicate notes and notices are worded through the domain's trap vocabulary,
-which its reading rules quote (domains.base.record_rules). A prose line gives its time as the time the record was recorded, and
-places the record in its group with the domain's preposition ("in North Sea", "near Moon":
-Domain.group_preposition). The header and section heads are worded from the domain's words too.
+which its reading rules quote (domains.base.record_rules), and a log line notes a re-report with the
+field same_as=, which rule 1 quotes too. A prose line gives its time as the time the record was
+recorded, and places the record in its group with the domain's preposition ("in North Sea", "near
+Moon": Domain.group_preposition). A place is printed as every genre prints it (genres.base.printed_place).
+The header and section heads are worded from the domain's words too.
 The parser reads every line back through the glossary alone, and every rendering is checked to read
 back to exactly its reports and notices (genres.base.check_round_trip).
 
@@ -38,15 +40,15 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from ..digest import LINE_PRESETS, NOTICE_PLACEMENTS, choose_style, render_digest
-from ..domains.base import Domain, Glossary, GlossaryField, RecordReport, TrapVocab
+from ..domains.base import SAME_AS_KEY, Domain, Glossary, GlossaryField, RecordReport, TrapVocab
 from ..domains.earthquakes import Earthquakes
 from ..models import Notice
 from ..ops import DigestData
 from ..solver import parse_digest
 from ..units import Unit, decode, encode
 from .base import (COORDS_PATTERN, GROUP_PREPOSITION, NUMBER, TIME_FORMATS, TIME_PATTERN, UTC_TIME_FORMATS, Genre,
-                   RenderContext, alternation, check_round_trip, format_coords, format_time, format_value, id_pattern,
-                   parse_coords, parse_time, read_value, value_pattern)
+                   RenderContext, alternation, check_round_trip, format_coords, format_time, format_value,
+                   generic_items, id_pattern, parse_coords, parse_time, read_value, value_pattern)
 
 # ------------------------------------------------------------------------------ the genre
 
@@ -187,7 +189,7 @@ def _render_records(ctx: RenderContext, glossary: Glossary) -> str:
     sources = sorted({r.source for r in ctx.reports})
     zones = {} if glossary.located else {source: rng.randint(*ZONES) for source in sources}
     lines: list[tuple[RecordReport, str]] = []
-    for r in ctx.reports:
+    for r in generic_items(ctx.domain, ctx.reports):  # each place as genres print it (printed_place)
         line_style = _draw(rng, LINE_PRESETS[style["lines"]])
         offset = ctx.domain.utc_offset(r) if glossary.located else zones[r.source]
         when = format_time(r.time, _draw(rng, RECORD_TIME_PRESETS[style["time"]]), offset)
@@ -242,8 +244,8 @@ def _record_line(r: RecordReport, style: str, glossary: Glossary, when: str, whe
             text += f" {f.key}={format_value(f, r.values[f.key], unit, separator='')}"
             if _qualifier(f, r) is not None:
                 text += f" {f.qualifier}={_token(_qualifier(f, r))}"
-        if r.same_as:
-            text += f" same_as={r.same_as}"
+        if r.same_as:  # the note of a re-report, as rule 1 of the reading rules quotes it
+            text += f" {SAME_AS_KEY}={r.same_as}"
         if r.place is not None:
             text += f" place={_token(r.place)}"
         return text
@@ -366,7 +368,7 @@ def _grammar(glossary: Glossary) -> _Grammar:
     log = (rf"^{when} ref=(?P<ref>{record_id}) src=(?P<source>{TOKEN}) status=(?P<status>{status}) "
            rf"group=(?P<group>{TOKEN})" + (rf" loc=(?P<lat>{NUMBER}),(?P<lon>{NUMBER})" if located else "")
            + "".join(" " + _keyed(f, i) for i, f in enumerate(glossary.fields))
-           + rf"(?: same_as=(?P<same>{record_id}))?(?: place=(?P<place>{TOKEN}))?$")
+           + rf"(?: {SAME_AS_KEY}=(?P<same>{record_id}))?(?: place=(?P<place>{TOKEN}))?$")
 
     reason = r"(?: \((?P<reason>.+)\))?"
     retractions = {

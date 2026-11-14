@@ -22,6 +22,7 @@ inverse, so the text-only oracle recovers every report:
     format_value / value_pattern    a field's value in one of its units, through the exact codec of
       / read_value                  evalgen.units
     id_pattern                      a record ID, as the glossary's pattern describes it
+    printed_place                   a report's place: on one line, unpadded, or none when it has no words
 
 ``check_round_trip`` refuses a rendering that its genre does not read back to exactly its reports
 and notices. ``generic_items`` and ``domain_items`` map a domain's own record types (an earthquake's
@@ -100,10 +101,11 @@ class Genre(ABC):
 def check_round_trip(genre: Genre, text: str, ctx: RenderContext, glossary: Glossary) -> None:
     """Raise ValueError unless `genre` reads `text`, its rendering of `ctx`, back to exactly the
     reports and notices of `ctx`, in any order (apart from the generator's bookkeeping, which is never
-    printed: a report's role and trap, a notice's trap). A genre checks every rendering it writes this
-    way, so that the oracle recovers every one of them exactly."""
+    printed: a report's role and trap, a notice's trap), each report's place as genres print it
+    (printed_place). A genre checks every rendering it writes this way, so that the oracle recovers every
+    one of them exactly."""
     data = genre.parse(text, glossary, ctx.domain)
-    reports = [replace(r, role="primary", trap_id=None) for r in ctx.reports]
+    reports = [_with_printed_place(replace(r, role="primary", trap_id=None)) for r in ctx.reports]
     notices = [replace(n, trap_id=None) for n in ctx.notices]
     missing = _unmatched(reports, data.reports) + _unmatched(notices, data.notices)
     extra = _unmatched(data.reports, reports) + _unmatched(data.notices, notices)
@@ -116,8 +118,32 @@ def check_round_trip(genre: Genre, text: str, ctx: RenderContext, glossary: Glos
 def generic_items(domain: Domain, items: Iterable[Any]) -> list[Any]:
     """A context's reports or notices in the form every genre writes: RecordReports and Notices whose
     correction names its field (Domain.to_generic; an earthquake's 0.2.0 Reports and magnitude
-    corrections are mapped, every other domain's are in that form already)."""
-    return [domain.to_generic(item) for item in items]
+    corrections are mapped, every other domain's are in that form already), each report's place as
+    genres print it (printed_place)."""
+    return [_with_printed_place(domain.to_generic(item)) for item in items]
+
+
+def printed_place(place: str | None) -> str | None:
+    """A report's place as every genre prints it: its text with each line break a space and without the
+    whitespace around it, or None for a place without words, which every genre prints as no place, as the
+    0.2.0 digest does (spaces inside it, "see  log", are printed as they are). A source may give a place of
+    any text (the USGS feed now and then gives an empty one), and a genre lays a place out between words of
+    its own, at the end of a line or in a table cell, which its parser reads with the whitespace around them
+    stripped: an empty place, or one that began or ended in a space or held a line break, printed as it is,
+    did not read back (check_round_trip refused the rendering and generation stopped). No question asks about
+    a place, and every other place prints as it is: the places of the built-in domains' synthetic records,
+    and the weather stations' names that weather reads a record's time zone from, have nothing to strip."""
+    if place is None:
+        return None
+    return " ".join(place.splitlines()).strip() or None
+
+
+def _with_printed_place(item: Any) -> Any:
+    """A report (of any record type with a place) with its place as genres print it; a notice as it is."""
+    if isinstance(item, Notice) or not hasattr(item, "place"):
+        return item
+    place = printed_place(item.place)
+    return item if place == item.place else replace(item, place=place)
 
 
 def domain_items(domain: Domain, items: Iterable[Any]) -> list[Any]:

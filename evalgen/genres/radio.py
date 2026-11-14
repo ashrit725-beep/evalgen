@@ -45,12 +45,13 @@ from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
 from ..digest import MONTHS
-from ..domains.base import Domain, Glossary, GlossaryField, RecordReport, TrapVocab
+from ..domains.base import REVISED_FROM, REVISED_TO, Domain, Glossary, GlossaryField, RecordReport, TrapVocab
 from ..models import Notice
 from ..ops import DigestData
 from ..units import Unit
 from .base import (COORDS_PATTERN, NUMBER, TIME_PATTERN, UTC_TIME_FORMATS, Genre, RenderContext, alternation,
-                   check_round_trip, domain_items, format_coords, format_time, id_pattern, parse_coords, parse_time)
+                   check_round_trip, domain_items, format_coords, format_time, generic_items, id_pattern, parse_coords,
+                   parse_time)
 from .classic import RECORD_COORD_PRESETS, RECORD_TIME_PRESETS, UNIT_PRESETS, ZONES
 
 # ------------------------------------------------------------------------------ the genre
@@ -140,8 +141,11 @@ HEADERS = (  # the first line of a transcript, which sniff recognises
 SESSION_LINE = "Session of {date}: reports for the {window} up to {compiled}."
 STAMP_LINE = "Times at the left are UTC transmission times."
 
-# The wording of procedure. A report's intro and a readback's intro tell the two apart.
-REPORT_INTROS = ("report follows", "{noun} report follows", "message follows")
+# The wording of procedure. A report's intro and a readback's intro tell the two apart. No intro calls a
+# report a "message", which the reading rules say of notices and of what sends, forwards or relays them ("A
+# notice is a message about a report", "A WIRE line is a report, not a message"): "message follows" did.
+REPORT_INTROS = ("report follows", "{noun} report follows", "{noun} details follow")
+EARLIER_REPORT_INTROS = ("message follows",)  # read, never written: so that a run generated before is still read
 REPORT_ENDS = (". Over.", ", over.", ". How copy? Over.")
 READBACK_INTROS = ("I read back", "reading back", "read back follows")
 READBACK_ENDS = (". Over.", ". Is that correct? Over.")
@@ -318,7 +322,9 @@ class _Net:
     def notice(self, n: Notice) -> str:
         """A broadcast's body: its kind in capitals, when it was issued, and the notice in one of three
         wordings; a retraction may use a phrase of the domain's trap vocabulary, and a correction gives
-        both values in one drawn unit."""
+        both values in one drawn unit, its new value after "revised to", or after "revised from" and the old
+        value, which the rules quote (two wordings gave it after "now reads" and "amended from", which they
+        do not)."""
         rng, g = self.rng, self.glossary
         form = rng.randrange(3)
         when = format_time(n.time, rng.choice(UTC_TIME_FORMATS))
@@ -338,9 +344,9 @@ class _Net:
         qualifier = "" if n.qualifier is None else f" ({n.qualifier})"
         return (f"CORRECTION issued {when}: the {field.label} of {n.target} is revised to {new}{qualifier}; it was "
                 f"first given as {old}",
-                f"CORRECTION, time of issue {when}: for {n.target}, {field.label} now reads {new}{qualifier}, "
+                f"CORRECTION, time of issue {when}: for {n.target}, {field.label} {REVISED_TO} {new}{qualifier}, "
                 f"not {old}",
-                f"CORRECTION issued {when}: {n.target} {field.label} amended from {old} to {new}{qualifier}")[form]
+                f"CORRECTION issued {when}: {n.target} {field.label} {REVISED_FROM} {old} to {new}{qualifier}")[form]
 
     def opening(self) -> tuple[str, str]:
         control = self.control
@@ -368,8 +374,8 @@ class _Net:
 def _render(ctx: RenderContext, glossary: Glossary) -> str:
     """The transcript of a context's reports, notices and chatter, as `ctx.style` draws it."""
     rng, style, domain = ctx.rng, ctx.style, ctx.domain
-    reports: list[RecordReport] = [domain.to_generic(r) for r in ctx.reports]
-    notices: list[Notice] = [domain.to_generic(n) for n in ctx.notices]
+    reports: list[RecordReport] = generic_items(domain, ctx.reports)  # each place as genres print it
+    notices: list[Notice] = generic_items(domain, ctx.notices)
     sources = sorted({r.source for r in reports})
     numbers = rng.sample(range(1, max(100, 2 * len(sources))), len(sources))  # one call sign per source
     words = CALL_SIGNS[style["calls"]]
@@ -468,7 +474,7 @@ def _grammar(glossary: Glossary) -> _Grammar:
             rf"(?P=sep){re.escape(glossary.group_label)} (?P<group>.+?)"
             + (rf"(?P=sep)position (?P<coords>{COORDS_PATTERN})" if glossary.located else "") + fields
             + rf"(?:(?P=sep)remarks (?P<note>.+?) (?P<same>{record_id}))?(?:(?P=sep)location (?P<place>.+?))?")
-    intros = alternation(intro.format(noun=glossary.noun) for intro in REPORT_INTROS)
+    intros = alternation(intro.format(noun=glossary.noun) for intro in REPORT_INTROS + EARLIER_REPORT_INTROS)
     report = re.compile(rf"(?P<callee>{SIGN}), (?P<caller>{SIGN}), (?:{intros}): {body}(?:{alternation(REPORT_ENDS)})")
     readback = re.compile(rf"(?P<callee>{SIGN}), (?P<caller>{SIGN}), (?:{alternation(READBACK_INTROS)}): .+")
 
@@ -481,10 +487,13 @@ def _grammar(glossary: Glossary) -> _Grammar:
         label, new, old = re.escape(f.label), _value_pattern(f, "new"), _value_pattern(f, "old")
         qualifier = "" if f.qualifier is None else r"(?: \((?P<qualifier>[^()]*)\))?"
         ref = f"(?P<ref>{record_id})"
+        # "now reads" and "amended from": as transcripts printed them before, so that a run generated then is read
         for pattern in (rf"CORRECTION issued {when}: the {label} of {ref} is revised to {new}{qualifier}; it was first "
                         rf"given as {old}",
-                        rf"CORRECTION, time of issue {when}: for {ref}, {label} now reads {new}{qualifier}, not {old}",
-                        rf"CORRECTION issued {when}: {ref} {label} amended from {old} to {new}{qualifier}"):
+                        rf"CORRECTION, time of issue {when}: for {ref}, {label} (?:{REVISED_TO}|now reads) "
+                        rf"{new}{qualifier}, not {old}",
+                        rf"CORRECTION issued {when}: {ref} {label} (?:{REVISED_FROM}|amended from) {old} to "
+                        rf"{new}{qualifier}"):
             notices.append((re.compile(pattern), f))
     return _Grammar(report, readback, tuple(notices))
 
