@@ -28,7 +28,7 @@ reader and the oracle, with 95% intervals over instances: a reader who merges re
 10 minutes or an hour, 35.6% or 37.8%; dropping every report from at, pt and ew, the re-reporting
 networks that file no event of their own, 28.5% [24.9, 32.4]; and the hour's merge with that drop, the
 best combination tried, 38.9% [35.3, 42.9], against 41.1% [37.3, 44.9] for the status rule (a paired
-difference of 2.2 points [-0.5, +5.0]: the two cannot be told apart). On the legacy path, then, how
+difference of 2.2 points [-0.6, +4.9]: the two cannot be told apart). On the legacy path, then, how
 often a model handles the traps is no evidence that it read the rules. Off it, where planted reports
 stand in for slots (below), these readers close nothing measurable.
 
@@ -38,9 +38,12 @@ a slot filed as it is, and a re-report or a second report is a slot filed under 
 under its own with a note naming one, so its time, place, source, values, their precision and its ID are
 a real record's, and nothing that its ID says about its record contradicts it (a close approach is
 re-reported under its own ID only where its object makes no other approach in the digest, which would
-share its H); a correction shows a value of a slot, or, for a value tied to the record's near twins (a
-station's temperature), one that agrees with them as a real one does (_twin_values). Only the signals the
-rules name set a planted line apart: a shared ID or a note naming one, the status, and the notices. Each
+share its H, and only in the place of a slot whose object makes none either, which would leave the slot's
+near twin under another designation beside it; a note never names another approach of its slot's own
+object, which the rules count on its own); a correction shows a value of a slot, or, for a value tied to
+the record's near twins (a station's temperature), one that agrees with them as a real one does
+(_twin_values). Only the signals the rules name set a planted line apart: a shared ID or a note naming
+one, the status, and the notices. Each
 trap also draws the scopes of a real record of the digest, how many of the counting questions' scopes and
 how many of the others' it lies in, and for each question how far a real record that decides another
 question leads the next one (``TrapConfig.match_scope``), and its planted report lies in as many and leads as
@@ -61,11 +64,15 @@ no record at a time window's edge. Only then is the wrong answer the one that a 
 mistake gets from the text at its printed precision, rather than one decided by the stored values'
 last digit or by a tie-break. A placement whose every reading passes is preferred to any other, so a
 trap is planted unguarded only when no guarded placement turned up, and its affected questions are
-then only those its guarded readings change. Placing traps where their readings change answers and
-hold is itself a selection, which matching a real record's scopes and leads undoes in part: a planted
-report is still a little likelier than a real one to hold its group's highest value or to lie clear of a
-threshold (AUCs up to about 0.6), though no reader that drops reports by such a feature does better than
-the naive one.
+then only those its guarded readings change; among such placements, one none of whose unguarded
+readings changes an answer is preferred (_rank), so that a trap counted as not load-bearing changes no
+answer wherever such a placement was found. The guards are the key's own: a question whose place is drawn
+near a report once the traps are planted (questions.reanchor_nearest) keeps no bound on how far its nearest
+record lies, and neither do its readings (score_traps, `unbounded`). Placing traps where their readings
+change answers and hold is itself a selection, which matching a real record's scopes and leads undoes in
+part: a planted report is still a little likelier than a real one to hold its group's highest value or to
+lie clear of a threshold (AUCs up to about 0.6), though no reader that drops reports by such a feature
+does better than the naive one.
 
 Placement, ranking and scoring are the same for every domain. What a trap looks like depends on the
 domain's records, so the builders are looked up per domain (``builders_for``), and they take the
@@ -90,7 +97,7 @@ import math
 import random
 import re
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Collection, Mapping, Optional, Sequence
 
 from .domains.base import Domain, FieldSpec, Record, RecordReport, folded, stored_places
 from .domains.earthquakes import EARTHQUAKES, Earthquakes
@@ -135,11 +142,21 @@ _PLACE = re.compile(r"^(\d+(?:\.\d+)?) km ([NSEW]{1,3}) of (.+)$")
 # off a count does much better than the count (exactly: by at most 5 points of the counting questions whose
 # scope holds a given share of the records, and by none below a third; by 20 points before). The weights are this family's (none in a share of
 # digests, else a number from one up drawn alike) that leave about the least such gain with about as many planted
-# reports as before (5.0 a digest). A digest prints every report its plan adds: the second reports are planted
-# first, each about a record free of traps, then the re-reports, which re-report a record that re-reports alone
-# carry where no record is free (_virtual_pair: in the heaviest plans of the smallest digests), then the
-# retractions, and the corrections last, which need a record free of traps too but add no report. Corrections,
-# which change no count, make up the traps that change an answer (two a digest; the plan before planted 0.6).
+# reports as before (5.0 a digest). A digest prints every report its plan adds, and holds every trap its plan
+# draws: the second reports are planted first, each about a record free of traps, then the re-reports, which
+# re-report a record that re-reports alone carry where no record is free, or where no more are free than the
+# corrections still to come need (_tiers: in the heaviest plans of the smallest digests), then the retractions,
+# and the corrections last, which need a record free of traps too but add no report (where none is left, one that
+# only re-reports carry, none of which changes its values when misread: _valued). A report planned under its
+# record's own ID that no record can carry (in neo, where every record's object may make another approach in the
+# digest or its slots: _with_siblings) is filed under its slot's own ID with a note naming its record instead, so
+# that it is still printed. Only a correction planned where every record carries a conflict or one report under
+# its own ID, whose values a careless reader may take for the record's, still finds no place: none of the 7,618
+# planned in the samples measured did (every built-in domain, the heaviest plans included), where 1 to 5% were
+# dropped before, with a few of neo's same-ID lines, so that a digest of neo printed as few as 13 reports. A domain
+# with no correctable field plants its corrections as second reports, which the digest makes room for
+# (TrapPlan.for_domain). Corrections, which change no count, make up the traps that change an answer (two a
+# digest; the plan before planted 0.6).
 RETRACTION_WEIGHTS = (0.5, 0.25, 0.25)
 CROSS_REF_WEIGHTS = (0.45, 0.55 / 3, 0.55 / 3, 0.55 / 3)
 SAME_ID_WEIGHTS = (0.3,) + (0.7 / 8,) * 8
@@ -161,6 +178,15 @@ class TrapPlan:
     def lines(self) -> int:
         """The reports its traps add to the digest (a correction adds none)."""
         return self.retractions + self.cross_refs + self.same_ids + self.second_reports
+
+    def for_domain(self, domain: Domain) -> TrapPlan:
+        """The plan as `domain` plants it. A domain with no correctable field (FieldSpec.correctable) settles every
+        conflict by the settling report beside a second report, never by a correction notice, so its planned
+        corrections are second reports, which add a report each that the digest makes room for (`lines`,
+        pipeline.sample_with_slots) as it does for every other."""
+        if self.corrections and not any(spec.correctable for spec in domain.fields):
+            return replace(self, second_reports=self.second_reports + self.corrections, corrections=0)
+        return self
 
 
 def draw_plan(rng: random.Random) -> TrapPlan:
@@ -229,7 +255,7 @@ class _Site:
     reports: list[Any]  # the digest so far: a conflict may replace a settling report in it
     taken: set[str]  # every ID in use, including the IDs drawn for candidates that were not chosen
     used: set[str]  # records that already carry a duplicate or a conflict
-    conflicted: set[str] = field(default_factory=set)  # records that carry a conflict (_virtual_pair)
+    conflicted: set[str] = field(default_factory=set)  # records that carry a conflict (_tiers)
     # Off the legacy path: the records drawn with the digest but not kept (pipeline.sample_with_slots), as
     # generic Records, and the IDs of those whose place a chosen trap has taken; the digest's records as
     # generic Records; and whether a record with a place stands at a fixed site (_fixed).
@@ -240,6 +266,8 @@ class _Site:
     fixed: bool = True
     correction: bool = False  # the form the conflict being planted drew (_slot_conflict)
     form: str | None = None  # the form the re-report being planted was planned in (None: drawn, _slot_duplicate)
+    reserve: int = 0  # the planned corrections still to be planted after this trap, each on a record free of traps
+    planned: bool = False  # the traps are the digest's plan (draw_plan), every one of which it holds
     pairs: list[tuple[int, dict[str, float]]] | None = None  # the real twin pairs (_twin_pairs), once read
 
 
@@ -281,15 +309,18 @@ class _Reading:
 
 
 def _single_readings(trap: Trap, questions: list[Question], data: DigestData, domain: Domain,
-                     time_margin: int | None = None) -> list[_Reading]:
+                     time_margin: int | None = None, unbounded: Collection[str] = ()) -> list[_Reading]:
     """Every question under each careless reading of this one trap, with the domain's reading rules for
     everything the reader does not misread, readings in the trap's order and questions in theirs.
 
     With a `time_margin` (guarded placement), a reading is guarded when the misread digest passes the
     question's guards (questions.guards_ok, time windows kept that far from every record), as the
     snapshot passes them for the key: no record within a threshold's margin, no tie or near tie in a
-    ranked or nearest answer. Its answer is then the one a reader who makes that mistake gets from the
-    text, at the precision the digest prints. Without one (the 0.2.0 placement), every reading counts."""
+    ranked or nearest answer, and the record nearest to a question's place within the domain's bound
+    (Spatial.nearest_max_km), but at any distance for the questions named in `unbounded`, whose key has no
+    such bound (a place drawn near a report of the digest: questions.reanchor_nearest). Its answer is then
+    the one a reader who makes that mistake gets from the text, at the precision the digest prints. Without
+    one (the 0.2.0 placement), every reading counts."""
     units = domain.units
     readings = []
     for reading in trap.mishandles:
@@ -297,7 +328,8 @@ def _single_readings(trap: Trap, questions: list[Question], data: DigestData, do
         records = None if time_margin is None else domain.resolve(data.reports, data.notices, mishandle)
         for q in questions:
             answer = execute(q.chain, data, mishandle=mishandle, units=units, resolver=domain.resolve)
-            guarded = records is None or guards_ok(q.chain, records, domain=domain, time_margin=time_margin)
+            guarded = records is None or guards_ok(q.chain, records, domain=domain, time_margin=time_margin,
+                                                   nearest_max_km=math.inf if q.qid in unbounded else None)
             readings.append(_Reading(q, answer, guarded))
     return readings
 
@@ -334,12 +366,18 @@ def _rank(readings: Sequence[_Reading], key: Mapping[str, Any], guarded: bool) -
     """How good a placement is. The 0.2.0 ranks: 2 when it is load-bearing and every misread answer is
     clear of the scoring tolerance's edge, 1 when it is load-bearing, 0 when it changes nothing. A
     guarded placement whose readings all pass the guards takes its 0.2.0 rank plus one (so at most
-    GUARDED_TOP), and any other guarded placement 0: a trap that changes nothing beats one whose
-    careless readings no reader of the text can be held to."""
+    GUARDED_TOP): a trap that changes nothing beats one whose careless readings no reader of the text can
+    be held to. Any other guarded placement takes 0 when none of the readings that fail the guards changes
+    an answer, and -1 when one does: its trap would change an answer that its affected questions leave out
+    (they count only readings that pass the key's guards), so a trap counted as not load-bearing changes
+    no answer wherever one of its placements could be found that does not."""
     rank = (2 if _clear_of_tolerance_edge(readings, key) else 1) if _effects(readings, key) else 0
     if not guarded:
         return rank
-    return rank + 1 if all(r.guarded for r in readings) else 0
+    if all(r.guarded for r in readings):
+        return rank + 1
+    return -1 if any(not r.guarded and not same_answer(r.question.answer_type, r.answer, key[r.question.qid],
+                                                         unit=r.question.unit) for r in readings) else 0
 
 
 TOP, GUARDED_TOP = 2, 3  # the best rank of a placement, 0.2.0 and guarded: the first one found is taken
@@ -374,9 +412,10 @@ def _composition(scope: tuple[int, int], target: tuple[int, int]) -> tuple[bool,
 def _fit(rank: int, scope: tuple[int, int], target: tuple[int, int], top: int, leads_like: bool = True) -> tuple:
     """How well a placement of `rank`, whose planted report lies in `scope` of the questions' scopes, fits a
     trap that draws `target` (TrapConfig.match_scope): one whose readings all hold first (rank 1 and up),
-    then by whether every planted report leads the next report as a real one does wherever it decides a
-    question (`leads_like`, _Leads), then by its scopes (_composition), then by rank, then by how far its
-    scopes are from the target.
+    then one none of whose readings that fail the guards changes an answer (rank 0, _rank), then by whether
+    every planted report leads the next report as a real one does wherever it decides a question
+    (`leads_like`, _Leads), then by its scopes (_composition), then by rank, then by how far its scopes are
+    from the target.
 
     Its scopes come before its rank. A planted report that changes a count lies in that count's scope, and
     one that changes another answer must hold its scope's highest or lowest value, so placements ranked
@@ -390,7 +429,7 @@ def _fit(rank: int, scope: tuple[int, int], target: tuple[int, int], top: int, l
     question's place in earthquakes). A placement whose planted report decides no question leads as a real
     one alike."""
     distance = -abs(scope[0] - target[0]) - abs(scope[1] - target[1])
-    return (rank >= 1, leads_like, *_composition(scope, target), rank, distance)
+    return (rank >= 1, rank >= 0, leads_like, *_composition(scope, target), rank, distance)
 
 
 def _best_fit(target: tuple[int, int], top: int) -> tuple:
@@ -410,7 +449,7 @@ def _matched_placement(candidates: Sequence[_Candidate | None], target: tuple[in
                       for i, c in enumerate(candidates) if c is not None), key=lambda item: item[:4], reverse=True)
     best: tuple[tuple, int, _Candidate] | None = None
     for *glance, _, candidate in ordered:
-        if best is not None and best[0][0] and tuple(glance) < best[0][1:1 + len(glance)]:
+        if best is not None and best[0][0] and tuple(glance) < best[0][2:2 + len(glance)]:
             break  # neither it nor any after it can beat the best placement, whatever their rank
         rank = rank_of(candidate)
         fit = _fit(rank, scopes.count(_planted(candidate)), target, top, glance[0])
@@ -508,12 +547,14 @@ class _Leads:
 
 
 def score_traps(traps: list[Trap], questions: list[Question], key: dict, reports: list[Report],
-                notices: list[Notice], *, domain: Domain = EARTHQUAKES, time_margin: int | None = None) -> None:
+                notices: list[Notice], *, domain: Domain = EARTHQUAKES, time_margin: int | None = None,
+                unbounded: Collection[str] = ()) -> None:
     """Fill trap.affected (misread alone) and trap.fallen (misread alone or with any other traps).
 
     With a `time_margin` (guarded placement), `affected` keeps only the questions whose misread
-    digest passes their guards (_single_readings): a trap's exposure, its catch rate and the strata
-    of every gap count only careless readings that a reader of the text is held to. `fallen` keeps
+    digest passes their guards as the key does (_single_readings; `unbounded` names the questions whose
+    key keeps no bound on how far the record nearest to its place lies): a trap's exposure, its catch rate
+    and the strata of every gap count only careless readings that a reader of the text is held to. `fallen` keeps
     every misread answer that is not exactly the key, as computed from the stored values, including
     ones the scorer would still accept, so that a careless reader whose rounded answer lands just past
     the edge is attributed to the trap. Answers are deduplicated by exact value.
@@ -527,7 +568,7 @@ def score_traps(traps: list[Trap], questions: list[Question], key: dict, reports
     data = DigestData(reports, notices)
     units = domain.units
     for trap in traps:
-        trap.affected = _effects(_single_readings(trap, questions, data, domain, time_margin), key)
+        trap.affected = _effects(_single_readings(trap, questions, data, domain, time_margin, unbounded), key)
         trap.fallen = {}
     if time_margin is not None:
         _fallen_by_question(traps, questions, key, data, domain)
@@ -847,17 +888,25 @@ def _implied_town(event: Event) -> tuple[str, float, float] | None:
     return m.group(3), lat, lon
 
 
+def _in_order(values: Sequence[float]) -> float:
+    """The sum of `values` added one by one, left to right, as the built-in sum() of floats adds them up to Python
+    3.11 (from 3.12 it compensates its rounding, which can change the last bit): the same sum on every Python."""
+    return functools.reduce(lambda total, value: total + value, values, 0.0)
+
+
 def _place_for(anchor: Event, lat: float, lon: float, events: list[Event]) -> str | None:
     """A feed-style place note for a point near `anchor`, consistent with the real notes.
 
     The town's position is estimated from every real note that names it (averaging away their
-    rounding), and the new note gives the distance and 16-point bearing from there to (lat, lon)."""
+    rounding), and the new note gives the distance and 16-point bearing from there to (lat, lon). The
+    estimates are added in order (_in_order), as 0.2.0 added them on Python 3.9, so that a note is the
+    same on every Python."""
     anchor_town = _implied_town(anchor)
     if anchor_town is None:
         return anchor.place  # e.g. "Southern Alaska": no town to measure from
     estimates = [t for t in map(_implied_town, events) if t is not None and t[0] == anchor_town[0]]
-    town_lat = sum(t[1] for t in estimates) / len(estimates)
-    town_lon = sum(t[2] for t in estimates) / len(estimates)
+    town_lat = _in_order([t[1] for t in estimates]) / len(estimates)
+    town_lon = _in_order([t[2] for t in estimates]) / len(estimates)
     km = round(haversine_km(town_lat, town_lon, lat, lon))
     return f"{km} km {compass_point(initial_bearing(town_lat, town_lon, lat, lon))} of {anchor_town[0]}"
 
@@ -1015,9 +1064,10 @@ def _across(threshold: float, value: float, spec: FieldSpec, rng: random.Random,
 #                  record of its group, the one nearest to it in time, or under the ID of a real record of
 #                  its group that is not one of the slot's neighbours (_record_for), at its place only where
 #                  the domain's IDs name it (Domain.ids_name_place) and only for a record alone in the
-#                  sequence its ID numbers it in (Domain.id_place: an approach of an object with no other),
-#                  with what the slot gives for the record (Domain.rereport_values: its own values by
-#                  default, a close approach's with its object's H as another catalogue fits it);
+#                  sequence its ID numbers it in, from a slot alone in its own (Domain.id_place: an approach
+#                  of an object with no other), with what the slot gives for the record
+#                  (Domain.rereport_values: its own values by default, a close approach's with its object's
+#                  H as another catalogue fits it); a note never names a record of its slot's own sequence;
 #   second report  the same, under the record's ID, with a value that disagrees with the record's;
 #   correction     the record's own settling report, showing a value of a slot of its group (for a field tied to
 #                  the record's near twins, a value that agrees with its twin: _twin_values), which a notice
@@ -1029,7 +1079,12 @@ def _across(threshold: float, value: float, spec: FieldSpec, rng: random.Random,
 # (a shared ID or a note naming it, the status, the notices) sets a planted line apart. When no slot is
 # left (a pool hardly larger than a digest, or a direct call without slots), a builder plants a report made
 # beside a real record instead (_virtual_slot), which keeps the real neighbour distances but draws its
-# values, so it is only statistically like a real one.
+# values, so it is only statistically like a real one: a weather observation made so lay off its station's
+# minutes, with tenths on a five-minute mark, and a median 13 °C from the station's nearest observation. A
+# re-report that finds no record free of traps in a slot's place shares a record there (_tiers) before one
+# is made, so that a heavy plan needs one only where its records' groups have no slot left: before, about one
+# weather digest in a hundred and 1% of neo's planted reports stood in no slot; now none of 1,027 weather
+# digests and 2 of 7,490 of neo's planted reports do.
 
 
 def _generic(item: Any, domain: Domain) -> Record:
@@ -1048,20 +1103,61 @@ def _fixed(site: _Site, record: Record) -> bool:
 
 
 def _with_siblings(site: _Site) -> set[str]:
-    """The real records whose ID numbers them in a sequence (Domain.id_place: an object's approaches) that
-    holds another record, slot or report of the digest: a report filed under such a record's ID would
-    have to agree with its siblings, and so copy what it shares with them (an object's H), which no real
-    report beside its record does. Empty for a domain whose IDs number nothing."""
+    """The real records and the slots whose ID numbers them in a sequence (Domain.id_place: an object's
+    approaches) that holds another record, slot or report of the digest. A report filed under such a record's
+    ID would have to agree with its siblings, and so copy what it shares with them (an object's H), which no
+    real report beside its record does. A report filed in such a slot's place under another record's ID would
+    leave the slot's siblings, its near twins (the object's approach to the Moon hours from its approach to
+    Earth, at about its speed and distance), printed or to be printed under a designation of their own beside
+    it, with another H, which no real report has: a reader who took, of two reports that share an approach ID,
+    the one with such a twin under another designation for the planted one was right 54% of the time.
+    Empty for a domain whose IDs number nothing."""
     place = site.domain.id_place
-    if all(place(r.id) is None for r in site.records):
+    rows = (*site.records, *site.slots)
+    if all(place(r.id) is None for r in rows):
         return set()
     members: dict[Any, set[str]] = {}
-    refs = [r.id for r in (*site.records, *site.slots)] + [g.ref for g in map(site.domain.to_generic, site.reports)]
+    refs = [r.id for r in rows] + [g.ref for g in map(site.domain.to_generic, site.reports)]
     for ref in refs:
         at = place(ref)
         if at is not None:
             members.setdefault(at[0], set()).add(ref.casefold())
-    return {r.id for r in site.records if place(r.id) is not None and len(members[place(r.id)[0]]) > 1}
+    return {r.id for r in rows if place(r.id) is not None and len(members[place(r.id)[0]]) > 1}
+
+
+def _same_sequence(domain: Domain, a: str, b: str) -> bool:
+    """Whether two IDs number their records in one sequence (Domain.id_place: two approaches of one object)."""
+    at, bt = domain.id_place(a), domain.id_place(b)
+    return at is not None and bt is not None and at[0] == bt[0]
+
+
+def _filed_sources(site: _Site) -> dict[str, set[str]]:
+    """For each record, the sources of the unsettled reports filed under its own ID so far. A careless reader
+    counts such a report as a record of its own by its ID, source and status (Mishandle.split), so no two may
+    share all three: each would then be credited with the other's effect, and a reader who counts one of them
+    alone with no trap's."""
+    domain = site.domain
+    out: dict[str, set[str]] = {}
+    for g in map(domain.to_generic, site.reports):
+        if g.status != domain.statuses[0] and g.same_as is None:
+            out.setdefault(g.ref, set()).add(g.source)
+    return out
+
+
+def _tiers(site: _Site, barred: set[str]) -> list[list[Record]]:
+    """The records that a report about a record may be filed for, tier by tier, the first that can take it
+    first: the records free of traps; for a re-report planned for the digest (_Site.form), then the records that
+    only re-reports carry (two sources may re-report one record; a re-report is never planted beside a
+    conflict), so that a digest prints every report its plan adds. Where no more records are free of traps
+    than the corrections still to be planted need (_Site.reserve: each needs a record of its own and is planted
+    last), a re-report shares a record before it takes a free one, so that the plan's corrections are planted
+    too. `barred` records are never in a tier."""
+    free = [r for r in site.records if r.id not in site.used and r.id not in barred]
+    if site.form is None:
+        return [free]
+    shared = [r for r in site.records if r.id in site.used and r.id not in site.conflicted and r.id not in barred]
+    left = sum(1 for r in site.records if r.id not in site.used)
+    return [shared, free] if left <= site.reserve else [free, shared]
 
 
 def _colocated(site: _Site, same_id: bool) -> bool:
@@ -1072,7 +1168,8 @@ def _colocated(site: _Site, same_id: bool) -> bool:
 
 def _slot_pair(site: _Site, *, same_id: bool) -> tuple[Record, Record] | None:
     """A slot not taken yet, drawn at random among those that can report a record, and the record it
-    reports, which carries no trap yet (_record_for). None when no slot can.
+    reports (_record_for), of the first of the tiers that one can (_tiers: a record free of traps, or one that
+    only re-reports carry). None when no slot can.
 
     A report stands where its slot stands, wherever its record is, except that one filed under its
     record's own ID (`same_id`) in a domain whose IDs name their record's place (Domain.ids_name_place)
@@ -1081,31 +1178,42 @@ def _slot_pair(site: _Site, *, same_id: bool) -> tuple[Record, Record] | None:
     over the number of real records at its place, so that it joins a place of few reports more often than
     one of many. (No built-in domain's IDs name a place: a weather observation's ID is an opaque serial.) A
     report under its record's own ID reports only a record whose ID shares its sequence with no other
-    record, slot or report (_with_siblings: an approach whose object makes no other approach in the digest
-    or its slots), as one beside a sibling would have to repeat what the siblings share. Each placement of
-    a trap draws among the slots that its earlier placements have not tried while one of them can report
-    a record, so that the placements cover the digest's slots rather than draw some of them again."""
+    record, slot or report, from a slot whose ID shares its own with none either (_with_siblings: an
+    approach whose object makes no other approach in the digest or its slots), as one beside a sibling would
+    have to repeat what the siblings share, and one in a slot with siblings would leave the slot's near twins
+    under a designation of their own beside it; and it comes from a source that has filed no unsettled report
+    under that ID yet (_filed_sources). A report under its slot's own ID never names a record of its slot's own
+    sequence (Domain.id_place: another approach of the slot's object, which the rules count as a record of its
+    own). Each placement of a trap draws among the slots that its earlier placements have not tried while one
+    of them can report a record, so that the placements cover the digest's slots rather than draw some of them
+    again."""
+    domain = site.domain
     free = [s for s in site.slots if s.id not in site.filled]
     barred = _with_siblings(site) if same_id else set()
     colocated = _colocated(site, same_id)
-    options: list[tuple[Record, list[Record]]] = []
-    weights: list[float] = []
-    for pool in ([s for s in free if s.id not in site.tried], free):
-        for slot in pool:
-            fixed = colocated and _fixed(site, slot)
-            mates = [r for r in site.records if r.id not in site.used and r.id not in barred
-                     and r.group == slot.group
-                     and (not colocated or r.place == slot.place or not (fixed or _fixed(site, r)))]
-            if mates:
-                options.append((slot, mates))
-                weights.append(1.0 / sum(r.place == slot.place for r in site.records) if fixed else 1.0)
+    filed = _filed_sources(site) if same_id else {}
+    for tier in _tiers(site, barred):
+        options: list[tuple[Record, list[Record]]] = []
+        weights: list[float] = []
+        for pool in ([s for s in free if s.id not in site.tried], free):
+            for slot in pool:
+                if slot.id in barred:
+                    continue
+                fixed = colocated and _fixed(site, slot)
+                mates = [r for r in tier if r.group == slot.group
+                         and (not colocated or r.place == slot.place or not (fixed or _fixed(site, r)))
+                         and (slot.source not in filed.get(r.id, ()) if same_id
+                              else not _same_sequence(domain, r.id, slot.id))]
+                if mates:
+                    options.append((slot, mates))
+                    weights.append(1.0 / sum(r.place == slot.place for r in site.records) if fixed else 1.0)
+            if options:
+                break
         if options:
-            break
-    if not options:
-        return None
-    slot, mates = site.rng.choices(options, weights=weights, k=1)[0]
-    site.tried.add(slot.id)
-    return slot, _record_for(site, slot, mates, same_id=same_id)
+            slot, mates = site.rng.choices(options, weights=weights, k=1)[0]
+            site.tried.add(slot.id)
+            return slot, _record_for(site, slot, mates, same_id=same_id)
+    return None
 
 
 def _record_for(site: _Site, slot: Record, mates: Sequence[Record], *, same_id: bool) -> Record:
@@ -1155,20 +1263,28 @@ def _peers(record: Record, spec: FieldSpec, site: _Site) -> list[float]:
     return [r.values[spec.key] for r in site.records if r.source == record.source]
 
 
-def _virtual_slot(site: _Site, anchor: Record, *, earliest: int, latest: int, at_place: bool) -> Record:
+def _donors(site: _Site, anchor: Record, *, at_place: bool, avoid: Collection[str] = ()) -> list[Record]:
+    """The real records that may lend a record made beside `anchor` their source and form (_virtual_slot): those
+    of its group (at its place, at a fixed site, when `at_place`), less those of a source in `avoid`."""
+    fixed = _fixed(site, anchor)
+    donors = ([r for r in site.records
+               if r.group == anchor.group and (not (fixed and at_place) or r.place == anchor.place)] or [anchor])
+    return [r for r in donors if r.source not in avoid]
+
+
+def _virtual_slot(site: _Site, anchor: Record, *, earliest: int, latest: int, at_place: bool,
+                  avoid: Collection[str] = ()) -> Record:
     """When no slot is left: a record that could have been drawn beside `anchor`, a real record. A donor, a
-    real record of the anchor's group (at its place, at a fixed site, when `at_place`) drawn at random,
-    lends it its source, its qualifiers, the precision of its values and the shape of its ID; it lies as far
-    from the anchor in time as the donor lies from its nearest neighbour (before or after the anchor, within
-    [earliest, latest]); at a fixed site, at the anchor's place when `at_place` and at the donor's else, and
-    elsewhere as far from the anchor as the donor is from that neighbour, in a random direction; and its
-    values are drawn from the group's (a value of the group moved by up to 5% of the field's spread in the
-    digest, folded back into the range the group's values cover), not copied from any record."""
+    real record of the anchor's group (at its place, at a fixed site, when `at_place`; of no source in `avoid`)
+    drawn at random, lends it its source, its qualifiers, the precision of its values and the shape of its ID;
+    it lies as far from the anchor in time as the donor lies from its nearest neighbour (before or after the
+    anchor, within [earliest, latest]); at a fixed site, at the anchor's place when `at_place` and at the
+    donor's else, and elsewhere as far from the anchor as the donor is from that neighbour, in a random
+    direction; and its values are drawn from the group's (a value of the group moved by up to 5% of the field's
+    spread in the digest, folded back into the range the group's values cover), not copied from any record."""
     rng, domain, records = site.rng, site.domain, site.records
     fixed = _fixed(site, anchor)
-    donors = ([r for r in records if r.group == anchor.group and (not (fixed and at_place) or r.place == anchor.place)]
-              or [anchor])
-    donor = rng.choice(donors)
+    donor = rng.choice(_donors(site, anchor, at_place=at_place, avoid=avoid))
     near = _neighbour(donor, records)
     gap = abs(near.time - donor.time) if near is not None else rng.randint(60, 3600)
     times = [t for t in (anchor.time - gap, anchor.time + gap) if earliest <= t <= latest]
@@ -1195,20 +1311,21 @@ def _virtual_slot(site: _Site, anchor: Record, *, earliest: int, latest: int, at
 
 
 def _virtual_pair(site: _Site, *, same_id: bool) -> tuple[Record, Record] | None:
-    """When no slot is left: a record that carries no trap yet, drawn at random (for a report under its own ID,
-    one without siblings: see _slot_pair), and a slot made beside it (at its place, where the report must
-    stand there). A re-report planned for a digest whose every record carries a trap already re-reports a record
-    that only re-reports carry (two sources may re-report one record; a conflict is never planted beside a
-    re-report), so that a digest prints every report its plan adds (draw_plan). None when there is no such
-    record."""
+    """When no slot can report a record (_slot_pair): a record drawn at random from the first of the tiers that
+    holds one (_tiers: one free of traps, or for a planned re-report one that only re-reports carry; for a
+    report under its own ID, one without siblings, see _slot_pair), and a slot made beside it (at its place,
+    where the report must stand there), of a source that has filed no unsettled report under its ID yet. None
+    when there is no such record."""
     barred = _with_siblings(site) if same_id else set()
-    record = _pick_unused(site.records, site.used | barred, site.rng)
-    if record is None and site.form is not None:
-        record = _pick_unused(site.records, site.conflicted | barred, site.rng)
-    if record is None:
-        return None
-    return _virtual_slot(site, record, earliest=site.window_start, latest=site.compiled_at - 1,
-                         at_place=_colocated(site, same_id)), record
+    at_place = _colocated(site, same_id)
+    filed = _filed_sources(site) if same_id else {}
+    for tier in _tiers(site, barred):
+        able = [r for r in tier if _donors(site, r, at_place=at_place, avoid=filed.get(r.id, ()))]
+        if able:
+            record = site.rng.choice(able)
+            return _virtual_slot(site, record, earliest=site.window_start, latest=site.compiled_at - 1,
+                                 at_place=at_place, avoid=filed.get(record.id, ())), record
+    return None
 
 
 def _filed_as(slot: Record, record: Record, site: _Site, *, ref: str, same_as: str | None, status: str, role: str,
@@ -1259,11 +1376,24 @@ def _unsettled(site: _Site, record_id: str) -> bool:
                for g in map(domain.to_generic, site.reports))
 
 
+def _valued(site: _Site) -> set[str]:
+    """The records whose one unsettled report is filed under their own ID: its trap records the careless reading
+    "its values taken for the record's" (_slot_duplicate, Mishandle.prefer_preliminary_for), which changes the
+    record's own values. A record with no such report, or with two unsettled reports (whose traps record that
+    reading for neither: _unambiguous), has none."""
+    domain = site.domain
+    naming: dict[str, list[bool]] = {}
+    for g in map(domain.to_generic, site.reports):
+        if g.status != domain.statuses[0]:
+            naming.setdefault(g.same_as or g.ref, []).append(g.same_as is None)
+    return {record_id for record_id, own in naming.items() if own == [True]}
+
+
 def _unambiguous(traps: Sequence[Trap], chosen: Trap) -> None:
     """Take the reading "its values taken for the record's" (Mishandle.prefer_preliminary_for) back from an
     earlier re-report under the ID of the record that the re-report `chosen` has just joined: the record now
     has two unsettled reports, and the reading would name whichever a digest happens to print first. (A
-    conflict is never planted beside a re-report, so a second report keeps its reading.)"""
+    re-report is never planted beside a conflict, so a second report keeps its reading.)"""
     for trap in traps:
         if trap is not chosen and trap.kind == "duplicate" and trap.target == chosen.target:
             trap.mishandles = [m for m in trap.mishandles if not Mishandle.from_dict(m).prefer_preliminary_for]
@@ -1455,6 +1585,12 @@ def _slot_conflict(trap_id: str, site: _Site) -> _Candidate | None:
     final, draft = domain.statuses
     if spec.correctable and site.correction:  # the settling report shows the wrong value, a correction fixes it
         e = _pick_unused(site.records, site.used, rng)
+        if e is None and site.planned:
+            # No record is free of traps: one that only re-reports carry, none of whose careless readings touches
+            # the record's own values (each counts its report as a record of its own: _valued), so that the
+            # correction's readings and theirs act on rows of their own, and the digest holds every trap its
+            # plan draws.
+            e = _pick_unused(site.records, site.conflicted | _valued(site), rng)
         if e is None:
             return None
         value = e.values[spec.key]
@@ -1521,7 +1657,7 @@ def inject_traps(events: list[Event], questions: list[Question], rng: random.Ran
                  id_style=config.id_style, reports=[build.primary(e) for e in events],
                  taken={e.id for e in events} | {s.id for s in slots}, used=set(),
                  slots=[_generic(s, domain) for s in slots], records=[_generic(e, domain) for e in events],
-                 fixed=not isinstance(domain, Earthquakes))
+                 fixed=not isinstance(domain, Earthquakes), planned=config.plan is not None)
     notices: list[Notice] = []
     traps: list[Trap] = []
     key = {q.qid: execute(q.chain, events, units=units) for q in questions}
@@ -1532,11 +1668,12 @@ def inject_traps(events: list[Event], questions: list[Question], rng: random.Ran
     if config.plan is None:  # the 0.2.0 plan
         kinds = [(kind, None) for kind in ["duplicate"] * rng.randint(*config.duplicates)
                  + ["retraction"] * config.retractions + ["conflict"] * config.conflicts]
-    else:  # off the legacy path: the digest's own plan (draw_plan), the re-reports' forms in a drawn order, and the
-        # traps that add a report first, the second reports (which need a record free of traps) before the re-reports
-        # (which may share one: _virtual_pair) and the corrections last (they need one too, but add no report), so
-        # that the digest prints every report its plan adds
-        plan = config.plan
+    else:  # off the legacy path: the digest's own plan (draw_plan, as the domain plants it), the re-reports' forms in
+        # a drawn order, and the traps that add a report first, the second reports (which need a record free of
+        # traps) before the re-reports (which may share one: _tiers) and the corrections last (they need one too,
+        # but add no report, and the re-reports leave them as many: _Site.reserve), so that the digest prints every
+        # report its plan adds
+        plan = config.plan.for_domain(domain)
         duplicates = ["same_id"] * plan.same_ids + ["cross_ref"] * plan.cross_refs
         rng.shuffle(duplicates)
         kinds = ([("conflict", "second_report")] * plan.second_reports + [("duplicate", form) for form in duplicates]
@@ -1546,13 +1683,13 @@ def inject_traps(events: list[Event], questions: list[Question], rng: random.Ran
     leads = _Leads(questions, site.records, units, domain) if config.match_scope else None
     for number, (kind, form) in enumerate(kinds, start=1):
         trap_id = f"T{number}"
-        best: tuple[tuple, int, _Candidate] | None = None
         # Off the legacy path, a scope and a lead drawn from the real records' (see TrapConfig.match_scope), and
         # a re-report's or a conflict's form, planned (or drawn) once for the trap (_slot_duplicate,
         # _slot_conflict).
         target = rng.choice(real_scopes) if real_scopes else None
         lead = leads.draw(rng) if leads is not None and target is not None else {}
         site.form = form if kind == "duplicate" else None
+        site.reserve = sum(1 for _, later in kinds[number:] if later == "correction")
         if kind == "conflict" and config.guarded:
             site.correction = form == "correction" if form is not None else rng.random() < 0.5
         site.tried = set()
@@ -1572,7 +1709,13 @@ def inject_traps(events: list[Event], questions: list[Question], rng: random.Ran
             trial, _ = _apply(site.reports, notices, candidate)
             return leads.like([domain.to_generic(r) for r in trial], planted_at(candidate), lead)
 
-        if target is None:  # the 0.2.0 search: placements in turn, until one of the top rank turns up
+        def search(kind: str) -> tuple[tuple, int, _Candidate] | None:
+            """The best placement of the trap as a trap of `kind`, or None when none finds room."""
+            if target is not None:
+                return _matched_placement([builders[kind](trap_id, site) for _ in range(config.candidates)], target,
+                                          scopes, rank_of, top, leads_like)
+            # the 0.2.0 search: placements in turn, until one of the top rank turns up
+            best: tuple[tuple, int, _Candidate] | None = None
             for _ in range(config.candidates):
                 candidate = builders[kind](trap_id, site)
                 if candidate is None:
@@ -1582,9 +1725,17 @@ def inject_traps(events: list[Event], questions: list[Question], rng: random.Ran
                     best = ((rank,), rank, candidate)
                 if rank == top:
                     break
-        else:
-            best = _matched_placement([builders[kind](trap_id, site) for _ in range(config.candidates)], target,
-                                      scopes, rank_of, top, leads_like)
+            return best
+
+        best = search(kind)
+        if best is None and config.plan is not None and form in ("same_id", "second_report"):
+            # No record can carry a report under its own ID (in neo, every record's object may make another approach
+            # in the digest or its slots: _with_siblings): the report is filed under its slot's own ID, with a note
+            # naming its record, as a cross-referenced re-report, so that the digest still prints every report its
+            # plan adds.
+            kind, form = "duplicate", "cross_ref"
+            site.form, site.tried = form, set()
+            best = search(kind)
         if best is None:
             continue
         chosen = best[2]

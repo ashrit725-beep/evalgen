@@ -539,18 +539,23 @@ class Neo(Domain):
         """What a report filed in a slot's place gives for an approach (Domain.rereport_values): the slot's miss
         distance and velocity, and, under the approach's own designation, the H of that object as another
         catalogue lists it: the record's, off by 0.05 to 0.3 (catalogues fit H to their own observations), at
-        the places the record's designation gives it (_draw_object), so that a designation and its H never
-        disagree. Under the slot's own designation, a report keeps the slot's H with the rest, its own object's.
+        the places the record's designation gives it (_draw_object: 3, or 1 or 2), so that a designation and its
+        H never disagree; an H that ends in zeros (21.0) is written to one place at least, as an H listed to none
+        would move by a whole magnitude. Under the slot's own designation, a report keeps the slot's H with the
+        rest, its own object's.
 
         The trap builders file a report under an approach's own designation only where the object makes no
         other approach in the digest or its slots (traps._with_siblings, by id_place): every approach of an
         object prints one H, so beside another approach the report would have to give that H too, and so the
         very H of its record, a copy that no two real reports of a body share (an AUC of 0.95), or give
-        another, which no real approach does (an AUC of 0 for its sibling's H, before the second round)."""
+        another, which no real approach does (an AUC of 0 for its sibling's H, before the second round). They
+        file it only in the place of a slot whose object makes no other approach there either, so that the
+        slot's own twin (its object's approach to the other body, hours away) is never left beside it under
+        the slot's designation."""
         values = dict(slot.values)
         if same_id:
             h = record.values[ABSOLUTE_MAGNITUDE.key]
-            places = stored_places(h, ABSOLUTE_MAGNITUDE.decimals)
+            places = max(1, stored_places(h, ABSOLUTE_MAGNITUDE.decimals))
             step = 10.0 ** -places
             off = max(step, round(rng.uniform(0.05, 0.3) / step) * step)
             values[ABSOLUTE_MAGNITUDE.key] = round(h + rng.choice((-1, 1)) * off, places) + 0.0
