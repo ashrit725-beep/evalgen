@@ -21,7 +21,7 @@ Without the new options, 0.3.0 writes the 0.2.0 run byte for byte.
 python3 -m pip install -r requirements.txt     # requests + pytest (Python 3.10+)
 python3 cli.py demo --seed 42 --instances 20  # fully offline, no API keys, ~1 second
 python3 cli.py demo --mix random               # 0.3.0: every domain and genre, offline, ~3 seconds
-python3 -m pytest -q                           # 866 tests, ~3 minutes
+python3 -m pytest -q                           # 866 tests, ~4 minutes
 ```
 
 The demo writes `runs/demo-synthetic-seed42/report.md` (and `report.json`), as 0.2.0 did, which replaces
@@ -560,11 +560,16 @@ Accuracy on public vs new templates is reported in two forms:
 Each question's difficulty features are stored with it. The flag uses the adjusted gap: above 10
 points with an interval that excludes 0.
 
-Validation over 90 synthetic runs of 100 instances:
+Validation of 0.2.0, over 90 synthetic runs of 100 instances (the 0.2.0 code):
 * the pool-agnostic `naive` baseline was flagged 0 times (the raw gap would have flagged it 10
   times);
 * a simulated reader that misses each trap with probability 0.3 was flagged 0 times (raw: 7);
 * the simulated contaminated `mock` was flagged in all 90.
+
+The 0.3.0 calibration at the final commit (120 random-mix runs of 100 instances, see Report
+additions) gives the same picture off the legacy path: the naive baseline's template gap was never
+flagged (0 of 120), and the mock's 30-point contamination was flagged in all 600 runs of the mock and
+its four penalised variants.
 
 ---
 
@@ -698,7 +703,8 @@ note naming one, the status, and the notices. Nine more things make that hold:
   (`questions.reanchor_nearest`, seed path `instance/<i>/anchors`). (A place near a planted report keeps
   the key's nearest record clear of the next record, and that record is most often the report that
   comes next; when only those places kept the clearance, the next report stood clear of the one after it
-  more often where a planted report decided, with AUCs of 0.57 to 0.60, and 0.50 in earthquakes since.)
+  more often where a planted report decided, with AUCs of 0.57 to 0.60, and 0.50 in earthquakes after
+  the review's change, measured on its code; see *Reviewed* below.)
   Of the reports that can, one is drawn with the weight of its kind (a record's
   own, a re-report, a phantom, a conflict's line): how many reports of that kind the digest's questions
   about a place ask about, over how many of them can decide one, so that each kind decides these
@@ -771,114 +777,122 @@ When no slot is left, as can happen with a live pool little larger than a digest
 beside a real record (`traps._virtual_slot`), with values drawn from its group's and folded into
 their range; none of the runs measured below needed one.
 
-The measurements in the four paragraphs that follow (*Measured*, *Measured again*, *Measured a third
-time* and *Reviewed*), and the simulated readers of the Limitations, were made with red-team and
-simulation scripts that are not part of the repository, so their figures cannot be reproduced from it
-alone; each was measured on the code of its round, and every later change of placement (the last: a
-re-report under its record's ID records a second report's readings, see *Readings* above) draws other
-instances. `tests/test_trap_tells.py` checks the same properties, from the prompt text, on a small
-sample of its own: four instances of each built-in domain in each genre, with the toy plugin, where it
-holds an AUC to the looser band [0.3, 0.7] that a sample of that size needs.
+The measurements in the paragraphs that follow (*Measured*, *Measured again*, *Measured a third time*,
+*Reviewed* and *Measured at the final commit*), and the simulated readers of the Limitations, were made
+with red-team and simulation scripts that are not part of the repository, so their figures cannot be
+reproduced from it alone. The first four are a history: each reports the figures of its round's code,
+before and after that round's changes, and every later change of placement (the last: a re-report under
+its record's ID records a second report's readings, see *Readings* above) draws other instances, so
+their "after" figures are not the final code's. *Measured at the final commit* gives the final code's.
+`tests/test_trap_tells.py` checks the same properties, from the prompt text, on a small sample of its
+own: four instances of each built-in domain in each genre, with the toy plugin, where it holds an AUC to
+the looser band [0.3, 0.7] that a sample of that size needs.
 
-*Measured.* A red team read every report of fresh runs from the prompt text alone (each built-in domain
-in each genre, 1,008 instances a sample; the toy plugin domain in classic and in the toy-telex genre,
-both held out by the example config, 252 instances; neo replayed from the recorded CAD response, 252
-instances) and tried readers that merge or drop reports by a feature the rules never mention, without
-reading a status, an ID, a note or a notice. Before this placement, the best of them (merge reports
-within 40 s and 8.5 km, keep the one not from a re-reporting source, or the commoner source's) closed
-39% of the gap between the naive reader and the oracle (36 to 41% in every domain, 36 to 43% in every
-genre), and 42% both for the held-out toy plugin and on the CAD replay. After it, the best closes 0.7%
-(at most 5.2% in any domain or genre), 0.4% for the toy plugin and 2.4% on the CAD replay, while the
-status rule alone still closes 40%. Of reports that share an ID, keeping the first printed, the
-earliest, the latest or the commoner source's closes 6% whichever it keeps, as a coin would, and keeping
-the settling one 17%: only the status says which is real (before, keeping the commoner source's closed
-17%, against 20% for the status). Of the 2,450
-cells (feature, kind of planted report, all reports or one domain) that measure a feature the rules
-never mention, 535 had an AUC outside [0.35, 0.65] with a 95% interval excluding 1/2; none has now, on
-two independent samples. The cells of single genres hold about 150 instances each, and about 3% of
-them cross the band by chance and by the weak effects of the Limitations (before, 20%); what an
-instance holds is drawn alike in every genre. `tests/test_trap_tells.py` checks this on its small sample
-(above).
+*Measured* (the first red-team round, on its code). A red team read every report of fresh runs from the
+prompt text alone (each built-in domain in each genre, 1,008 instances a sample; the toy plugin domain
+in classic and in the toy-telex genre, both held out by the example config, 252 instances; neo replayed
+from the recorded CAD response, 252 instances) and tried readers that merge or drop reports by a feature
+the rules never mention, without reading a status, an ID, a note or a notice. Before this placement, the
+best of them (merge reports within 40 s and 8.5 km, keep the one not from a re-reporting source, or the
+commoner source's) closed 39% of the gap between the naive reader and the oracle (36 to 41% in every
+domain, 36 to 43% in every genre), and 42% both for the held-out toy plugin and on the CAD replay. After
+it, the best closed 0.7% (at most 5.2% in any domain or genre), 0.4% for the toy plugin and 2.4% on the
+CAD replay, while the status rule alone still closed 40%. Of reports that share an ID, keeping the first
+printed, the earliest, the latest or the commoner source's closed 6% whichever it kept, as a coin would,
+and keeping the settling one 17%: only the status says which is real (before, keeping the commoner
+source's closed 17%, against 20% for the status). Of the 2,450 cells (feature, kind of planted report,
+all reports or one domain) that measure a feature the rules never mention, 535 had had an AUC outside
+[0.35, 0.65] with a 95% interval excluding 1/2; after the change none had, on two independent samples.
+The cells of single genres held about 150 instances each, and about 3% of them crossed the band by
+chance and by the weak effects of the Limitations (before, 20%); what an instance holds is drawn alike
+in every genre. `tests/test_trap_tells.py` checks this on its small sample (above).
 
-*Measured again.* A second red team found what that placement left, and the IDs, scopes and
-retractions above remove it. On two more independent samples of each kind (seeds 61001–61084 and
-62001–62084), measured before and after on the same seeds:
+*Measured again* (the second round, on its code). A second red team found what that placement left, and
+the IDs, scopes and retractions above remove it. On two more independent samples of each kind (seeds
+61001–61084 and 62001–62084), measured before and after that round's changes on the same seeds:
 
 - A close approach re-reported under its own ID gave its object an H that the object's other approach
   did not print (an AUC of 0 for its sibling's H), and could lie out of the order of the approaches'
-  numbers (0.74 to 0.81). No report is filed under an approach's ID beside a sibling now, so neither
+  numbers (0.74 to 0.81). No report is filed under an approach's ID beside a sibling since, so neither
   can differ.
 - Planted reports decided more questions than real ones: 0.59 to 0.66 for the number of questions whose
   naive answer a report alone changes, and 0.58 to 0.64 for the counting questions' share of the scopes
-  it lies in. Both now lie between 0.45 and 0.59.
+  it lies in. After the changes both lay between 0.45 and 0.59.
 - A reader who took an offset learned per template off the status rule's count closed 6.6% of the gap
-  beyond the status rule (5.6 to 8.2% in each domain, 3.6% on the CAD replay). It now gains nothing in
-  any domain or on the CAD replay, and an offset off the naive count closes 3.0% (before, 6.6%).
+  beyond the status rule (5.6 to 8.2% in each domain, 3.6% on the CAD replay). After the changes it
+  gained nothing in any domain or on the CAD replay, and an offset off the naive count closed 3.0%
+  (before, 6.6%).
 - A logistic model of every unintended feature, fitted on one sample and scored on the other, told
   removable reports from real ones with an AUC of 0.68 to 0.74 (0.62 for the toy plugin, 0.66 on the
-  CAD replay; 0.64 to 0.69 from the questions' features alone); now 0.57 to 0.62 (0.58, 0.62; 0.55 to
-  0.60). Dropping the reports it ranks likeliest planted closes at most 1.9% (before, 7.2% on the CAD
-  replay).
+  CAD replay; 0.64 to 0.69 from the questions' features alone); after the changes 0.57 to 0.62 (0.58,
+  0.62; 0.55 to 0.60). Dropping the reports it ranked likeliest planted closed at most 1.9% (before,
+  7.2% on the CAD replay).
 - A weather re-report under its record's ID stood at the record's station (0.37 to 0.66 for the number
   of reports at its station and the gap to the nearest there; merging a station's observations within
-  an hour closed up to 6.5%); now 0.46 to 0.56, and at most 2.5%, with intervals that include 0.
+  an hour closed up to 6.5%); after the changes 0.46 to 0.56, and at most 2.5%, with intervals that
+  include 0.
 
-The first round's readers now close at most 1.0% of the gap overall, 2.4% in any domain, 3.9% in any
-genre, 0.7% for the toy plugin and 1.0% on the CAD replay (6.9% in one of its genres, where 10.1% did
-before), and the status rule alone 54% (before, 41%: a digest with no retraction is now the likeliest).
-Of reports that share an ID, keeping the first printed or the one whose ID names its source does within
-1.2 points of a coin overall (3 to 4 points better in earthquakes: see Limitations), and keeping the
-settling one 17 to 21 points better. With the second red team's features, 17 and 15 of the 3,300 cells
-of all reports or one domain failed the target on the two samples, 12 of them on both, and 6 and 5 of
-the CAD replay's 605; none fails now on any sample, nor any of the toy plugin's. Of the 7,900 cells of
-single genres 21 and 31 fail (before, 66 and 62), one of them on both samples on the same side (see
-Limitations). On these runs the oracle scores 100% (36,072 questions), every careless reading a trap
-records is reproduced from the text (32,793), and every rendering reads back to its reports and notices
-(the 0.2.0 digest at the precision it prints).
+After the second round's changes, on its samples, the first round's readers closed at most 1.0% of the
+gap overall, 2.4% in any domain, 3.9% in any genre, 0.7% for the toy plugin and 1.0% on the CAD replay
+(6.9% in one of its genres, where 10.1% did before), and the status rule alone 54% (before, 41%: a
+digest with no retraction had become the likeliest; at the final commit the status rule closes 38.2%,
+see *Measured at the final commit*). Of reports that shared an ID, keeping the first printed or the one
+whose ID names its source did within 1.2 points of a coin overall (3 to 4 points better in earthquakes:
+see Limitations), and keeping the settling one 17 to 21 points better. With the second red team's
+features, 17 and 15 of the 3,300 cells of all reports or one domain failed the target on the two
+samples before the changes, 12 of them on both, and 6 and 5 of the CAD replay's 605; none failed after
+them on any sample, nor any of the toy plugin's. Of the 7,900 cells of single genres 21 and 31 failed
+(before, 66 and 62), one of them on both samples on the same side (see Limitations). On those runs the
+oracle scored 100% (36,072 questions), every careless reading a trap records was reproduced from the
+text (32,793), and every rendering read back to its reports and notices (the 0.2.0 digest at the
+precision it prints).
 
-*Measured a third time.* A third red team, with question-aware readers and features of their own,
-found what the second round left, and *The plan*, *Leads*, *Places*, *Tied values* and *Notices* above
-remove most of it. On three independent samples (seeds 3001–3084, 4001–4084 and 6001–6084, each with
-the toy plugin and the CAD replay):
+*Measured a third time* (the third round, on its code). A third red team, with question-aware readers
+and features of their own, found what the second round left, and *The plan*, *Leads*, *Places*, *Tied
+values* and *Notices* above remove most of it. On three independent samples (seeds 3001–3084,
+4001–4084 and 6001–6084, each with the toy plugin and the CAD replay), before and after that round's
+changes:
 
 - Planted reports were a steady share of every digest, so one factor off every naive count
   (round(0.84 x the naive count)) closed about a tenth of the gap between the naive reader and the
   oracle (up to 12.6% in a domain and 13.8% in a genre; 11 to 13% for the toy plugin, 7.7 to 10.1% on
-  the CAD replay). Fitted on one sample, a count factor now closes 2.9% [1.2, 4.9] and 4.0% [1.8, 5.9]
-  on the others, 0.2 to 1.0% for the toy plugin and 1.7 to 4.0% on the CAD replay; every question-aware
-  rule at once (count factors and offsets per domain, rank and top shifts, the margin of a comparison,
-  the places' labels and bands) closes 2.1 to 5.1% overall (0.5 to 1.7% for the toy plugin, 2.6% on
-  the CAD replay) and at most 6.7% in a domain. In one genre of one sample it closes 11.8% [6.8, 17.8]
-  (form, fitted on A and scored on C; 4.5 and -0.4% the other ways), the most any such reader closes in
-  any cell.
+  the CAD replay). After the changes, fitted on one sample, a count factor closed 2.9% [1.2, 4.9] and
+  4.0% [1.8, 5.9] on the others, 0.2 to 1.0% for the toy plugin and 1.7 to 4.0% on the CAD replay;
+  every question-aware rule at once (count factors and offsets per domain, rank and top shifts, the
+  margin of a comparison, the places' labels and bands) closed 2.1 to 5.1% overall (0.5 to 1.7% for the
+  toy plugin, 2.6% on the CAD replay) and at most 6.7% in a domain. In one genre of one sample it closed
+  11.8% [6.8, 17.8] (form, fitted on A and scored on C; 4.5 and -0.4% the other ways), the most any such
+  reader closed in any cell.
 - A corrected temperature jumped from its station's nearest observation (AUCs of 0.84 to 0.90 for the
   jump per hour), and a corrected speed past the Moon from the object's speed past Earth (0.75 to 0.81,
-  0.66 to 0.85 on the CAD replay). Now 0.50 to 0.55 for the jump, 0.51 to 0.56 for its median and the
-  local hour, and 0.47 to 0.49 (0.42 to 0.55) for the speed.
+  0.66 to 0.85 on the CAD replay). After the changes, 0.50 to 0.55 for the jump, 0.51 to 0.56 for its
+  median and the local hour, and 0.47 to 0.49 (0.42 to 0.55) for the speed.
 - A planted report that decided a question led the next by half as much as a real one (0.27 to 0.28
   in weather, 0.32 to 0.35 for earthquake phantoms, 0.64 to 0.73 for phantoms on the CAD replay), and in
   weather decided almost none of the questions about a place (a fifth as many as its share of the
-  reports asked about, once a place could lie near any report). Now 0.41 to 0.47 in weather (0.39 to
-  0.43 for re-reports), 0.48 to 0.56 for earthquake phantoms and 0.47 to 0.56 on the CAD replay;
-  planted reports decide questions about a place half as often as their share in weather and four
-  fifths as often in earthquakes, and the report that decides one
-  lies in the band of a drawn place, whether planted or real (see Limitations); no label names a
-  source any more (see Question wording).
-- A phantom's form was sent sooner than a real one (0.29; 0.36 for a correction). Now 0.55 [0.51, 0.58]
-  and 0.51.
+  reports asked about, once a place could lie near any report). After the changes, 0.41 to 0.47 in
+  weather (0.39 to 0.43 for re-reports), 0.48 to 0.56 for earthquake phantoms and 0.47 to 0.56 on the
+  CAD replay; planted reports decided questions about a place half as often as their share in weather
+  and four fifths as often in earthquakes, and the report that decides one lies in the band of a drawn
+  place, whether planted or real (see Limitations); no label names a source any more (see Question
+  wording).
+- A phantom's form was sent sooner than a real one (0.29; 0.36 for a correction). After the changes,
+  0.55 [0.51, 0.58] and 0.51.
 
-Of the cells of all reports or one domain (about 3,830 a sample, 1,350 of the CAD replay's and 1,076 of
-the toy plugin's), 1, 1 and 2 fail on the three samples and none on two (a decider's lead in weather,
-see Limitations, and a correction's in the invented domain, at 0.653), none of the CAD replay's, and
-one of the toy plugin's on one sample (0.653, of 10 reports); of the cells of single genres (about
-8,900 a sample and 4,550 of the CAD replay's), 32 to 37 and 17 to 22 a sample (0.4%), three of them on
-two samples on the same side. A model of every unintended feature tells removable reports
-from real ones with an AUC of 0.58 to 0.61. The oracle scores 100% (45,420 questions, and 9,084 of the
-toy plugin's), every careless reading a trap records is reproduced from the text (44,502 and 7,269),
-and every rendering reads back to its reports and notices (11,340 and 2,268).
+After the changes, of the cells of all reports or one domain (about 3,830 a sample, 1,350 of the CAD
+replay's and 1,076 of the toy plugin's), 1, 1 and 2 failed on the three samples and none on two (a
+decider's lead in weather, see Limitations, and a correction's in the invented domain, at 0.653), none
+of the CAD replay's, and one of the toy plugin's on one sample (0.653, of 10 reports); of the cells of
+single genres (about 8,900 a sample and 4,550 of the CAD replay's), 32 to 37 and 17 to 22 a sample
+(0.4%), three of them on two samples on the same side. A model of every unintended feature told
+removable reports from real ones with an AUC of 0.58 to 0.61. The oracle scored 100% (45,420
+questions, and 9,084 of the toy plugin's), every careless reading a trap records was reproduced from
+the text (44,502 and 7,269), and every rendering read back to its reports and notices (11,340 and
+2,268).
 
-*Reviewed.* A red team on fresh samples (seeds 8201–8284, 9301–9384 and 11401–11484, with the toy
-plugin and the CAD replay) confirmed the third round's targets, and found one tell of its own making:
+*Reviewed* (the review after the third round, on its code). A red team on fresh samples (seeds
+8201–8284, 9301–9384 and 11401–11484, with the toy plugin and the CAD replay) confirmed the third
+round's targets, and found one tell of its own making:
 the leads were matched to the key's own lead of the question decided, which is the lead of the
 report a planted decider passes, so a planted decider led its runner-up by about what the runner-up
 led the next report by (|log2| of the ratio of the two leads: AUCs of 0.28 to 0.36 for phantoms and
@@ -893,14 +907,49 @@ against real ones, before and after:
 | built-in domains | 0.508 → 0.514 | 0.332 → 0.477 | 0.61, 0.31 → 0.35, 0.33 |
 | CAD replay | 0.489 → 0.507 | 0.360 → 0.485 | 0.50, 0.25 → 0.32, 0.28 |
 
-Without any matching the ratio is 0.48 but the lead 0.45 (weather 0.41). (Recomputed from the same
-seeds with the helpers of `tests/test_trap_tells.py`, the ratio's AUC and the shares within a factor of
-two come out the same, and the decider's lead 0.533 rather than 0.514: the review's script, which is
-not published, read the leads its own way.) Of the questions about a place, the next report now stands
-clear of the one after it as often whoever decides (*Places*; the four seeds of
-`tests/test_trap_tells.py`: 1.00 of 25 planted deciders and 0.88 of 128 real ones, against 0.93 and
-0.65), and how far the decider leads keeps an AUC of 0.50 in earthquakes and 0.47 in weather (16
-seeds). What the review left is under Limitations.
+Without any matching the ratio was 0.48 but the lead 0.45 (weather 0.41). (Recomputed then from the
+same seeds with the helpers of `tests/test_trap_tells.py`, the ratio's AUC and the shares within a
+factor of two came out the same, and the decider's lead 0.533 rather than 0.514: the review's script,
+which is not published, read the leads its own way.) Of the questions about a place, after the review's
+change the next report stood clear of the one after it as often whoever decided (*Places*; the four
+seeds of `tests/test_trap_tells.py` on that code: 1.00 of 25 planted deciders and 0.88 of 128 real
+ones, against 0.93 and 0.65), and how far the decider led kept an AUC of 0.50 in earthquakes and 0.47
+in weather (16 seeds). The final checks then changed placement once more (see *Readings*), so these
+counts are not the final code's. What the review left is under Limitations.
+
+*Measured at the final commit* (4179c0c, whose generator is that of the final checks). The scripts and
+seeds of a shortcut measurement made at 8e63aee (5001–5084, three instances and three renderings a seed)
+measured the final code on four samples: every built-in domain with the genre rotating with the seed
+(1,008 instances, G), the same instances in classic (C), `--mix random` (252 instances, R) and the
+legacy path (252, L; see Limitations). Shares are of the gap between the naive reader and the oracle,
+with 95% intervals over instances; the 27 rule-free readers (13 single rules and 14 combinations, none
+reading a status, an ID, a note or a notice) are picked after the fact in each slice, which favours
+them:
+
+- Off the legacy path the best of them closes 0.0% [−0.7, +0.8] on G and 0.0% on R and C, where the "best"
+  is the precision rule that never fires and every reader that changes a digest loses (the 40 s and
+  8.5 km merge −0.9%, −1.2% and −0.8%; dropping the relay sources −38% to −41%). The status rule closes
+  38.2% [35.5, 40.8] on G, 37.5% [31.9, 43.2] on R and 38.2% on C, and no shortcut adds to it (with the
+  40 s merge, 36.5% on G).
+- The largest best reader of a domain is weather's: +1.4% [−1.1, +3.8] on G, +2.0% [+0.0, +5.2] on R and
+  +1.3% on C. Of G's 28 domain-by-genre cells (36 instances each) the best is weather/radio, +7.6%
+  [−4.7, +17.7], and no cell's interval lies above 0.
+- AUC cells of features the rules never mention (planted against real reports, 1,000 cluster-bootstrap
+  resamples over instances) are counted as failing by the interval rule (the 95% interval excludes 1/2
+  and reaches outside [0.35, 0.65]) / by the point rule (the estimate lies outside [0.35, 0.65]) / out
+  of all cells. Over all reports: 2 / 0 / 1,314 on G and on C, 19 / 2 / 1,290 on R. Per domain: 13 / 4 /
+  2,515 on G, 14 / 5 / 2,515 on C, 44 / 3 / 2,468 on R. Per genre: 185 / 22 / 8,919 on G, 261 / 93 /
+  6,771 on R. Per domain-by-genre cell of G: 589 / 77 / 17,115. The interval rule fails 2.1% of G's
+  genre cells and 3.4% of its domain-by-genre cells, fewer than the 5% that intervals excluding 1/2
+  reach by chance. G's four point-rule failures by domain are the decider's lead (how far a report
+  that decides a question leads the runner-up) of weather's re-reports (0.339 [0.277, 0.400], 72
+  planted; 0.333 for those under the record's ID, 49) and of earthquake phantoms (0.348 [0.252, 0.451],
+  15), and the |z| of an earthquake second report's value among its group's reports within two hours
+  (0.694 [0.559, 0.810], 19); C, the same instances in classic, repeats them. R's two point-rule
+  failures over all reports (a correction's |z| in its group, 0.691, 22 planted; a cross-referenced
+  re-report's change of wind at its station, 0.318, 31) are 0.560 and 0.500 on G, with four times the
+  instances. On the legacy path, 182 of 600 cells fail the interval rule and 147 the point rule.
+- The oracle answered every question right in every sample.
 
 Off the legacy path, placement is also *guarded*. A careless reading counts only where the misread
 digest passes the key's own guards: margins that hold with the planted values, rank and nearest
@@ -1316,9 +1365,13 @@ the share of rows in strata that both sides have.
   drifts more than one question apart), but not within each difficulty stratum, where a domain's
   share of public questions differs by chance and by which templates fit its records. For a model
   with a large template gap, a run's adjusted source gap therefore moves by a few points either way,
-  with a bias over designs that is small but not zero: over 40 designs of 40 instances, with the
-  mock's 30-point template gap, the expected adjusted source gap ranged from -3.7 to +5.1 points
-  (SD 2.1), against intervals of about ±20. A pool stratum would cost more coverage than it removes.
+  with a bias over designs that is small but not zero. With the mock's 30-point template gap and no
+  held-out effect, the expected adjusted source gap of the 120 designs of the final calibration (100
+  instances, one held-out domain of four; see the validation below) averaged −0.30 points [−0.59,
+  −0.03] (SD 1.6, from −3.9 to +3.3), against intervals of about ±14; over the first 40 instances of
+  40 of those designs it ranged from about −7 to +10 (SD 4.4), against intervals of about ±29. The genre
+  gap's bias is smaller still (SD 0.4 at 100 instances). A pool stratum would cost more coverage than
+  it removes.
 - **Each gap is also stratified by the other kind, by name.** The source gap's strata hold the genre
   of the original rendering, and the genre gap's strata the instance's domain. A list mix can tie a
   domain to genres: `earthquakes,toy:toy-telex` renders held-out toy in held-out toy-telex alone, and
@@ -1370,10 +1423,60 @@ model's adjusted source and genre gaps and its cross-genre consistency. Besides:
 Legacy reports are unchanged, word for word, including two sentences of the 0.2.0 text that say more
 than holds (see Limitations).
 
-Validation with the simulated model, on synthetic data, one run per row. Each run was answered by
-the oracle, the naive reader, the mock, and the mock with a penalty of 0.2 or 0.3 on held-out
-domains or on held-out genres. "CI" is the half-width of the adjusted gap's 95% interval, in
-points:
+**Calibration at the final commit.** The metrics were calibrated with the simulated model on
+synthetic data at the final commit of 0.3.0 (4179c0c): 120 random-mix seeds of 100 instances, three
+renderings each, with the built-in weather domain held out (one domain of four) and the email and
+radio genres (two genres of seven), every run answered by the oracle, the naive reader, the mock (its
+built-in 30-point template contamination and no held-out effect) and four penalised mocks, which take
+0.15 or 0.30 off the mock's chance of a right answer on instances of the held-out domain or on
+renderings in the held-out genres; and 15 seeds of a confounded mix. The held-out sets are built in
+and public, so this measures the metrics, not a model. Flagged runs out of 120 (95% Wilson
+intervals):
+
+| model | template gap | source gap | genre gap |
+|---|---|---|---|
+| oracle | 0 | 0 | 0 |
+| naive reader | 0 | 1 (0.8% [0.1, 4.6]) | 0 |
+| mock | 120 (its contamination) | 1 (0.8% [0.1, 4.6]) | 1 (0.8% [0.1, 4.6]) |
+| mock, 0.15 off on the held-out domain | 120 | **65 (54.2% [45.3, 62.8])** | 1 |
+| mock, 0.30 off on the held-out domain | 120 | **118 (98.3% [94.1, 99.5])** | 0 |
+| mock, 0.15 off in the held-out genres | 120 | 2 | **108 (90.0% [83.3, 94.2])** |
+| mock, 0.30 off in the held-out genres | 120 | 4 | **120 (100% [96.9, 100])** |
+
+- **False flags.** The models with no held-out effect raised 3 flags in 720 checks of the source and
+  genre gaps (0.4% [0.0, 1.0]). The genre gap's one lay 3.6 standard errors from the gap that the
+  run's design leads one to expect; with the two of the same seeds' calibration at 8e63aee, that makes 3
+  null genre flags in 240 runs where a normal interval of its width predicts 0.3. Its coverage is
+  nominal (below); its tail beyond three standard errors is a little heavy.
+- **Cross-flags.** A penalty on one kind flagged the other kind's gap in 7 of 480 runs, 2 of them on
+  seeds where the unpenalised mock flagged that gap too.
+- **Recovery and coverage.** The adjusted gaps recovered 99–101% of the injected penalties. The 95%
+  intervals of the targeted gaps contained the injected gap as realised in 95.0% [92.1, 97.5] of the
+  480 penalised runs, and the gap's expectation over the mock's draws, computed exactly from each
+  design with the report's own code, in 94.8% [92.3, 96.9]; over all three gaps of the five mocks, in
+  95.9% [94.4, 97.2] of 1,800. The exact spread of a targeted gap over the mock's draws is 1.01 to 1.03
+  times the spread that its interval implies (at most 1.10 in a design): the intervals of a penalised
+  gap run a little narrow, those of the unpenalised mock's source gap a little wide (0.91).
+- **Width and comparability.** Mean half-widths over the five mocks: template gap ±8.4 points, source
+  gap ±14.0, genre gap ±6.5. The source gap compares 55% of rows like for like (37–72% in a run), the
+  genre gap 88% and the template gap 100%. The oracle's source interval, ±12.1 at 100% accuracy, is the
+  floor that the smoothing of small strata sets: at 100 instances with one held-out domain, the source
+  gap cannot resolve a difference much under 12 points, and a 15-point one is flagged in about half the
+  runs. At 40 instances the source interval is about ±29 points.
+- **Design bias.** The unpenalised mock's expected adjusted source gap averages −0.30 points over the
+  120 designs (SD 1.6; see the strata above).
+- **The spread condition** (compared rows from two instances or more on each side) decided no flag.
+- **The confounded mix** (`neo:email,weather:radio,earthquakes:classic,invented:news`, with neo,
+  weather, email and radio held out; 15 seeds, the mock with and without a 0.30 penalty on held-out
+  domains): both adjusted held-out gaps were n/a in 30 of 30 runs and never flagged, while the domain
+  penalty raised both raw gaps (source +30, genre +29 points on average).
+
+**Earlier measurements.** What follows was measured on earlier code (the merged threat, registry,
+rules and stats fixes), but for the demo's row, measured again at the final commit. It records how the
+strata and the intervals were chosen, and its figures are those of that code. Validation with the
+simulated model, on synthetic data, one run per row. Each run was answered by the oracle, the naive
+reader, the mock, and the mock with a penalty of 0.2 or 0.3 on held-out domains or on held-out genres.
+"CI" is the half-width of the adjusted gap's 95% interval, in points:
 
 | mix; held-out domains; held-out genres | seed | instances | source gap: CI, coverage | genre gap: CI, coverage | the penalties |
 |---|---|---|---|---|---|
@@ -1381,12 +1484,12 @@ points:
 | the same | 43 | 300 | ±6–7, 84% | ±3, 98% | each flagged by its own gap only |
 | random; invented; radio | 44 | 300 | ±7, 82% | ±5, 88% | each flagged by its own gap only |
 | random; toy; toy-telex (the example config) | 45 | 300 | ±6–7, 89% | ±3, 99% | each flagged by its own gap only |
-| the same (the demo, 0.3 penalties only; measured again with the final code) | 42 | 20 | ±47–48, 29% | ±17–19, 50% | the genre penalty flagged (+26 ± 17); the domain penalty missed (+20 ± 48). With the code just before, the reverse (the domain penalty flagged at +67 ± 44, the genre penalty missed at +14 ± 24): at 20 instances either is chance |
+| the same (the demo, 0.3 penalties only; measured again at the final commit) | 42 | 20 | ±47–48, 29% | ±17–19, 50% | the genre penalty flagged (+26 ± 17); the domain penalty missed (+20 ± 48). With the code just before, the reverse (the domain penalty flagged at +67 ± 44, the genre penalty missed at +14 ± 24): at 20 instances either is chance |
 | `earthquakes,toy:toy-telex`; toy; toy-telex | 46 | 100 | ±14–16, 60% | ±8–9, 49% | each flagged by its own gap only |
 | `earthquakes:classic,toy:toy-telex`; toy; toy-telex | 47 | 60 | n/a | n/a | neither: the raw gaps move together |
 
 (The half-widths are those of the penalised mocks, measured with the code of the merged threat,
-registry, rules and stats fixes, but for the demo's row, measured with the final code. A reworded prompt
+registry, rules and stats fixes, but for the demo's row, measured at the final commit. A reworded prompt
 reseeds the mock's errors, so each row is a new draw of the same experiment: rewording the reading rules
 moved the first row's source intervals from ±13–15 to ±12, caught the domain penalty of 0.2 that the
 earlier draw missed (+12 ± 13), and flagged the mock without a penalty (below). Before each gap was
@@ -1399,13 +1502,15 @@ rows go together. The later rewordings of the rules, the chatter and the questio
 misleading text and of what blind readers found, make a run of today another such draw.) The oracle and
 the naive reader were flagged by neither gap in any of these runs, and the mock without a penalty in all
 but the first, where its source gap read +12 ± 12: a chance excess of about two standard errors, which
-the simulated readers below show in 2–3% of 100-instance runs per gap. In the partly tied mix, a penalty
+the simulated readers below showed in 2–3% of 100-instance runs per gap, and the final calibration
+above in 1 of 120 per gap. In the partly tied mix, a penalty
 on held-out domains also raised the raw genre gap (by 12 to 18 points), and a penalty on held-out genres
 the raw source gap (by 10 to 14); the adjusted gaps kept each penalty on its own gap.
 
 Simulated readers on the same kind of design (random mixes of 40 or 100 instances, neo and invented
-held out, and table, form and radio), 600 to 2,000 runs per cell, measured the intervals and the
-flag, now and (in brackets) before those two changes. A reader with no gap at all (a chance of 0.77
+held out, and table, form and radio), 600 to 2,000 runs per cell, measured on the code of that time
+the intervals and the flag, after and (in brackets) before those two changes. A reader with no gap at
+all (a chance of 0.77
 of a right answer, or of 0.8 with a random effect) should have its gap of 0 covered in 95% of runs
 and be flagged in at most 5%:
 
@@ -1418,8 +1523,9 @@ and be flagged in at most 5%:
 | right 65% of the time in table, 85% in classic, in `earthquakes:classic,invented:classic,weather:table` with only weather held out | n/a in every run (29%, 71%) | | | |
 
 The template gap needs neither change: almost every instance asks both pools, so an instance's own
-difficulty cancels in it (with a random effect per rendering or per instance of SD 2, its interval
-covered the gap of 0 in 97-98% of 1,000 runs, and flagged 1-2% at 40 instances).
+difficulty cancels in it (in that simulation, with a random effect per rendering or per instance of SD
+2, its interval covered the gap of 0 in 97-98% of 1,000 runs, and flagged 1-2% at 40 instances; in the
+final calibration it covered the mocks' expected template gap in 96.7% of 600 runs).
 
 ### The 0.2.0 regression guarantee
 
@@ -1580,17 +1686,20 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   for byte (see Digest and traps): its re-reports lie seconds and a few km from their quake, mostly
   from networks that file no event of their own. Readers that read no status, note or notice close
   much of the gap between the naive reader and the oracle there. Measured over every rendering of 252
-  fresh synthetic legacy instances (seeds 5001–5084, at 8e63aee; legacy output is the same at every
-  0.3.0 commit, so the figures hold for all of them), with 95% intervals over instances: merging
-  reports within 40 s and 8.5 km, keeping the commoner network's, closes 24.7% [21.4, 28.2]
-  (minute-rounded times blunt the window); the same merge within a region over 10 minutes or an hour,
-  35.6% and 37.8%; dropping every report from at, pt and ew, the re-reporting networks that file no
-  event of their own in the synthetic world, 28.5% [24.9, 32.4]; and the hour's merge with that drop,
-  the best combination tried, 38.9% [35.3, 42.9], against 41.1% [37.3, 44.9] for the status rule that
-  the rules intend (a paired difference of 2.2 points [−0.5, +5.0], so the two cannot be told apart).
-  On the legacy path, therefore, how often a model handles the traps is not evidence that it read the
-  rules, and that holds for the trap rates of the README's study too. Off the legacy path these readers
-  close nothing measurable (see Traps under 0.3.0).
+  fresh synthetic legacy instances (seeds 5001–5084), at 8e63aee and again at the final commit
+  (4179c0c), whose instances, prompts and figures are the same (legacy output is the same at every
+  0.3.0 commit), with 95% intervals over instances: merging reports within 40 s and 8.5 km, keeping the
+  commoner network's, closes 24.7% [21.4, 28.2] (minute-rounded times blunt the window); the same merge
+  within a region over 10 minutes or an hour, 35.6% and 37.8%; dropping every report from at, pt and ew,
+  the re-reporting networks that file no event of their own in the synthetic world, 28.5% [24.9, 32.4];
+  and the hour's merge with that drop, the best of 27 readers picked after the fact, 38.9% [35.3, 42.9],
+  against 41.1% [37.3, 44.9] for the status rule that the rules intend (a paired difference of 2.2
+  points [−0.6, +4.9], a ratio of 0.95, so the two cannot be told apart). 182 of the 600 AUC cells of
+  features the rules never mention fail there by the interval rule and 147 by the point rule (see
+  *Measured at the final commit*). On the legacy path, therefore, how often a model handles the traps
+  is not evidence that it read the rules, and that holds for the trap rates of the README's study too.
+  Off the legacy path no such reader closes a measurable share: the best of the 27 closes 0.0%
+  [−0.7, +0.8] (see *Measured at the final commit* under Traps).
 * **The mock is a simulation.** Its numbers show that the metrics work; they say nothing about any
   real model. Run `anthropic` / `openai` for real numbers.
 * **Live runs so far are Anthropic only.** Claude Opus 5.5 and Claude Haiku 5.5 have been run
@@ -1637,29 +1746,38 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
 
 **The source and genre gaps**
 
-* **Power.** The validation table above gives the scale. About 100 instances with two held-out domains
-  and three held-out genres put the adjusted source gap within about ±12–15 points (the width moves a
-  little with the mock's draws) and the genre gap within ±6; 300 instances within ±6–7 and ±3. With 20
-  instances, which 30-point penalty is flagged is a matter of the draw: the demo of the example config
-  flags the penalty on held-out genres and misses the one on held-out domains, whose adjusted interval
-  is about ±48 points at 29% coverage, and the code just before did the reverse. Fewer rows on the
-  held-out side widen the interval: one held-out genre out of seven gave ±5 at 300 instances, where
-  three gave ±3. In simulated 100-instance runs of that design, with answers independent, a reader 20
-  points worse on the held-out domains was flagged in 93% of runs, 15 points worse in 72% and 10 points
-  in 38%; one 15 points worse in the held-out genres in 95% and 10 points in 50%.
+* **Power.** The calibration at the final commit (see Report additions) gives the scale. With 100
+  instances, one held-out domain of four and two held-out genres of seven, the adjusted source gap's
+  interval is about ±14 points (55% of rows compared like for like) and the genre gap's ±6.5 (88%); a
+  mock 15 points worse on the held-out domain was flagged in 54% [45, 63] of runs and 30 points worse
+  in 98% [94, 99.5], one 15 points worse in the held-out genres in 90% [83, 94] and 30 points worse in
+  100% [97, 100]. At 40 instances the source gap's interval is about ±29 points. With 20 instances,
+  which 30-point penalty is flagged is a matter of the draw: at the final commit the demo of the
+  example config flags the penalty on held-out genres and misses the one on held-out domains, whose
+  adjusted interval is about ±48 points at 29% coverage, and the code just before the final checks did
+  the reverse. Measured on earlier code (the validation table's): two held-out domains and three
+  held-out genres put the source gap within about ±12–15 points and the genre gap within ±6 at 100
+  instances, and within ±6–7 and ±3 at 300; one held-out genre out of seven gave ±5 at 300 instances,
+  where three gave ±3; and in simulated 100-instance runs of that design, with answers independent, a
+  reader 20 points worse on the held-out domains was flagged in 93% of runs, 15 points worse in 72% and
+  10 points in 38%, one 15 points worse in the held-out genres in 95% and 10 points in 50%.
 * **Comparing within names costs a random mix power.** Each gap compares within the names of the
   other kind (see Report additions), which a list mix needs and a random mix, which draws every genre
   alike for every domain, does not; there the finer strata compare fewer rows. When this was
-  introduced, the first row of the validation table lost source-gap coverage, from 87% to 64%, and
-  its interval widened from ±10 to ±13 points, and in simulation the share of 100-instance runs that
-  flag a reader 15 points worse on held-out domains fell from 83% to 72% (and of 40-instance runs
-  from 42% to 25%); the genre gap, compared within four domains rather than seven genres, lost almost
-  nothing (95% either way).
+  introduced (on the code of that time), the first row of the earlier validation table lost
+  source-gap coverage, from 87% to 64%, and its interval widened from ±10 to ±13 points, and in
+  simulation the share of 100-instance runs that flag a reader 15 points worse on held-out domains fell
+  from 83% to 72% (and of 40-instance runs from 42% to 25%); the genre gap, compared within four
+  domains rather than seven genres, lost almost nothing (95% either way). At the final commit, with one
+  held-out domain, the source gap compares 55% of rows and a 15-point domain penalty is flagged in 54%
+  of 100-instance runs.
 * **Tied splits.** Both adjusted gaps compare within the other kind's names. When a mix ties domains
-  to genres, the adjusted gap has low coverage (49–60% in the partly tied mix measured; 17% in a
-  40-instance run of `weather,neo:email,invented:table` with email held out, in which only weather is
-  rendered in genres of both splits) or is n/a, and the raw gaps mix the two kinds (in the fully tied
-  mix they are the same for both).
+  to genres, the adjusted gap has low coverage (measured on earlier code: 49–60% in the partly tied mix
+  of the validation table; 17% in a 40-instance run of `weather,neo:email,invented:table` with email
+  held out, in which only weather is rendered in genres of both splits) or is n/a (in all 30 runs of
+  the fully tied mix of the final calibration), and the raw gaps mix the two kinds (in a fully tied mix
+  they move together: a 30-point penalty on held-out domains raised the raw source and genre gaps by 30
+  and 29 points on average).
 * **The gaps' intervals count instances, not domains or genres.** With one or two held-out domains,
   the gap compares those particular domains with the public ones. A held-out domain or genre that is
   harder in itself (an invented domain read through its glossary, a genre with more noise) shows a
@@ -1674,9 +1792,12 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   every instance (see the simulation above). Legacy reports keep all of them exactly.
 * **The design effect is an approximation.** The adjusted gap's interval is widened by the design
   effect of the rows it compares taken as one raw difference, because its strata are too small for a
-  cluster-robust variance of their own. In simulation its intervals covered 93–96% of runs with
-  strong clustering, and at most 4% of the readers with no gap were flagged; with few held-out
-  instances (a demo of 20) every interval is rough. A side whose compared rows all come from one
+  cluster-robust variance of their own. In simulation on earlier code its intervals covered 93–96% of
+  runs with strong clustering, and at most 4% of the readers with no gap were flagged; in the final
+  calibration, whose mock answers each question independently, they covered the expected gap in 95.9%
+  of 1,800 mock gaps, and the exact spread of a penalised gap was 1.01 to 1.03 times the spread its
+  interval implies. With few held-out instances (a demo of 20) every interval is rough. A side whose
+  compared rows all come from one
   instance shows no spread between instances, so nothing widens its interval: one misread digest of a
   held-out domain beside thirty public instances made an adjusted gap of +80 points (+49 to +111). A
   gap is therefore flagged only when the compared rows of each side come from two instances or more.
@@ -1721,33 +1842,55 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   frozen bytes and the fallback to synthetic data are there for.
 * **What is left of the trap tells off the legacy path.** A planted report is a record drawn with the
   digest (see Traps), so it is told apart only by what the rules name, and by what follows from them or
-  from placing traps where they change answers (AUCs within [0.35, 0.65] in every domain, on the
-  samples measured above):
+  from placing traps where they change answers. At the final commit no rule-free reader closes a
+  measurable share of the gap (the best of 27, picked after the fact: 0.0% [−0.7, +0.8] overall, at
+  most +2.0% [+0.0, +5.2] in a domain), but AUC cells of unintended features still fail. In the sample
+  of every domain and genre (G, 1,008 instances), over all reports 2 of 1,314 cells fail by the
+  interval rule (the 95% interval excludes 1/2 and reaches outside [0.35, 0.65]) and none by the point
+  rule (the estimate lies outside [0.35, 0.65]); per domain 13 and 4 of 2,515 (see *Measured at the
+  final commit* for every sample). What follows says where; figures not marked as the final commit's
+  were measured in the earlier rounds, on their code:
   - A report filed under a record's ID lies in that record's group, which then holds two reports at
-    least (an AUC of about 0.6 for the size of a second report's group on the CAD replay), and an
-    earthquake ID names the network that issued it, which a re-report from another network does not
-    share (0.39 to 0.41): of the reports that share an ID, keeping the one whose ID names its network
-    does 3 to 4 points better than a coin, and the status 16 to 19. The shared ID says as much.
+    least (earlier rounds: an AUC of about 0.6 for the size of a second report's group on the CAD
+    replay), and an earthquake ID names the network that issued it, which a re-report from another
+    network does not share (earlier rounds: 0.39 to 0.41; of the reports that share an ID, keeping the
+    one whose ID names its network did 3 to 4 points better than a coin, and the status 16 to 19). The
+    shared ID says as much. At the final commit an earthquake second report's value stands out a little
+    from its group's other reports within two hours (|z|: 0.694 [0.559, 0.810] on 19 planted reports,
+    failing both rules in G's earthquake slice; 0.599 [0.514, 0.681] over all reports, the interval rule
+    only).
   - A trap is placed where its careless readings change an answer and pass the key's guards, and its
     slot is chosen by the scopes its report lies in, so a planted report is a little likelier than a real
-    one to lie clear of an asked threshold or to rank high in its group (AUCs up to about 0.6: 0.53 to
-    0.60 for a close approach's second report's distance from the nearest asked distance threshold;
-    its cells of single genres, of 10 to 21 planted reports, reach 0.61 to 0.68 in the news genre on
-    every sample, and up to 0.78 in another genre on one, though no trap is placed by its genre). A
-    correction shows a slot's value, a little farther in value from its group's other reports than a
-    real one is (0.53 to 0.64). No reader that drops or merges reports by such a feature closes more
-    than 2.5% of the gap in any domain, and a model of all of them at most 1.9%.
-  - In weather a planted report decides a question about a place half as often as its share of the
-    reports the question asks about (four fifths as often in earthquakes). A place near it has a record
-    elsewhere for its key's nearest, which must stand clear of the next, and weather's stations lie
-    hundreds of km apart, several observations to a station; the weights of
-    `questions.reanchor_nearest` make up for that within a digest, but where no planted report of a
-    digest can decide such a question, none does. As a lead in km dwarfs one in shares of a field's
-    spread, how far a report that decides a question leads the next (the least of its leads) tells
-    weather's re-reports, phantoms and second reports from real ones with AUCs of 0.34 to 0.49 (0.39 to
-    0.43 for the re-reports together), outside [0.35, 0.65] in a cell or two of a sample and in none on
-    two samples; a reader who answers such a question from the reports in the band of its place or
-    named by its label closes none of the gap.
+    one to lie clear of an asked threshold or to rank high in its group (earlier rounds: AUCs up to
+    about 0.6, 0.53 to 0.60 for a close approach's second report's distance from the nearest asked
+    distance threshold; its cells of single genres, of 10 to 21 planted reports, reached 0.61 to 0.68 in
+    the news genre on every sample, and up to 0.78 in another genre on one, though no trap is placed by
+    its genre). A correction shows a slot's value, a little farther in value from its group's other
+    reports than a real one is (earlier rounds: 0.53 to 0.64). In the earlier rounds no reader that
+    dropped or merged reports by such a feature closed more than 2.5% of the gap in any domain, and a
+    model of all of them at most 1.9%. At the final commit 185 of G's 8,919 single-genre cells (2.1%)
+    fail the interval rule and 22 the point rule, fewer than the 5% that intervals excluding 1/2 give by
+    chance.
+  - The weather residual. In weather a planted report decides a question about a place half as often as
+    its share of the reports the question asks about (earlier rounds; four fifths as often in
+    earthquakes). A place near it has a record elsewhere for its key's nearest, which must stand clear
+    of the next, and weather's stations lie hundreds of km apart, several observations to a station; the
+    weights of `questions.reanchor_nearest` make up for that within a digest, but where no planted
+    report of a digest can decide such a question, none does. As a lead in km dwarfs one in shares of a
+    field's spread, how far a report that decides a question leads the runner-up (the least of its
+    leads) tells weather's planted reports from real ones. In the earlier rounds it gave AUCs of 0.34 to
+    0.49 for weather's re-reports, phantoms and second reports (0.39 to 0.43 for the re-reports
+    together), outside [0.35, 0.65] in a cell or two of a sample. At the final commit it gives three of
+    the four point-rule failures of G's domains, and the two with the most planted reports: weather's
+    re-reports, 0.339 [0.277, 0.400] on 72 planted reports (0.333 [0.253, 0.406] on the 49 under the
+    record's ID, both failing both rules; 0.353 on the 23 cross-referenced ones, the interval rule only),
+    and earthquake phantoms, 0.348 [0.252, 0.451] on 15. The same instances in classic give 0.343, 0.345
+    and 0.338 for the three kinds of weather re-report, all failing both rules, and 0.327 for earthquake
+    phantoms. No reader gains by it: weather is the domain whose best rule-free reader closes the most,
+    +1.4% [−1.1, +3.8] on G and +2.0% [+0.0, +5.2] on the `--mix random` sample, and its best
+    domain-by-genre cell, weather/radio on G, +7.6% [−4.7, +17.7]; in the earlier rounds a reader who
+    answered such a question from the
+    reports in the band of its place or named by its label closed none of the gap.
   - A form's sent time no longer follows its digest's notices. Every form of a batch shares one limit
     below the shortest time from a record to a notice about it (see Genres), and the more notices a
     digest held, the lower the limit tended to be, while every phantom comes with its retraction's: pooled
@@ -1756,39 +1899,43 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
     rendering, all a reader can compare, alike. A notice now follows its report by 92 minutes at least
     (`traps.NOTICE_DELAY`), later than any form is sent, so the limit binds only in a rendering that
     holds a correction of a record that close to the compilation (issued just before it), and then
-    for every form of the rendering alike: 0.547 [0.512, 0.584] for a phantom and 0.512 for a
-    correction, pooled, and 0.535 within a rendering.
-  - The leads, the questions about a place and the count, as the review left them. In weather, a
-    planted report that decides the time of the warmest observation, or the k-th warmest, still leads
-    by less than a real one (AUCs of 0.32 and 0.40 on 21 and 19 planted deciders; 0.46 for weather's
-    value questions together). Where no report of a digest can be the clear nearest of a place (a
-    weather station with two observations in the scope ties), the question keeps the place drawn near a
-    record, whose next report need not stand clear of the one after it, so in weather a planted decider's
-    next report still stands clear more often (an AUC of 0.62 on 23 planted deciders). A count factor
-    fitted on one sample closes 2 to 5% of the gap on another (6.6% at most in a domain, on the CAD
-    replay); single genres of single samples reach 10 to 16%, none of them again on another sample, so
-    the plan's weights were not spread further (which would plant fewer traps that change an answer)
-    before they are measured on more seeds. A model of the unintended features of a pair of reports that
-    share an ID (their gaps in time to their group's other reports, a weather temperature's jump) breaks
-    the pair's tie 3.6 to 6.0% of the gap better than a coin (6.4 to 9.3% on the CAD replay, where the
-    status breaks it 24%); this predates the third round, and the slot choice behind it is not found yet.
+    for every form of the rendering alike (measured after the third round's change: 0.547 [0.512,
+    0.584] for a phantom and 0.512 for a correction, pooled, and 0.535 within a rendering).
+  - The leads, the questions about a place and the count, as the review measured them on its code. In
+    weather, a planted report that decided the time of the warmest observation, or the k-th warmest,
+    still led by less than a real one (AUCs of 0.32 and 0.40 on 21 and 19 planted deciders; 0.46 for
+    weather's value questions together): the weather residual above. Where no report of a digest can be
+    the clear nearest of a place (a weather station with two observations in the scope ties), the
+    question keeps the place drawn near a record, whose next report need not stand clear of the one
+    after it, so in weather a planted decider's next report still stood clear more often (an AUC of 0.62
+    on 23 planted deciders). A count factor fitted on one sample closed 2 to 5% of the gap on another
+    (6.6% at most in a domain, on the CAD replay); single genres of single samples reached 10 to 16%,
+    none of them again on another sample, so the plan's weights were not spread further (which would
+    plant fewer traps that change an answer) before they are measured on more seeds. A model of the
+    unintended features of a pair of reports that share an ID (their gaps in time to their group's other
+    reports, a weather temperature's jump) broke the pair's tie 3.6 to 6.0% of the gap better than a
+    coin (6.4 to 9.3% on the CAD replay, where the status broke it 24%); this predates the third round,
+    and the slot choice behind it was not found.
 * **Fewer placements change an answer.** A re-report used to copy its record's values give or take a
   little, so a re-report of the largest record often changed the largest answer; a slot's values are
-  its own. A digest of a built-in synthetic domain keeps as many traps that change answers as before,
-  with the extra trap that follows one that draws no scope, but where scopes are narrow or slots are
-  few the number of traps that change a question's answer falls: from 0.82 a question to 0.76 for the
-  toy plugin domain, and from 0.83 to 0.68 for neo replayed from the 40 approaches of the recorded CAD
-  response, which leave 12 to 20 slots a digest (the built-in synthetic domains keep 0.75 to 0.83).
-  Choosing a placement by its scopes before the answers it changes, and a digest that holds no
-  retraction in 40% of digests, take a little more: in the second round's samples the share of traps
-  that change an answer fell from 0.67–0.75 to 0.57–0.65 in the built-in synthetic domains (from 0.57
-  to 0.54 for the toy plugin, from 0.63 to 0.48 on the CAD replay), and the number of traps that change
-  a question's answer from 0.74–0.81 to 0.73–0.80 (0.75 to 0.73, 0.66 to 0.64). The third round's plan,
-  which plants no trap of a kind in a share of digests and no report at all in one in fifteen, takes more:
-  0.62 to 0.80 traps change a question's answer in the built-in synthetic domains (from 0.72–0.81;
-  weather 0.62, earthquakes 0.65, neo 0.70, invented 0.80), 0.62 for the toy plugin (from 0.73) and
-  0.69 on the CAD replay (from 0.64); 3.1 to 3.9 traps of a digest change an answer (2.7 for the toy
-  plugin, 3.2 on the CAD replay).
+  its own. The figures that follow were measured in the red-team rounds, each on its code. With slots,
+  a digest of a built-in synthetic domain kept as many traps that change answers as before, with the
+  extra trap that follows one that draws no scope, but where scopes are narrow or slots are few the
+  number of traps that change a question's answer fell: from 0.82 a question to 0.76 for the toy plugin
+  domain, and from 0.83 to 0.68 for neo replayed from the 40 approaches of the recorded CAD response,
+  which leave 12 to 20 slots a digest (the built-in synthetic domains kept 0.75 to 0.83). Choosing a
+  placement by its scopes before the answers it changes, and a digest that holds no retraction in 40%
+  of digests, took a little more: in the second round's samples the share of traps that change an
+  answer fell from 0.67–0.75 to 0.57–0.65 in the built-in synthetic domains (from 0.57 to 0.54 for the
+  toy plugin, from 0.63 to 0.48 on the CAD replay), and the number of traps that change a question's
+  answer from 0.74–0.81 to 0.73–0.80 (0.75 to 0.73, 0.66 to 0.64). The third round's plan, which plants
+  no trap of a kind in a share of digests and no report at all in one in fifteen, took more: 0.62 to
+  0.80 traps changed a question's answer in the built-in synthetic domains (from 0.72–0.81; weather
+  0.62, earthquakes 0.65, neo 0.70, invented 0.80), 0.62 for the toy plugin (from 0.73) and 0.69 on the
+  CAD replay (from 0.64); 3.1 to 3.9 traps of a digest changed an answer (2.7 for the toy plugin, 3.2
+  on the CAD replay). The final checks then made a re-report under its record's ID record a second
+  report's readings too, which makes more traps change an answer: in the final 40-instance demo, 201 of
+  306 planted traps change one (175 at 8e63aee, on the same seed).
 * **A digest may hold no trap of a kind.** Its plan draws each kind on its own, and none of it in a
   share of digests (see *The plan* under Traps: no retraction in half of them, no conflict or correction
   in some), so a run of a few instances may plant none of a kind, and its report then has no row for it.

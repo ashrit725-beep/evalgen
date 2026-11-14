@@ -111,17 +111,19 @@ details are in each run's miss analysis: [0.1.0](runs/compare-100/miss_analysis.
 - **Default settings only.** One effort level and one run per model per rule version.
 - **Trap handling is not evidence that a model read the rules.** In digests like these the planted
   lines can be told from real ones by where they lie and which network filed them: on 252 fresh
-  digests written as the 0.2.0 run's were (seeds 5001–5084), a reader that merges reports of one
-  region lying within an hour and 8.5 km of each other and drops those of the networks that file no
-  events of their own, reading no status, note or notice, closes 38.9% of the gap between a reader
-  who counts every line and one who applies every rule, nearly the 41.1% closed by the status rule
-  that the rules intend (keep only the REVIEWED reports). evalgen 0.3.0 removes this tell from runs
-  with any `--mix` but `legacy`, the default, which keeps these digests byte for byte (see the
-  limitations in [`docs/DESIGN.md`](docs/DESIGN.md)).
+  digests written as the 0.2.0 run's were (seeds 5001–5084, with the same result at the final 0.3.0
+  commit), a reader that merges reports of one region lying within an hour and 8.5 km of each other
+  and drops those of the networks that file no events of their own, reading no status, note or
+  notice, closes 38.9% of the gap between a reader who counts every line and one who applies every
+  rule, nearly the 41.1% closed by the status rule that the rules intend (keep only the REVIEWED
+  reports). evalgen 0.3.0 removes this tell from runs with any `--mix` but `legacy`, the default,
+  which keeps these digests byte for byte: off it, on 1,008 digests of every domain and genre, the best
+  of 27 such readers closes 0.0% of that gap (95% CI −0.7 to +0.8), against 38.2% for the status rule
+  (see the limitations in [`docs/DESIGN.md`](docs/DESIGN.md)).
 
 ## Reproduce it
 
-Install the dependencies (requests and pytest; Python 3.10 or later), run the 866 tests (about 3
+Install the dependencies (requests and pytest; Python 3.10 or later), run the 866 tests (about 4
 minutes), and run a full cycle offline, with no API key and no cost:
 
 ```bash
