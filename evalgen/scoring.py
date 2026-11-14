@@ -258,7 +258,11 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
 
 
 def difference_ci(k1: int, n1: int, k2: int, n2: int, z: float = 1.96) -> tuple[float, float, float]:
-    """Difference of two proportions with a normal-approximation 95% interval."""
+    """Difference of two proportions, p1 - p2, with the normal-approximation (Wald) 95% interval, the
+    difference ± z sqrt(p1 (1 - p1) / n1 + p2 (1 - p2) / n2). The interval has zero width where neither side
+    varies (each side at 0 or at 1), and it can pass ±1 with few rows or extreme rates; report.py cuts it to
+    ±1 off the legacy path. A side without rows gives (0.0, -1.0, 1.0), 0.2.0's, which a legacy report prints
+    as a gap of 0 and a report off the legacy path as n/a."""
     if n1 == 0 or n2 == 0:
         return (0.0, -1.0, 1.0)
     p1, p2 = k1 / n1, k2 / n2
@@ -268,9 +272,15 @@ def difference_ci(k1: int, n1: int, k2: int, n2: int, z: float = 1.96) -> tuple[
 
 
 def stratified_difference(strata: list[tuple[int, int, int, int]], z: float = 1.96) -> tuple[float, float, float, float] | None:
-    """Difference of two proportions compared like for like: within each stratum (k1, n1, k2, n2),
-    weighted by the stratum's share of all questions. Strata that only one side has are left out.
-    Returns (difference, ci_low, ci_high, share of questions covered), or None."""
+    """Difference of two proportions compared like for like: the difference within each stratum (k1, n1,
+    k2, n2), weighted by its share of the rows in the strata that both sides have, w = (n1 + n2) / their
+    rows (the weights sum to 1); strata that only one side has are left out. The estimate uses each
+    stratum's own proportions, k / n. Its variance is the sum of w² (a1 (1 - a1) / n1 + a2 (1 - a2) / n2),
+    each proportion taken as a = (k + 0.5) / (n + 1), half a right and half a wrong answer added, so that a
+    stratum whose sides are all right or all wrong keeps a positive variance; the 95% interval is the
+    estimate ± z times its square root (it can pass ±1: report.py cuts it to ±1 off the legacy path).
+    Returns (difference, ci_low, ci_high, share of the rows in the strata compared), or None when no
+    stratum has both sides."""
     usable = [s for s in strata if s[1] and s[3]]
     total = sum(s[1] + s[3] for s in strata)
     covered = sum(s[1] + s[3] for s in usable)
@@ -318,7 +328,8 @@ def design_effect(rows: Iterable[tuple[Hashable, bool, bool]]) -> float:
 
 
 def widened(estimate: float, low: float, high: float, factor: float) -> tuple[float, float]:
-    """The interval (low, high) around `estimate`, each half `factor` times as wide."""
+    """The interval (low, high) around `estimate`, each half `factor` times as wide (an interval of a
+    difference of proportions may then pass ±1; report.py cuts it to ±1)."""
     return estimate - factor * (estimate - low), estimate + factor * (high - estimate)
 
 

@@ -10,13 +10,17 @@ decimal form in Fahrenheit that converts back to them), so the codec is a pair:
 
 Both work in exact decimal arithmetic, with the scale and offset exactly as a glossary prints them
 (``plain_number``), as a careful reader with pencil and paper would, never in binary floating point.
-And encode never writes a number whose conversion falls exactly halfway between two stored values
-(273.9 K is 0.75 °C): it takes more decimals instead (273.85 K for 0.7 °C), so every printed number
-lies strictly closer to its stored value than to any other, and a reader recovers it whichever way
-they round a half. Every genre prints numbers with ``encode`` and every parser reads them with
-``decode``, so the text-only oracle recovers each stored value exactly, in affine units (°F) as in
-scaled ones, and so does any reader who converts as the glossary says. A number without a unit (a
-magnitude, a latitude) uses the same codec with no unit.
+And encode never writes a number whose conversion falls exactly halfway between two stored values: 0.8 °C
+is written 273.95 K, not 274 K or 273.9 K, which read back as 0.8 too but convert to exactly 0.85 and
+0.75, so every printed number lies strictly closer to its stored value than to any other, and a reader
+recovers it whichever way they round a half. Every genre prints numbers with ``encode`` and every
+parser reads them with ``decode``, so the text-only oracle recovers each stored value exactly, in affine
+units (°F) as in scaled ones, and so does any reader who converts as the glossary says. The exception is
+the 0.2.0 digest, earthquakes in the classic genre (on the legacy path and off it): it prints depths to
+0.1 km or mi, positions to 0.001° or a hundredth of an arc-minute and some times to the minute, as 0.2.0
+did, and its 0.2.0 parser reads them back at that precision (a depth in miles as converted, unrounded);
+its questions' margin guards keep the oracle's answers right. A number without a unit (a magnitude, a
+latitude) uses the same codec with no unit.
 
     Unit          a unit a value is printed or asked in, and its affine map to the canonical unit
     KM, MI        kilometres and miles: LENGTH, the units of depths, radii and distances
@@ -41,11 +45,11 @@ class Unit:
     """A unit a field's value can be printed or asked in: canonical = value × scale + offset.
 
     Scale and offset are relative to the field's canonical unit, so one symbol can mean different
-    things in different fields: km is the canonical unit of a depth, but 1 / 149597870.7 of the
-    canonical au of a miss distance. The offset makes the map affine, as °F needs. A unit whose values
-    are on another scale than the field's stored ones (inches of mercury beside hectopascals) can set
-    its own precision, scoring tolerance and threshold step; the others use the field's (a tolerance
-    converted into the unit, see FieldSpec.unit_tolerances)."""
+    things in different fields: km/h is the canonical unit of a wind speed (weather), but 1 / 3600 of
+    the canonical km/s of a relative velocity (neo). The offset makes the map affine, as °F needs. A
+    unit whose values are on another scale than the field's stored ones (inches of mercury beside
+    hectopascals) can set its own precision, scoring tolerance and threshold step; the others use the
+    field's (a tolerance converted into the unit, see FieldSpec.unit_tolerances)."""
 
     symbol: str  # printed after a number: "km", "mi", "°F"
     words: str  # written in a question: "km", "miles", "degrees Fahrenheit"
@@ -125,9 +129,10 @@ def decode(text: str, decimals: int, unit: Unit | None = None) -> float:
 def encode(value: float, decimals: int, unit: Unit | None = None) -> str:
     """A value stored to `decimals` places, written in `unit` (None: the canonical unit or no unit) with
     the fewest decimals that decode back to it, and whose exact conversion is strictly nearer to it than
-    to any other stored value: "21" or "69.8" for 21.0 °C, "273.85" (not "273.9", which converts to
-    0.75 exactly) for 0.7 °C in kelvins; never in exponent notation and never as "-0". A value with
-    more places than are stored has no such form (ValueError)."""
+    to any other stored value: "21" or "69.8" for 21.0 °C, "273.95" for 0.8 °C in kelvins (not "274"
+    or "273.9", which read back as 0.8 too but convert to exactly 0.85 and 0.75, halfway between two
+    stored values); never in exponent notation and never as "-0". A value with more places than are
+    stored has no such form (ValueError)."""
     shown = value if unit is None else unit.from_canonical(value)
     half = Decimal(5).scaleb(-decimals - 1)
     for places in range(MAX_PLACES + 1):

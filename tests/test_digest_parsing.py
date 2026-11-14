@@ -1,4 +1,8 @@
-"""The messy digest is messy but lossless: the text-only parser recovers every report and notice."""
+"""The messy digest is messy but readable: the text-only parser recovers every report and notice, at the
+precision the 0.2.0 digest prints (some times to the minute, depths to 0.1 km or mi, positions to 0.001° or a
+hundredth of an arc-minute), and of each notice what the reading rules use (its kind, target and time, and a
+correction's new magnitude and type; not a retraction's reason or the magnitude a correction replaces); see
+DESIGN.md, Limitations. It is not lossless, and the tests below allow exactly that."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
