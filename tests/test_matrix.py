@@ -27,6 +27,7 @@ anyway, so that cell is read back to the precision the 0.2.0 digest prints.
 """
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import sys
@@ -247,9 +248,11 @@ def test_every_trap_is_planted_and_misread_as_recorded_in_every_rendering(cells,
         for trap in inst.traps:
             for qid, wrong in trap.affected.items():
                 q = inst.question(qid)
+                # (a question about a place drawn near a report once the traps are planted keeps no bound on how
+                # far its nearest record lies, and neither do its readings: traps.score_traps, `unbounded`)
                 guarded = [execute(q.chain, misread, units=bound.units) for misread in (
                     bound.resolve(inst.reports, inst.notices, Mishandle.from_dict(m)) for m in trap.mishandles)
-                    if guards_ok(q.chain, misread, domain=bound, time_margin=margin)]
+                    if guards_ok(q.chain, misread, domain=bound, time_margin=margin, nearest_max_km=math.inf)]
                 assert any(same_answer(q.answer_type, wrong, x, unit=q.unit) for x in guarded), (
                     inst.instance_id, trap.trap_id, qid)
         for rendering in inst.renderings:

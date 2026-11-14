@@ -169,10 +169,11 @@ def sample_with_slots(pool: Sequence[Any], rng: random.Random, n_min: int, n_max
     of the digest's size and leaves the rest as slots. The kept records and the slots are thus drawn
     alike, and a planted report in a slot's place stands where a real record could have stood: its time,
     position, place, source, group, values and their precision, and its ID, are those of a real record.
-    (A pool barely larger than a digest leaves few slots; traps then make up the rest, traps._virtual_slot.)
+    (A pool barely larger than a digest leaves few slots, and a heavy plan can leave a record's group with none;
+    traps then share a record in a slot's place, or make up the rest, traps._tiers and _virtual_slot.)
     The digest keeps `planted` records less than it draws a size for: one for each report its traps will
-    add (traps.draw_plan), so that its reports, records and planted ones, number alike however many of them
-    are planted."""
+    add (traps.draw_plan, as its domain plants them: TrapPlan.for_domain), so that its reports, records and
+    planted ones, number alike however many of them are planted."""
     n = max(1, min(len(pool), rng.randint(n_min, n_max)) - planted)
     drawn = _focused_sample(pool, rng, min(len(pool), n + slots), domain)
     drawn = _with_twins(drawn, pool, split, domain)
@@ -305,8 +306,9 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
         raise ValueError(f"the genre plan names {len(genre_plan)} genres for {cfg.variants + 1} renderings")
     off_legacy = genre_plan is not None
     # Off the legacy path a digest's traps are planned before its records, which make room for the reports they
-    # add (traps.draw_plan, seed path "instance", i, "plan"); a legacy digest keeps the 0.2.0 plan.
-    plan = draw_plan(seedlog.rng("instance", index, "plan")) if off_legacy else None
+    # add (traps.draw_plan, seed path "instance", i, "plan", as the domain plants them: TrapPlan.for_domain); a
+    # legacy digest keeps the 0.2.0 plan.
+    plan = draw_plan(seedlog.rng("instance", index, "plan")).for_domain(domain) if off_legacy else None
     composed = compose_instance(index, snapshot, new_templates, seedlog, cfg, ctx, used_chains, usage,
                                 domain=domain, legacy=not off_legacy, planted=plan.lines if plan is not None else 0)
     domain, events, questions, answer_key = composed.domain, composed.events, composed.questions, composed.answer_key
@@ -325,7 +327,8 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
         # A question about the record nearest to a place asks about a place near a report of the digest that
         # then decides it, a record's or a planted one, each kind about as often as its share of the reports
         # asked about (questions.reanchor_nearest, seed path "instance", i, "anchors"); its answer and what each
-        # trap does to it are read again.
+        # trap does to it are read again, under the key's own guards (no bound on how far its nearest record
+        # lies: traps.score_traps, `unbounded`).
         lines = [domain.to_generic(r) for r in reports]
         kinds = [r.role if r.role in ("duplicate", "phantom") or (r.role == "conflict" and r.status != domain.statuses[0])
                  else None for r in lines]
@@ -334,7 +337,8 @@ def build_instance(index: int, snapshot: Snapshot, new_templates: Sequence[Templ
         if moved:
             for q in moved:
                 answer_key[q.qid] = execute(q.chain, events, units=units)
-            score_traps(traps, questions, answer_key, reports, notices, domain=domain, time_margin=ctx.time_margin)
+            score_traps(traps, questions, answer_key, reports, notices, domain=domain, time_margin=ctx.time_margin,
+                        unbounded={q.qid for q in moved})
     for q in questions:
         unfiltered = [s for s in q.chain if role(s["op"]) != "filter"]
         q.features = {
