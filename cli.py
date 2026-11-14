@@ -10,16 +10,21 @@
     python cli.py score runs/synthetic-seed7
     python cli.py report runs/synthetic-seed7
     python cli.py resolve runs/usgs-seed7                  # later: grade forecast questions
-    python cli.py verify-config runs/random-synthetic-seed7 private.json   # after revealing the config
+    python cli.py verify-config --commitment HEX private.json   # after the reveal: HEX is the published commitment
+    python cli.py verify-config runs/random-synthetic-seed7 private.json   # the config and a run agree
 """
 from __future__ import annotations
 
 import argparse
+import re
+import reprlib
+import secrets
+import shlex
 import sys
 from pathlib import Path
 
 from evalgen import pipeline
-from evalgen.mix import verify_private_config
+from evalgen.mix import MixError, read_commitment, revealed_commitment, run_commitment
 from evalgen.seeds import fresh_seed, guessable_seed
 from evalgen.util import parse_utc_iso, read_manifest
 
@@ -50,17 +55,44 @@ SNAPSHOT_DIR_HELP = ("replay the frozen snapshots of an earlier run off the lega
                      "that run only with that run's seed")
 LOAD_HELP = ("the private run config the run was generated with, for a run with private plugins: its plugins are "
              "loaded from it (evalgen never runs code that a run directory names by itself)")
+VERIFY_HELP = ("check a revealed private run config against the commitment published before the evaluation "
+               "(--commitment HEX CONFIG), or against a run's manifest (RUN_DIR CONFIG), which says only that the "
+               "config and that run agree: ok (exit status 0), MISMATCH (1) or error (2)")
+COMMITMENT_HELP = ("the private_config_commitment that the evaluator published before the evaluation (64 hexadecimal "
+                   "digits): the value a revealed config must hash to. Without it, CONFIG is checked against RUN_DIR's "
+                   "manifest, and the commitment printed must be the published one")
+VERIFY_USAGE = ("give the commitment published before the evaluation (verify-config --commitment HEX CONFIG) or the run "
+                "whose manifest committed to the config (verify-config RUN_DIR CONFIG), one of the two")
+WHOLE = re.compile(r"[+-]?[0-9]+")  # a whole number in plain ASCII digits: not "1_000", nor another script's digits
+MOST_DIGITS = 4300  # what Python 3.11+ reads of an integer: 3.9 reads more, and every version reads alike here
 
 
-def _count(least: int):
-    """An argparse type: a whole number of at least `least`."""
+def _whole(text: str) -> int | None:
+    """`text` as a whole number written in plain digits (an optional sign, then ASCII digits), or None: int()
+    also takes "1_000" and the digits of other scripts (Arabic-Indic ones, say), which nobody means as a seed
+    or a count."""
+    text = text.strip()
+    if not WHOLE.fullmatch(text) or len(text.lstrip("+-")) > MOST_DIGITS:
+        return None
+    return int(text)
+
+
+def _seed(text: str) -> int:
+    """An argparse type: a master seed, a whole number in plain digits."""
+    value = _whole(text)
+    if value is None:
+        raise argparse.ArgumentTypeError(f"{reprlib.repr(text)} is not a seed: a seed is a whole number written in "
+                                         "plain digits, such as 42")
+    return value
+
+
+def _count(least: int, most: int | None = None):
+    """An argparse type: a whole number in plain digits of at least `least` (and at most `most`)."""
     def count(text: str) -> int:
-        try:
-            value = int(text)
-        except ValueError:
-            value = None
-        if value is None or value < least:
-            raise argparse.ArgumentTypeError(f"{text!r} is not a whole number of {least} or more")
+        value = _whole(text)
+        if value is None or value < least or (most is not None and value > most):
+            span = f"of {least} or more" if most is None else f"from {least} to {most}"
+            raise argparse.ArgumentTypeError(f"{reprlib.repr(text)} is not a whole number {span}")
         return value
     return count
 
@@ -74,7 +106,43 @@ def _config_hint(run_dir: Path, private_config: str | None) -> str:
         plugins = read_manifest(run_dir).get("plugins")
     except (OSError, ValueError):
         return ""
-    return f" --private-config {private_config}" if plugins else ""
+    return f" --private-config {shlex.quote(private_config)}" if plugins else ""
+
+
+def _verify_config(run_dir: str | None, config: str, commitment: str | None) -> int:
+    """verify-config: 0 when the config hashes to the commitment (the published one given, or the one a run
+    records), 1 (MISMATCH) when it does not, and an error (MixError, ...: exit status 2) for anything else,
+    so that 1 always means MISMATCH."""
+    if (run_dir is None) == (commitment is None):
+        raise MixError(VERIFY_USAGE)
+    expected = read_commitment(commitment) if commitment is not None else run_commitment(run_dir)
+    actual = revealed_commitment(config)
+    if commitment is not None:
+        if secrets.compare_digest(actual, expected):
+            print(f"ok: {config} is the private run config committed to as {expected}")
+            return 0
+        print(f"MISMATCH: {config} is not the private run config committed to as {expected}: its commitment is {actual}")
+        return 1
+    if secrets.compare_digest(actual, expected):
+        print(f"ok: {config} is the private run config that {run_dir} committed to, as {expected}. A run's manifest "
+              "commits to the config that made the run, whichever that was: check that this is the commitment "
+              "published before the evaluation, or check the config against the published value itself with "
+              f"python cli.py verify-config --commitment HEX {shlex.quote(config)}")
+        return 0
+    print(f"MISMATCH: {config} is not the private run config that {run_dir} committed to, as {expected}: its "
+          f"commitment is {actual}")
+    return 1
+
+
+def _console_never_fails() -> None:
+    """Print what the console cannot show as escapes (\\u2026), never fail on it: under a console encoding
+    that is not UTF-8 (LC_ALL=en_US.US-ASCII, or PYTHONIOENCODING=ascii), a path, a name or a line that it
+    cannot encode would otherwise stop a command midway."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError, OSError):  # not a text stream of io's (a capture, or closed)
+            pass
 
 
 def _utc_time(text: str) -> int:
@@ -90,14 +158,15 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     g = sub.add_parser("generate", help="build a fresh, seeded instance set (snapshot, digests, questions, key)")
-    g.add_argument("--seed", type=int, help=SEED_HELP)
-    g.add_argument("--instances", type=_count(1), default=20)
+    g.add_argument("--seed", type=_seed, help=SEED_HELP)
+    g.add_argument("--instances", type=_count(1, pipeline.MAX_INSTANCES), default=20)
     g.add_argument("--source", choices=SOURCES, default="synthetic", help=SOURCE_HELP)
     g.add_argument("--feed", choices=("hour", "day"), default="day", help="USGS feed window (usgs source only)")
     g.add_argument("--snapshot-file", help="use a frozen USGS GeoJSON file (or a domain's frozen live feed) instead of "
                                            "fetching the live feed")
     g.add_argument("--snapshot-dir", help=SNAPSHOT_DIR_HELP)
-    g.add_argument("--variants", type=_count(0), default=2, help="metamorphic re-renderings per instance")
+    g.add_argument("--variants", type=_count(0, pipeline.MAX_VARIANTS), default=2,
+                   help="metamorphic re-renderings per instance")
     g.add_argument("--mix", default="legacy", help=MIX_HELP)
     g.add_argument("--private-config", help=CONFIG_HELP)
     g.add_argument("--out", help="run directory (default: runs/<source>-seed<seed>, with the mix first for any mix "
@@ -131,8 +200,8 @@ def _parser() -> argparse.ArgumentParser:
     res.add_argument("--private-config", help=LOAD_HELP)
 
     d = sub.add_parser("demo", help=DEMO_HELP, description=DEMO_HELP)
-    d.add_argument("--seed", type=int, default=42)
-    d.add_argument("--instances", type=_count(1), default=20)
+    d.add_argument("--seed", type=_seed, default=42)
+    d.add_argument("--instances", type=_count(1, pipeline.MAX_INSTANCES), default=20)
     d.add_argument("--source", choices=SOURCES, default="synthetic", help=DEMO_SOURCE_HELP)
     d.add_argument("--mix", default="legacy", help=MIX_HELP)
     d.add_argument("--private-config", help=CONFIG_HELP)
@@ -141,56 +210,68 @@ def _parser() -> argparse.ArgumentParser:
                                  "overwritten each time)")
     d.add_argument("--force", action="store_true", help="overwrite an existing --out run directory")
 
-    v = sub.add_parser("verify-config", help="check a revealed private run config against a run's commitment")
-    v.add_argument("run_dir")
-    v.add_argument("config", help="the private run config (JSON) the evaluator revealed")
+    v = sub.add_parser("verify-config", help=VERIFY_HELP, description=VERIFY_HELP)
+    v.add_argument("--commitment", metavar="HEX", help=COMMITMENT_HELP)
+    v.add_argument("run_dir", nargs="?", metavar="RUN_DIR", help="a run generated with the config (without --commitment)")
+    v.add_argument("config", metavar="CONFIG", help="the private run config (JSON) the evaluator revealed")
     return parser
+
+
+def _command(args: argparse.Namespace) -> int:
+    """Run the command that `args` name, and return its exit status."""
+    if args.command == "generate":
+        seed = fresh_seed() if args.seed is None else args.seed
+        cfg = pipeline.GenerateConfig(seed=seed, instances=args.instances, source=args.source, feed=args.feed,
+                                      snapshot_file=args.snapshot_file, variants=args.variants, mix=args.mix,
+                                      private_config=args.private_config, snapshot_dir=args.snapshot_dir)
+        run_dir = pipeline.generate(cfg, Path(args.out) if args.out else None, force=args.force)
+        if args.seed is not None and guessable_seed(args.seed):  # on the console only: no file changes with it
+            print(SMALL_SEED_WARNING, file=sys.stderr)
+        print(f"next: python cli.py run {shlex.quote(str(run_dir))}" + _config_hint(run_dir, args.private_config))
+    elif args.command == "run":
+        specs = [s.strip() for s in args.models.split(",") if s.strip()]
+        pipeline.run_models(Path(args.run_dir), specs, workers=args.workers, force=args.force,
+                            max_tokens=args.max_tokens, private_config=args.private_config)
+    elif args.command == "score":
+        pipeline.score_run(Path(args.run_dir), private_config=args.private_config)
+    elif args.command == "report":
+        pipeline.build_report(Path(args.run_dir), private_config=args.private_config)
+        print("\n".join(pipeline.summary_lines(Path(args.run_dir))))
+    elif args.command == "resolve":
+        pipeline.resolve_run(Path(args.run_dir), now=args.now, private_config=args.private_config)
+    elif args.command == "demo":
+        path = pipeline.demo(args.seed, args.instances, source=args.source, mix=args.mix,
+                             private_config=args.private_config, run_dir=Path(args.out) if args.out else None,
+                             force=args.force)
+        print()
+        print("\n".join(pipeline.summary_lines(path.parent)))
+        print(f"\nreport: {path}")
+    elif args.command == "verify-config":
+        return _verify_config(args.run_dir, args.config, args.commitment)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     """Run one command. Misuse ends with `error: ...` on stderr and exit status 2, never a traceback: a path
     that is not a run, a file where a folder belongs, a run that evalgen will not read (a received one with
-    a link in it, say), a file that is not JSON, a mix, config or model that a run cannot follow. For
-    verify-config, status 1 means only MISMATCH."""
+    a link in it, or a file of the wrong shape), a file that is not JSON, a mix, config or model that a run
+    cannot follow, a generator self-check that failed off the legacy path. So does a failure that no check
+    foresaw (a received file, or code that a plugin runs, of a shape nothing expected; or a plugin that calls
+    sys.exit), named by its type. For verify-config, status 1 means only MISMATCH. What the console cannot
+    encode is printed as escapes, never a failure."""
+    _console_never_fails()
     args = _parser().parse_args(argv)
     try:
-        if args.command == "generate":
-            seed = fresh_seed() if args.seed is None else args.seed
-            cfg = pipeline.GenerateConfig(seed=seed, instances=args.instances, source=args.source, feed=args.feed,
-                                          snapshot_file=args.snapshot_file, variants=args.variants, mix=args.mix,
-                                          private_config=args.private_config, snapshot_dir=args.snapshot_dir)
-            run_dir = pipeline.generate(cfg, Path(args.out) if args.out else None, force=args.force)
-            if args.seed is not None and guessable_seed(args.seed):  # on the console only: no file changes with it
-                print(SMALL_SEED_WARNING, file=sys.stderr)
-            print(f"next: python cli.py run {run_dir}" + _config_hint(run_dir, args.private_config))
-        elif args.command == "run":
-            specs = [s.strip() for s in args.models.split(",") if s.strip()]
-            pipeline.run_models(Path(args.run_dir), specs, workers=args.workers, force=args.force,
-                                max_tokens=args.max_tokens, private_config=args.private_config)
-        elif args.command == "score":
-            pipeline.score_run(Path(args.run_dir), private_config=args.private_config)
-        elif args.command == "report":
-            pipeline.build_report(Path(args.run_dir), private_config=args.private_config)
-            print("\n".join(pipeline.summary_lines(Path(args.run_dir))))
-        elif args.command == "resolve":
-            pipeline.resolve_run(Path(args.run_dir), now=args.now, private_config=args.private_config)
-        elif args.command == "demo":
-            path = pipeline.demo(args.seed, args.instances, source=args.source, mix=args.mix,
-                                 private_config=args.private_config, run_dir=Path(args.out) if args.out else None,
-                                 force=args.force)
-            print()
-            print("\n".join(pipeline.summary_lines(path.parent)))
-            print(f"\nreport: {path}")
-        elif args.command == "verify-config":
-            if verify_private_config(args.config, args.run_dir):
-                print(f"ok: {args.config} is the private run config that {args.run_dir} committed to")
-                return 0
-            print(f"MISMATCH: {args.config} is not the private run config that {args.run_dir} committed to")
-            return 1
+        return _command(args)
     except (OSError, ValueError) as exc:  # FileNotFoundError, IsADirectoryError, ...; MixError, RunDirError, ...
         print(f"error: {exc}", file=sys.stderr)
-        return 2
-    return 0
+    except SystemExit as exc:  # evalgen never ends a command so: code that a plugin ran did
+        print(f"error: code that this command ran called sys.exit({exc.code!r}), which evalgen never does: a "
+              "plugin's, most likely", file=sys.stderr)
+    except Exception as exc:  # a file of a received run, or a plugin's code, that no check foresaw
+        print(f"error: {type(exc).__name__}: {exc} (unexpected: a file of the run or a plugin is not as evalgen writes "
+              "or expects it, or this is a bug in evalgen)", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

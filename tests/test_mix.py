@@ -495,10 +495,14 @@ def test_a_run_commits_to_its_private_config_and_the_revealed_config_verifies(re
     relaid.write_text(json.dumps(dict(reversed(list(data.items()))), indent=8), encoding="utf-8")
     assert verify_private_config(relaid, run)
     for name, text in (("moved.json", json.dumps(dict(data, domains={"public": ["earthquakes", "toy"], "held_out": []}))),
-                       ("nonce.json", json.dumps(dict(data, nonce=secrets.token_hex(16)))),
-                       ("broken.json", "{not json")):
+                       ("nonce.json", json.dumps(dict(data, nonce=secrets.token_hex(16))))):
         (tmp_path / name).write_text(text, encoding="utf-8")
         assert not verify_private_config(tmp_path / name, run), name
+    # A file that is not JSON is no config at all: an error (exit status 2), never a MISMATCH (final audit, sweep-cli#9).
+    (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(MixError, match="is not JSON"):
+        verify_private_config(tmp_path / "broken.json", run)
+    assert cli.main(["verify-config", str(run), str(tmp_path / "broken.json")]) == 2
     assert cli.main(["verify-config", str(run), str(relaid)]) == 0
     assert cli.main(["verify-config", str(run), str(tmp_path / "moved.json")]) == 1
     # A run without a private config commits to none: every domain and genre in it is public.
@@ -1287,7 +1291,10 @@ def test_a_report_says_which_held_out_sets_are_public_code_and_shows_what_the_mo
     assert types and all(f"- `{t}`: " in markdown for t in types)
     for text in (markdown, (run / "report.json").read_text(encoding="utf-8")):
         assert str(tmp_path) not in text and str(run) not in text
-    hint = f"`python cli.py verify-config RUN_DIR CONFIG`, with RUN_DIR the folder of this run (`{run.name}`)"
+    # The check against the commitment published before the evaluation (final audit, code-mix-cli#0): a run's own
+    # manifest commits to whichever config made it.
+    hint = ("`python cli.py verify-config --commitment HEX CONFIG`, with HEX the commitment published before the "
+            "evaluation, checks it, and HEX must be the commitment above")
     assert hint in markdown
 
 

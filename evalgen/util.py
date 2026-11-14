@@ -6,8 +6,10 @@ import contextlib
 import hashlib
 import itertools
 import json
+import math
 import os
 import re
+import reprlib
 import threading
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -16,6 +18,11 @@ from typing import Any
 
 _TEMPORARY = itertools.count()  # numbers the temporary files of write_in, so that no two writes share one
 MANIFEST_KEYS = ("evalgen_version", "run_id", "self_check")  # in every manifest that evalgen writes
+SHA256_HEX = re.compile(r"[0-9a-f]{64}")  # a SHA-256 (a commitment) as evalgen writes it: 64 lower-case hex digits
+LAST_SECOND = 253402300799  # 9999-12-31T23:59:59Z, the last moment that utc_iso can print
+_SPLITS = ("public", "held_out")  # an inventory's lists (evalgen.mix.SPLITS, which imports this module)
+_SHOWN = reprlib.Repr()  # what an error shows of a value read from a file: short, whatever its size or depth
+_SHOWN.maxstring = _SHOWN.maxother = 40
 
 
 class RunDirError(ValueError):
@@ -113,14 +120,26 @@ def write_json(path: Path, obj: Any, *, root: Path | None = None) -> None:
 
 
 def read_json(path: Path) -> Any:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    """The JSON in the file `path`, read as UTF-8. ValueError for text that is not UTF-8 or not JSON, and for
+    JSON nested too deeply to read (json itself raises RecursionError, which no caller would expect)."""
+    text = Path(path).read_text(encoding="utf-8")
+    try:
+        return json.loads(text)
+    except RecursionError:
+        raise ValueError("its JSON is nested too deeply to read") from None
+
+
+def shown(value: Any) -> str:
+    """A value read from a file, as an error message shows it: its repr, cut short however long or deep it is."""
+    return _SHOWN.repr(value)
 
 
 def read_manifest(run_dir: Path) -> dict[str, Any]:
     """The manifest of the run in `run_dir`, read as every step after generate reads it: the directory may
     hold no symbolic link (check_run_dir), and its manifest.json must be one that evalgen wrote, a JSON
-    object with MANIFEST_KEYS. FileNotFoundError for a folder (or a file) that is not a run, so that a
-    mistyped path stops a step instead of passing for a run with nothing to do; RunDirError otherwise."""
+    object with MANIFEST_KEYS and every key that a later step reads in the shape evalgen writes it
+    (manifest_problems). FileNotFoundError for a folder (or a file) that is not a run, so that a mistyped
+    path stops a step instead of passing for a run with nothing to do; RunDirError otherwise."""
     run_dir = Path(run_dir)
     check_run_dir(run_dir)
     path = run_dir / "manifest.json"
@@ -128,36 +147,111 @@ def read_manifest(run_dir: Path) -> dict[str, Any]:
         raise FileNotFoundError(f"{run_dir} is not an evalgen run directory: it has no manifest.json")
     try:
         manifest = read_json(path)
-    except ValueError as exc:  # not UTF-8, or not JSON
+    except ValueError as exc:  # not UTF-8, not JSON, or nested too deeply to read
         raise RunDirError(f"{path} is not JSON ({exc})") from None
-    if not isinstance(manifest, dict) or not set(MANIFEST_KEYS) <= set(manifest):
-        raise RunDirError(f"{path} is not the manifest of an evalgen run")
-    problems = _manifest_problems(manifest)
+    problems = manifest_problems(manifest)
     if problems:
         raise RunDirError(f"{path} is not the manifest of an evalgen run: {'; '.join(problems)}")
     return manifest
 
 
+def manifest_problems(manifest: Any) -> list[str]:
+    """What keeps `manifest` (JSON as read) from being the manifest of a run as evalgen writes it: [] for one
+    that is. Every step after generate reads a run's manifest through read_manifest, which refuses one with
+    problems, and `generate --force` replaces only a folder whose manifest has none (pipeline.is_run_dir)."""
+    if not isinstance(manifest, dict):
+        return ["it is not a JSON object"]
+    missing = [key for key in MANIFEST_KEYS if key not in manifest]
+    if missing:
+        return [f"it has no {', '.join(missing)}"]
+    return _manifest_problems(manifest)
+
+
+def _whole(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _real(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _strings(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _snapshot_ok(snapshot: Any) -> bool:
+    """A snapshot's record in a manifest (sources.Snapshot.meta), as the report reads it: its source and hash,
+    its pool size, and a compile time and window that it prints."""
+    return (isinstance(snapshot, dict) and isinstance(snapshot.get("source"), str)
+            and isinstance(snapshot.get("events_sha256"), str) and _whole(snapshot.get("n_events"))
+            and _whole(snapshot.get("compiled_at")) and 0 <= snapshot["compiled_at"] <= LAST_SECOND
+            and _whole(snapshot.get("window_hours"))
+            and all(isinstance(snapshot.get(key), (str, type(None))) for key in ("raw_sha256", "url", "note")))
+
+
+def _template_ok(template: Any) -> bool:
+    """A template's record in a manifest (questions.Template.to_dict), as the report's table prints it."""
+    return (isinstance(template, dict) and all(isinstance(template.get(key), str) for key in ("template_id", "pool",
+                                                                                             "skeleton"))
+            and isinstance(template.get("twin_of"), (str, type(None))) and isinstance(template.get("domain", ""), str))
+
+
 def _manifest_problems(manifest: dict[str, Any]) -> list[str]:
-    """What is wrong with the keys of a manifest that later steps index: the seed (a whole number), the
-    instances (a list of IDs), and where they are given, the plugins (files, each with its path), the
-    inventory (of domains and of genres) and the config (an object). evalgen writes them so; a run
-    received from someone else may not, and a step would then stop on a traceback."""
+    """What is wrong with the keys of a manifest that later steps index: its run ID and version (text), the
+    seed (a whole number) and its commitment (64 hexadecimal digits), the instances (a list of IDs), the
+    generator's self-check (its counts and problems), its human audit sample (its counts and rate), its
+    templates (public and new, each with its ID, pool and skeleton), its snapshot (or one per domain: source,
+    hash, pool size, and a compile time that a report can print) and the code's hash; and where they are
+    given, the commitment to a private run config (64 hexadecimal digits), the plugins (files, each with its
+    path), the inventory (lists of names, public and held out, of domains and of genres) and the config (an
+    object). evalgen writes them so, in every version; a run received from someone else may not, and a step
+    would then stop on a traceback."""
     problems = []
+    for key in ("run_id", "evalgen_version"):
+        if not isinstance(manifest.get(key), str):
+            problems.append(f"its {key} is {shown(manifest.get(key))}, not text")
     seed = manifest.get("seed")
-    if not isinstance(seed, int) or isinstance(seed, bool):
-        problems.append(f"its seed is {seed!r}, not a whole number")
+    if not _whole(seed):
+        problems.append(f"its seed is {shown(seed)}, not a whole number")
+    for key in ("seed_commitment", "private_config_commitment"):
+        if (key in manifest or key == "seed_commitment") and not (
+                isinstance(manifest.get(key), str) and SHA256_HEX.fullmatch(manifest[key])):
+            problems.append(f"its {key} is {shown(manifest.get(key))}, not 64 hexadecimal digits")
     instances = manifest.get("instances")
-    if not isinstance(instances, list) or not all(isinstance(iid, str) for iid in instances):
+    if not _strings(instances):
         problems.append("it lists no instances by their IDs")
+    check = manifest.get("self_check")
+    if not (isinstance(check, dict) and all(_whole(check.get(key)) for key in (
+            "oracle_checks", "oracle_agreements", "resolution_invariant_instances")) and _strings(check.get("problems"))):
+        problems.append("its self_check is not the generator's counts and problems")
+    audit = manifest.get("audit")
+    if not (isinstance(audit, dict) and _whole(audit.get("population")) and _whole(audit.get("sampled"))
+            and _real(audit.get("rate"))):
+        problems.append("its audit is not the counts and rate of a human audit sample")
+    templates = manifest.get("templates")
+    if not (isinstance(templates, dict) and all(isinstance(templates.get(pool), list) and all(map(
+            _template_ok, templates[pool])) for pool in ("public", "new"))):
+        problems.append("its templates are not the run's public and new templates")
+    if "snapshot" not in manifest and "snapshots" not in manifest:
+        problems.append("it records no snapshot")
+    if "snapshot" in manifest and not _snapshot_ok(manifest["snapshot"]):
+        problems.append("its snapshot is not the record of a snapshot")
+    snapshots = manifest.get("snapshots")
+    if "snapshots" in manifest and not (isinstance(snapshots, dict) and snapshots and all(
+            map(_snapshot_ok, snapshots.values()))):
+        problems.append("its snapshots are not the records of a snapshot per domain")
+    if not isinstance(manifest.get("code_sha256"), (str, type(None))):
+        problems.append("its code_sha256 is not text")
     plugins = manifest.get("plugins")
     if plugins is not None and (not isinstance(plugins, list) or not all(
             isinstance(entry, dict) and isinstance(entry.get("path"), str) for entry in plugins)):
         problems.append("its plugins are not files, each with its path")
     inventory = manifest.get("inventory")
     if inventory is not None and (not isinstance(inventory, dict) or not all(
-            isinstance(inventory.get(kind), dict) for kind in ("domains", "genres"))):
-        problems.append("its inventory is not one of domains and of genres")
+            isinstance(inventory.get(kind), dict) and set(inventory[kind]) <= set(_SPLITS)
+            and all(_strings(names) and all(names) for names in inventory[kind].values())
+            for kind in ("domains", "genres"))):
+        problems.append("its inventory is not lists of names, public and held out, of domains and of genres")
     if "config" in manifest and not isinstance(manifest["config"], dict):
         problems.append("its config is not an object")
     return problems

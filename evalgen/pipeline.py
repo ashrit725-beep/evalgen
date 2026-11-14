@@ -25,16 +25,20 @@ Run directory layout:
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import random
+import shlex
 import shutil
+import stat
 import time
+import traceback
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Mapping, Sequence
+from typing import Any, Callable, ClassVar, Iterator, Mapping, Sequence
 
 import requests
 
@@ -49,8 +53,8 @@ from .domains.earthquakes import EARTHQUAKES
 from .genres import detect_genre
 from .genres.base import Genre, RenderContext
 from .genres.classic import CLASSIC
-from .mix import LEGACY, Inventory, MixError, Plan, load_run_plugins, plan_mix, plugin_record
-from .models import Instance, Question, Rendering
+from .mix import LEGACY, Inventory, MixError, Plan, load_run_plugins, plan_mix, plugin_file, plugin_record
+from .models import Instance, Question, Rendering, check_registered
 from .ops import execute, role
 from .prompt import build_prompt, domain_prompt
 from .questions import (Context, Template, compose_new_templates, compose_questions, phrase_question, public_templates,
@@ -62,11 +66,25 @@ from .seeds import SeedLog, derive_seed, fresh_nonce, seed_commitment
 from .solver import extract_digest, solve
 from .sources import LIVE, Snapshot, build_domain_snapshot, build_snapshot, frozen_feed, read_frozen_feed, save_snapshot
 from .traps import SLOT_CANDIDATES, TrapConfig, draw_plan, inject_traps, score_traps
-from .util import read_json, read_manifest, sha256_hex, slugify, write_in, write_json
+from .util import RunDirError, manifest_problems, read_json, read_manifest, sha256_hex, slugify, write_in, write_json
 
 RUNS_DIR = Path("runs")
 RUN_MARKER = ".evalgen-run"  # lets --force recognise (and only delete) evalgen run directories
 Log = Callable[[str], None]
+# The most instances, and variants of each, that one run may have: generate keeps every instance, with its
+# prompts, in memory until the run is written, so a count mistyped by a few digits would otherwise run until the
+# machine's memory or disk ran out. A larger evaluation is several runs, each with a seed of its own.
+MAX_INSTANCES = 10_000
+MAX_VARIANTS = 50
+NAME_LIMIT = 100  # characters of a default run folder name: a longer one is cut short and ends in a hash of the whole
+
+
+class SelfCheckError(ValueError):
+    """A run off the legacy path whose generator self-check failed: a text-only oracle did not reproduce every
+    answer key from the prompts, or a rendering was not recognised as the genre it was written in (a held-out
+    plugin's genre or domain, most likely). generate writes such a run whole, so that it can be inspected, and
+    then raises this, which the command line reports as `error: ...` with exit status 2: no evaluation may
+    rest on keys that its prompts do not give. (A legacy run logs its self-check, as 0.2.0 did.)"""
 
 
 @dataclass
@@ -105,8 +123,9 @@ class GenerateConfig:
                 setattr(self, name, os.fspath(getattr(self, name)))
 
     def problems(self) -> list[str]:
-        """What no run can be generated with: no instance, fewer than no variant, an empty snapshot pool,
-        record and question ranges that are empty, or an audit rate that is not a share."""
+        """What no run can be generated with: no instance, fewer than no variant, more instances or variants
+        than MAX_INSTANCES and MAX_VARIANTS, an empty snapshot pool, record and question ranges that are
+        empty, or an audit rate that is not a share."""
         def whole(value: Any, least: int) -> bool:
             return isinstance(value, int) and not isinstance(value, bool) and value >= least
 
@@ -114,6 +133,9 @@ class GenerateConfig:
                     for name, least in (("instances", 1), ("variants", 0), ("pool_size", 1), ("events_min", 1),
                                         ("events_max", 1), ("questions_min", 1), ("questions_max", 1))
                     if not whole(getattr(self, name), least)]
+        problems += [f"{name} must be at most {most}, not {getattr(self, name)}"
+                     for name, most in (("instances", MAX_INSTANCES), ("variants", MAX_VARIANTS))
+                     if whole(getattr(self, name), 0) and getattr(self, name) > most]
         for low, high in (("events_min", "events_max"), ("questions_min", "questions_max")):
             if not problems and getattr(self, low) > getattr(self, high):
                 problems.append(f"{low} ({getattr(self, low)}) is more than {high} ({getattr(self, high)})")
@@ -424,15 +446,30 @@ def generator_self_check(instances: Sequence[Instance], readers: Sequence[Genre]
             "resolution_invariant_instances": len(instances), "problems": problems[:50]}
 
 
+def _regular_file(path: Path) -> bool:
+    """Whether `path` is a regular file itself: not a link (to anything), a folder, or a named pipe, which a
+    reader would wait on for ever."""
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
 def is_run_dir(path: Path) -> bool:
-    """True only for directories evalgen created (its marker file, or its own manifest)."""
-    if (path / RUN_MARKER).exists():
+    """True only for directories evalgen created: they hold its marker, a regular file (never a folder or a
+    link of that name), or its own manifest, a regular file (a named pipe there would hold the check up for
+    ever) of the shape that every later step reads (util.manifest_problems), as a committed run keeps it.
+    `generate --force` replaces nothing else."""
+    path = Path(path)
+    if _regular_file(path / RUN_MARKER):
         return True
+    if not _regular_file(path / "manifest.json"):
+        return False
     try:
         manifest = read_json(path / "manifest.json")
     except (OSError, ValueError):
         return False
-    return isinstance(manifest, dict) and {"evalgen_version", "run_id", "self_check"} <= set(manifest)
+    return not manifest_problems(manifest)
 
 
 def _instance_records(instances: Sequence[Instance], snapshots: Mapping[str, Snapshot],
@@ -483,11 +520,16 @@ def run_name(cfg: GenerateConfig) -> str:
     """The default name of a run's directory: <source>-seed<seed>, and for any mix but legacy the mix
     first ("random-synthetic-seed7"), so that it never takes the legacy run's place. A replay off the
     legacy path (frozen snapshots, or a frozen feed file) reads its snapshots whatever the source says,
-    so it is named a replay ("random-replay-seed7"), never after the source given or the run it replays."""
+    so it is named a replay ("random-replay-seed7"), never after the source given or the run it replays.
+    A name longer than NAME_LIMIT characters (a mix of every cell, a seed of many digits), which a file
+    system would refuse, keeps its first characters and ends in 8 hexadecimal digits of the SHA-256 of the
+    whole name, so that two such runs keep folders of their own."""
     if cfg.mix.strip() == LEGACY:
-        return f"{cfg.source}-seed{cfg.seed}"
-    source = "replay" if cfg.snapshot_dir or cfg.snapshot_file else cfg.source
-    return f"{slugify(cfg.mix)}-{source}-seed{cfg.seed}"
+        name = f"{cfg.source}-seed{cfg.seed}"
+    else:
+        source = "replay" if cfg.snapshot_dir or cfg.snapshot_file else cfg.source
+        name = f"{slugify(cfg.mix)}-{source}-seed{cfg.seed}"
+    return name if len(name) <= NAME_LIMIT else f"{name[:NAME_LIMIT - 9]}-{sha256_hex(name)[:8]}"
 
 
 def _check_sources(plan: Plan, cfg: GenerateConfig) -> dict[str, Path | None]:
@@ -607,18 +649,145 @@ def _mix_entry(plan: Plan) -> dict[str, Any]:
     return entry
 
 
+def _replaces(run_dir: Path, cfg: GenerateConfig, plan: Plan, frozen: Mapping[str, Path | None],
+              force: bool) -> bool:
+    """Check, before anything is built or written, that generate may write its run to `run_dir`, and say
+    whether that replaces the run there (`force`). FileExistsError for a file in its place; for a folder
+    that holds what this run reads (_inputs_in), which replacing it would delete; for a folder that is not
+    empty, without `force`; and with `force`, for one given as a symbolic link (shutil.rmtree removes no
+    link's target: the folder it points to is named instead), one that evalgen did not make (is_run_dir),
+    and the folder this command runs in or one above it, which deleting would leave it standing nowhere
+    (`--out .` from inside a run folder emptied it and then failed)."""
+    if run_dir.exists() and not run_dir.is_dir():
+        raise FileExistsError(f"{run_dir} is a file, not a run directory")
+    if not (run_dir.exists() and any(run_dir.iterdir())):
+        return False
+    held = _inputs_in(run_dir, cfg, plan, frozen)
+    if held:
+        raise FileExistsError(f"{run_dir} holds what this run reads ({', '.join(held)}), which replacing it would "
+                              "delete: write the run to another folder with --out")
+    if not force:
+        raise FileExistsError(f"{run_dir} already exists (use --force to overwrite, or --out)")
+    if run_dir.is_symlink():
+        raise FileExistsError(f"{run_dir} is a symbolic link: --force replaces a run folder named as itself, so give "
+                              f"the folder it points to ({os.path.realpath(run_dir)})")
+    if not is_run_dir(run_dir):
+        raise FileExistsError(f"{run_dir} is not an evalgen run directory; refusing to delete it")
+    here, there = Path(os.path.realpath(os.getcwd())), Path(os.path.realpath(run_dir))
+    if here == there or there in here.parents:
+        where = "the folder you are in" if here == there else "a folder above the one you are in"
+        raise FileExistsError(f"{run_dir} is {where}: replacing it would delete the folder this command runs in, so "
+                              "run generate from outside it, or write the run to another folder with --out")
+    return True
+
+
+@contextlib.contextmanager
+def _run_folder(run_dir: Path, replacing: bool) -> Iterator[None]:
+    """The run folder, made for the files that generate writes in the block, once everything is built: the
+    run there is deleted first when `replacing` it (--force), and the folder made, with the marker that
+    tells it for evalgen's. A failure before the block ends (a full disk, an interrupt) removes what this
+    call made, so that no half-made run is left behind: the folder, when this call made it, or else what it
+    wrote into it (an empty folder given with --out)."""
+    if replacing:
+        shutil.rmtree(run_dir)
+    made = not os.path.lexists(run_dir)
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        write_in(run_dir, run_dir / RUN_MARKER, "evalgen run directory\n")
+        yield
+    except BaseException:
+        if made:
+            shutil.rmtree(run_dir, ignore_errors=True)
+        elif run_dir.is_dir():
+            for entry in run_dir.iterdir():
+                with contextlib.suppress(OSError):
+                    shutil.rmtree(entry) if entry.is_dir() and not entry.is_symlink() else entry.unlink()
+        raise
+
+
+class _Stage:
+    """What generate is building, as a failure names it: the step, and the domains and genres it uses."""
+
+    def __init__(self) -> None:
+        self.doing, self.entries = "starting", ()
+
+    def __call__(self, doing: str, entries: Sequence[Any] = ()) -> None:
+        self.doing, self.entries = doing, tuple(entries)
+
+
+def _plugin_failure(exc: BaseException, plan: Plan, stage: _Stage) -> MixError | None:
+    """The MixError that names the private plugin whose code failed (or called sys.exit) while generate was
+    building a run, or None for a failure of no plugin's, which is raised as it is. The plugin is the
+    innermost file of the private run config that the traceback passes through; failing that, the plugins
+    that define the domains and genres of the step that failed (code that a plugin's class inherits from
+    evalgen runs in evalgen's files)."""
+    files = {str(path) for path in plan.config.plugins} if plan.config is not None else set()
+    ran = [frame.f_code.co_filename for frame, _ in traceback.walk_tb(exc.__traceback__)]  # outermost first
+    in_traceback = [name for name in ran if name in files]
+    defining = list(dict.fromkeys(str(path) for path in map(plugin_file, stage.entries) if path is not None))
+    if in_traceback:
+        who = f"the plugin {in_traceback[-1]}"
+    elif defining:
+        who = f"the plugin{'s' if len(defining) > 1 else ''} {', '.join(defining)}"
+    elif isinstance(exc, SystemExit):
+        who = "code that generate ran"
+    else:
+        return None
+    did = f"called sys.exit({exc.code!r})" if isinstance(exc, SystemExit) else f"failed ({type(exc).__name__}: {exc})"
+    return MixError(f"{who} {did} while generate was {stage.doing}; nothing was written")
+
+
+@contextlib.contextmanager
+def _building(plan: Plan) -> Iterator[_Stage]:
+    """Run the block that builds a run (snapshots, instances, self-check), before anything is written, and turn
+    a failure of a private plugin's code in it into a MixError that names the plugin (_plugin_failure): its
+    genre's render or sniff, its domain's records or questions. A plugin that calls sys.exit midway is one
+    too: evalgen never ends a command so, and the command would otherwise end with that status and no run."""
+    stage = _Stage()
+    try:
+        yield stage
+    except MixError:
+        raise
+    except (Exception, SystemExit) as exc:
+        failure = _plugin_failure(exc, plan, stage)
+        if failure is None:
+            raise
+        raise failure from exc
+
+
+def _self_check_failure(self_check: Mapping[str, Any], run_dir: Path) -> SelfCheckError | None:
+    """The SelfCheckError of a run off the legacy path whose self-check found a problem, or None."""
+    agreed, checked, problems = self_check["oracle_agreements"], self_check["oracle_checks"], self_check["problems"]
+    if agreed == checked and not problems:
+        return None
+    first = "; ".join(problems[:3]) + ("; ..." if len(problems) > 3 else "")
+    return SelfCheckError(
+        f"the generator's self-check failed: reading the prompts alone, the text-only oracle reproduced {agreed} of "
+        f"the {checked} answer keys, and found these problems: {first}. The run is written to {run_dir} so that it "
+        "can be inspected (its manifest.json lists the first problems under self_check), but it must not be used for "
+        "an evaluation: its prompts do not read back as the run says they do. A held-out plugin's genre or domain is "
+        "the likely cause")
+
+
 def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = False, log: Log = print) -> Path:
     """Write a run: snapshots, instances, prompts, the generator's self-check, the audit sample and
     the manifest. The run's mix (cfg.mix) says which domains and genres its instances are drawn from,
     and the private run config (cfg.private_config) which of them are held out; the default is the
-    legacy (0.2.0) run, and any other mix is generated on seed paths of its own (see evalgen.mix). The
-    mix and the config are read, and their plugins loaded, before anything is written. A run off the
-    legacy path replays an earlier run's frozen snapshots (cfg.snapshot_dir), one per domain, so that a
-    live run of several domains regenerates exactly from its seed, without the network.
+    legacy (0.2.0) run, and any other mix is generated on seed paths of its own (see evalgen.mix). A run
+    off the legacy path replays an earlier run's frozen snapshots (cfg.snapshot_dir), one per domain, so
+    that a live run of several domains regenerates exactly from its seed, without the network.
 
-    Every file goes through the run directory's one writer (util.write_in). An existing run directory is
-    replaced only with `force`, only if evalgen made it, and never while it holds what this run reads (a
-    frozen feed or snapshot folder, the private run config or a plugin), which replacing it would delete."""
+    Everything the run needs is computed and checked before its folder is touched: the mix and the config
+    (their plugins loaded, the config's commitment computed: a config that cannot be committed to is
+    refused), the seed's commitment, where the run may go, every snapshot (a live source fetched and
+    frozen), every instance and the self-check. Only then is an existing run replaced (with `force`, only
+    if evalgen made it, never while it holds what this run reads: a frozen feed or snapshot folder, the
+    private run config or a plugin, which replacing it would delete; never the folder the command runs
+    in) and the folder made and written, through its one writer (util.write_in); a failure while it is
+    written removes what was written. A failure of a private plugin's code while the run is built is a
+    MixError that names the plugin (_building), and nothing is written. Off the legacy path, a self-check
+    below 100% raises SelfCheckError once the run is written, for inspection; a legacy run logs it, as
+    0.2.0 did."""
     problems = cfg.problems()
     if problems:
         raise ValueError("cannot generate this run: " + "; ".join(problems))
@@ -635,32 +804,20 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
     elif cfg.snapshot_file:  # the frozen USGS feed of a legacy run, read as the replay reads it
         _check_frozen(EARTHQUAKES, cfg.snapshot_file)
     run_dir = Path(run_dir) if run_dir else RUNS_DIR / run_name(cfg)
-    if run_dir.exists() and not run_dir.is_dir():
-        raise FileExistsError(f"{run_dir} is a file, not a run directory")
-    if run_dir.exists() and any(run_dir.iterdir()):
-        held = _inputs_in(run_dir, cfg, plan, frozen)
-        if held:
-            raise FileExistsError(f"{run_dir} holds what this run reads ({', '.join(held)}), which replacing it would "
-                                  "delete: write the run to another folder with --out")
-        if not force:
-            raise FileExistsError(f"{run_dir} already exists (use --force to overwrite, or --out)")
-        if not is_run_dir(run_dir):
-            raise FileExistsError(f"{run_dir} is not an evalgen run directory; refusing to delete it")
-        shutil.rmtree(run_dir)
+    replacing = _replaces(run_dir, cfg, plan, frozen, force)
     # The run that the frozen feed or snapshots come from, read before the run folder is made.
     replay = _replay_check(cfg.snapshot_file or cfg.snapshot_dir, log, seed=None if plan.legacy else cfg.seed,
                            drawn=[name for name, feed in frozen.items() if feed is None])
-    run_dir.mkdir(parents=True, exist_ok=True)
-    write_in(run_dir, run_dir / RUN_MARKER, "evalgen run directory\n")
 
     seedlog = SeedLog(cfg.seed)
     nonce = fresh_nonce()
     commitment = seed_commitment(cfg.seed, nonce)
+    mixed = _mix_entry(plan)  # the config's commitment and its plugins' record (read_private_config checked it hashes)
     # The commitments in full: what the evaluator publishes before the evaluation is the whole value (a prefix
     # of 16 hexadecimal digits could be matched by another seed or config in about 2**32 tries).
     log(f"[generate] master seed {cfg.seed} (publishable commitment {commitment}: seed_commitment in manifest.json)")
     if plan.config is not None:
-        log(f"[generate] private run config committed as {plan.config.commitment} (publishable: "
+        log(f"[generate] private run config committed as {mixed['private_config_commitment']} (publishable: "
             "private_config_commitment in manifest.json)")
         if plan.config.example:
             log("[generate] WARNING: the private run config keeps the nonce of a published EXAMPLE, so anyone can "
@@ -668,83 +825,99 @@ def generate(cfg: GenerateConfig, run_dir: Path | None = None, *, force: bool = 
                 "config needs a nonce of its own (python -c \"import secrets; print(secrets.token_hex(16))\").")
     domains = [EARTHQUAKES] if plan.legacy else plan.domains
     snapshots: dict[str, Snapshot] = {}
-    for domain in domains:
-        if plan.legacy:  # the 0.2.0 snapshot and seed paths
-            snapshot, raw = build_snapshot(cfg.source, seedlog, feed=cfg.feed, pool_size=cfg.pool_size,
-                                           snapshot_file=cfg.snapshot_file)
-        elif cfg.snapshot_dir:  # a live domain from its frozen bytes; a synthetic one drawn again from the seed
-            feed = frozen[domain.name]
-            snapshot, raw = build_domain_snapshot(domain, "synthetic" if feed is None else LIVE, seedlog,
-                                                  pool_size=cfg.pool_size,
-                                                  snapshot_file=None if feed is None else str(feed))
+    raws: dict[str, bytes | None] = {}  # each live source's frozen bytes, saved with its snapshot
+    with _building(plan) as stage:
+        for domain in domains:
+            stage(f"building the snapshot of {domain.name}", [domain])
+            if plan.legacy:  # the 0.2.0 snapshot and seed paths
+                snapshot, raw = build_snapshot(cfg.source, seedlog, feed=cfg.feed, pool_size=cfg.pool_size,
+                                               snapshot_file=cfg.snapshot_file)
+            elif cfg.snapshot_dir:  # a live domain from its frozen bytes; a synthetic one drawn again from the seed
+                feed = frozen[domain.name]
+                snapshot, raw = build_domain_snapshot(domain, "synthetic" if feed is None else LIVE, seedlog,
+                                                      pool_size=cfg.pool_size,
+                                                      snapshot_file=None if feed is None else str(feed))
+            else:
+                snapshot, raw = build_domain_snapshot(domain, cfg.source, seedlog, pool_size=cfg.pool_size,
+                                                      snapshot_file=cfg.snapshot_file)
+            snapshots[domain.name], raws[domain.name] = snapshot, raw
+            about = "" if len(domains) == 1 else f" ({domain.name})"
+            if snapshot.note:
+                log(f"[generate] note{about}: {snapshot.note}")
+            log(f"[generate] snapshot{about}: {snapshot.source}, {len(snapshot.events)} "
+                f"{'events' if plan.legacy else 'records'}, "
+                f"sha256 {snapshot.events_sha256[:16]}...")  # ASCII: a console that is not UTF-8 prints it too
+
+        stage("composing the run's templates", domains)
+        if plan.legacy:
+            new_templates = {EARTHQUAKES.name: compose_new_templates(seedlog.rng("templates", "new"), EARTHQUAKES)}
         else:
-            snapshot, raw = build_domain_snapshot(domain, cfg.source, seedlog, pool_size=cfg.pool_size,
-                                                  snapshot_file=cfg.snapshot_file)
-        folder = run_dir / "snapshot" if len(domains) == 1 else run_dir / "snapshot" / domain.name
-        if raw is None or plan.legacy:
-            save_snapshot(snapshot, raw, folder, root=run_dir)
-        else:  # frozen bytes of the domain's live source
-            save_snapshot(snapshot, raw, folder, raw_filename=domain.live.raw_filename, root=run_dir)
-        snapshots[domain.name] = snapshot
-        about = "" if len(domains) == 1 else f" ({domain.name})"
-        if snapshot.note:
-            log(f"[generate] note{about}: {snapshot.note}")
-        log(f"[generate] snapshot{about}: {snapshot.source}, {len(snapshot.events)} "
-            f"{'events' if plan.legacy else 'records'}, "
-            f"sha256 {snapshot.events_sha256[:16]}…")
+            new_templates = {d.name: compose_new_templates(seedlog.rng("templates", "new", d.name), d) for d in domains}
+        contexts = {name: Context(s.compiled_at, s.window_hours) for name, s in snapshots.items()}
+        used_chains: set[str] = set()  # no concrete question is ever asked twice in a run
+        # Questions per template so far, per domain: keeps each domain's public/twin pairs in step, so that
+        # the template pools stay balanced within every domain (and so between public and held-out ones).
+        usage: dict[str, dict[str, int]] = {name: {} for name in snapshots}
+        instances = []
+        for index in range(cfg.instances):
+            drawn = plan.draw(index, seedlog, cfg.variants + 1)
+            domain = EARTHQUAKES if drawn is None else drawn.domain
+            stage(f"building instance {index} (inst-{index:03d})", [domain, *(drawn.genres if drawn else ())])
+            instances.append(build_instance(index, snapshots[domain.name], new_templates[domain.name], seedlog, cfg,
+                                            contexts[domain.name], used_chains, usage[domain.name], domain=domain,
+                                            genre_plan=None if drawn is None else drawn.genres,
+                                            split=None if drawn is None else drawn.split))
 
-    if plan.legacy:
-        new_templates = {EARTHQUAKES.name: compose_new_templates(seedlog.rng("templates", "new"), EARTHQUAKES)}
-    else:
-        new_templates = {d.name: compose_new_templates(seedlog.rng("templates", "new", d.name), d) for d in domains}
-    contexts = {name: Context(s.compiled_at, s.window_hours) for name, s in snapshots.items()}
-    used_chains: set[str] = set()  # no concrete question is ever asked twice in a run
-    # Questions per template so far, per domain: keeps each domain's public/twin pairs in step, so that
-    # the template pools stay balanced within every domain (and so between public and held-out ones).
-    usage: dict[str, dict[str, int]] = {name: {} for name in snapshots}
-    instances = []
-    for index in range(cfg.instances):
-        drawn = plan.draw(index, seedlog, cfg.variants + 1)
-        domain = EARTHQUAKES if drawn is None else drawn.domain
-        inst = build_instance(index, snapshots[domain.name], new_templates[domain.name], seedlog, cfg,
-                              contexts[domain.name], used_chains, usage[domain.name], domain=domain,
-                              genre_plan=None if drawn is None else drawn.genres,
-                              split=None if drawn is None else drawn.split)
-        instances.append(inst)
-        write_json(run_dir / "instances" / f"{inst.instance_id}.json", inst.to_dict(), root=run_dir)
-        for rendering in inst.renderings:
-            write_in(run_dir, run_dir / "prompts" / inst.instance_id / f"{rendering.variant}.txt", rendering.prompt)
-
-    self_check = generator_self_check(instances, plan.readers or None)
-    records = _instance_records(instances, snapshots, {d.name: d for d in domains})
-    audit = write_audit_sample(run_dir, instances, records, seedlog.rng("audit"), cfg.audit_rate)
+        stage("checking the run (the generator's self-check reads every prompt)", plan.readers)
+        self_check = generator_self_check(instances, plan.readers or None)
+        stage("listing each instance's records", domains)
+        records = _instance_records(instances, snapshots, {d.name: d for d in domains})
     forecasts = [dict(inst.forecast, instance_id=inst.instance_id, **_recorded(domain=inst.domain))
                  for inst in instances if inst.forecast]
-    if forecasts:
-        write_json(run_dir / "forecasts.json", forecasts, root=run_dir)
-    seedlog.seed("mock")  # the simulated model's seed, so it is logged too
-    write_json(run_dir / "manifest.json", {
-        "evalgen_version": __version__,
-        "code_sha256": code_fingerprint(),
-        "run_id": run_dir.name,
-        "seed": cfg.seed,
-        "seed_commitment": commitment,  # publishable before the evaluation
-        "seed_nonce": nonce,  # secret until the reveal, like the seed itself (this file is private)
-        "config": replace(cfg, mix=plan.mix).to_dict(),  # the mix in canonical form: " legacy " records none
-        **_mix_entry(plan),
-        **_snapshot_entry(snapshots),
-        "replay": replay,
-        "templates": _templates_entry(plan, new_templates),
-        "instances": [inst.instance_id for inst in instances],
-        "self_check": self_check,
-        "audit": audit,
-        "seeds": seedlog.seeds,
-        "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    }, root=run_dir)
+    fingerprint = code_fingerprint()
+
+    with _run_folder(run_dir, replacing):
+        for domain in domains:
+            folder = run_dir / "snapshot" if len(domains) == 1 else run_dir / "snapshot" / domain.name
+            snapshot, raw = snapshots[domain.name], raws[domain.name]
+            if raw is None or plan.legacy:
+                save_snapshot(snapshot, raw, folder, root=run_dir)
+            else:  # frozen bytes of the domain's live source
+                save_snapshot(snapshot, raw, folder, raw_filename=domain.live.raw_filename, root=run_dir)
+        for inst in instances:
+            write_json(run_dir / "instances" / f"{inst.instance_id}.json", inst.to_dict(), root=run_dir)
+            for rendering in inst.renderings:
+                write_in(run_dir, run_dir / "prompts" / inst.instance_id / f"{rendering.variant}.txt", rendering.prompt)
+        audit = write_audit_sample(run_dir, instances, records, seedlog.rng("audit"), cfg.audit_rate)
+        if forecasts:
+            write_json(run_dir / "forecasts.json", forecasts, root=run_dir)
+        seedlog.seed("mock")  # the simulated model's seed, so it is logged too
+        write_json(run_dir / "manifest.json", {
+            "evalgen_version": __version__,
+            "code_sha256": fingerprint,
+            # The folder's name, also when it is given as "." or ending in "..", whose Path.name is "" or "..".
+            "run_id": run_dir.name if run_dir.name not in ("", ".", "..") else Path(os.path.abspath(run_dir)).name,
+            "seed": cfg.seed,
+            "seed_commitment": commitment,  # publishable before the evaluation
+            "seed_nonce": nonce,  # secret until the reveal, like the seed itself (this file is private)
+            "config": replace(cfg, mix=plan.mix).to_dict(),  # the mix in canonical form: " legacy " records none
+            **mixed,
+            **_snapshot_entry(snapshots),
+            "replay": replay,
+            "templates": _templates_entry(plan, new_templates),
+            "instances": [inst.instance_id for inst in instances],
+            "self_check": self_check,
+            "audit": audit,
+            "seeds": seedlog.seeds,
+            "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }, root=run_dir)
     n_questions = sum(len(inst.questions) for inst in instances)
     log(f"[generate] {len(instances)} instances, {n_questions} questions, {cfg.variants + 1} renderings each; "
         f"oracle self-check {self_check['oracle_agreements']}/{self_check['oracle_checks']}; "
         f"audit sample {audit['sampled']}/{audit['population']} -> {run_dir}")
+    failure = None if plan.legacy else _self_check_failure(self_check, run_dir)
+    if failure is not None:
+        raise failure
     return run_dir
 
 
@@ -768,6 +941,7 @@ def run_models(run_dir: Path, specs: Sequence[str], *, workers: int = 4, force: 
     load_run_plugins(manifest, private_config, log=log)
     inventory = Inventory.of_run(manifest)
     instances = load_instances(run_dir, manifest)
+    check_registered(instances, run_dir)  # the solvers look up each domain, genre and answer type they name
     adapters, skipped = [], []
     for spec in specs:
         try:
@@ -863,9 +1037,10 @@ def score_run(run_dir: Path, *, private_config: str | Path | None = None, log: L
     manifest = read_manifest(run_dir)
     responses = run_dir / "responses"
     if not responses.is_dir():
-        raise FileNotFoundError(f"no responses in {run_dir}; run `python cli.py run {run_dir}` first")
+        raise FileNotFoundError(f"no responses in {run_dir}; run `python cli.py run {shlex.quote(str(run_dir))}` first")
     load_run_plugins(manifest, private_config, log=log)
     instances = load_instances(run_dir, manifest)
+    check_registered(instances, run_dir)  # the scorer reads each answer type, the metrics each domain and genre
     written = []
     for model_dir in sorted(p for p in responses.iterdir() if p.is_dir()):
         rows, replies, forecasts = [], [], []
@@ -920,7 +1095,7 @@ def score_run(run_dir: Path, *, private_config: str | Path | None = None, log: L
         missing = sum(1 for r in replies if r["status"] == "missing")
         if missing:
             log(f"[score] warning: {model} has no stored reply to {missing} of {len(replies)} prompts, which count as "
-                f"unanswered: `python cli.py run {run_dir}` with this model asks only those")
+                f"unanswered: `python cli.py run {shlex.quote(str(run_dir))}` with this model asks only those")
         written.append(out)
     return written
 
@@ -953,13 +1128,23 @@ def resolve_run(run_dir: Path, *, now: int | None = None, fetch: Callable | None
             "one: --source usgs, or --source live with earthquakes in the mix, or a frozen USGS feed replayed with "
             "--snapshot-file or --snapshot-dir)")
         return {}
-    forecasts = read_forecasts(run_dir)
+    forecasts = read_forecasts(run_dir)  # each entry checked (report.forecast_problem) before any is resolved
     load_run_plugins(manifest, private_config, log=log)  # a plugin domain resolves its own forecasts
     by_domain: dict[str | None, list[dict]] = {}  # a legacy run records no domain: its forecasts are earthquake ones
     for forecast in forecasts:
         by_domain.setdefault(forecast.get("domain"), []).append(forecast)
+    forecasters = {}  # every domain named, checked before any forecast is resolved or fetched
+    for name in by_domain or {None: []}:
+        try:
+            domain = get_domain(name)
+        except KeyError:
+            raise RunDirError(f"{path} holds a forecast of the domain {name!r}, which neither evalgen nor the run's "
+                              "plugins define") from None
+        if domain.forecaster is None:
+            raise RunDirError(f"{path} holds a forecast of the domain {domain.name}, which asks no forecasts")
+        forecasters[name] = domain.forecaster
     when = int(time.time()) if now is None else now
-    parts = [get_domain(name).forecaster.resolve(group, when, **({"fetch": fetch} if fetch is not None else {}))
+    parts = [forecasters[name].resolve(group, when, **({"fetch": fetch} if fetch is not None else {}))
              for name, group in (by_domain or {None: []}).items()]
     summary = parts[0]
     for part in parts[1:]:  # counts add up and error lists join
