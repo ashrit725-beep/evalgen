@@ -406,7 +406,9 @@ def test_a_weather_station_keeps_its_own_time_zone():
 @pytest.mark.parametrize("name", GENRES)
 def test_every_genre_writes_a_weather_observation_in_its_stations_local_time(name):
     """Wherever a genre writes an observation's time in local time, the offset is its station's, never the
-    nominal offset of its longitude where the two differ."""
+    nominal offset of its longitude where the two differ. (Observations at stations of two zones can share a
+    UTC second, a five-minute mark say, and the one in the zone whose offset is the other's nominal one then
+    prints the very text the nominal offset would: that text is not counted against the other.)"""
     from evalgen.domains.weather import WEATHER
     from evalgen.genres.base import OFFSET_TIME_FORMATS, format_time
     from evalgen.geo import utc_offset_hours
@@ -414,12 +416,15 @@ def test_every_genre_writes_a_weather_observation_in_its_stations_local_time(nam
     real = nominal = 0
     for seed in (73, 75):
         for inst in instances_of(WEATHER, name, seed=seed, n=2):
+            own_texts = {format_time(r.time, fmt, WEATHER.utc_offset(r)) for r in inst.reports
+                         for fmt in OFFSET_TIME_FORMATS}
             for rendering in inst.renderings:
                 for r in inst.reports:
                     own, solar = WEATHER.utc_offset(r), utc_offset_hours(r.lon)
                     for fmt in OFFSET_TIME_FORMATS:
                         real += format_time(r.time, fmt, own) in rendering.digest
-                        nominal += own != solar and format_time(r.time, fmt, solar) in rendering.digest
+                        text = format_time(r.time, fmt, solar)
+                        nominal += own != solar and text not in own_texts and text in rendering.digest
     assert nominal == 0 and real > 0
 
 

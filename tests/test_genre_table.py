@@ -167,11 +167,14 @@ def test_each_choice_shows_in_the_table(toys):
     assert "probe" in header(table(csv_style, qualifiers="column", case="plain"))
     assert re.search(r"\((hull|spar|drifter)\)", table(csv_style, qualifiers="inline"))
     assert header(table(csv_style, columns="source_first", case="plain")).startswith("operator")
-    assert "# " in table(csv_style, rows="by_source") and "Rows from" in table(markdown_style, rows="by_source")
+    # A section of rows per source, under one of the drawn section heads ("### ...", "**...**", "Rows from ...:").
+    assert "# " in table(csv_style, rows="by_source")
+    assert re.search(r"^(### \S.*|\*\*\S.*\*\*|Rows from \S.*:)$", table(markdown_style, rows="by_source"), re.MULTILINE)
     for mark, opening in (("bracket", "[^1]: "), ("number", "1. "), ("paren", "(1) "), ("word", "Note 1: ")):
         assert f"\n{opening}" in table(markdown_style, notes=mark)
-    assert {table(csv_style, caption=i).split("\n")[0][:6] for i in range(len(CAPTIONS))} == {"Table ", "Readin",
-                                                                                               "Export"}
+    # (A caption whose compilation time is written with a comma is a quoted CSV cell.)
+    assert {table(csv_style, caption=i).split("\n")[0].lstrip('"')[:6] for i in range(len(CAPTIONS))} == {
+        "Table ", "Readin", "Export"}
 
 
 def test_a_variant_avoids_every_choice_of_the_original(toys):

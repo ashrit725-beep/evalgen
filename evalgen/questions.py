@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import math
 import random
+from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -397,22 +398,24 @@ def draw_terminal(op: str, records: Sequence[ResolvedRecord], rng: random.Random
 
 
 def guards_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *, domain: Domain = EARTHQUAKES,
-              time_margin: int = TIME_MARGIN_S, strict: bool = False) -> bool:
+              time_margin: int = TIME_MARGIN_S, strict: bool = False, nearest_max_km: float | None = None) -> bool:
     """Reject parameters that sit too close to any record, or answers that are not unique. Thresholds
     keep their field's margin, radii the domain's distance margin and time windows `time_margin`
-    seconds (the instance's window's, Context.time_margin).
+    seconds (the instance's window's, Context.time_margin). The record nearest to a question's place lies
+    at most `nearest_max_km` from it (by default the domain's Spatial.nearest_max_km; reanchor_nearest
+    sets no bound).
 
     `strict` (every run off the legacy path) also rejects a value answer that does not belong to its own
     record, and to that record's exact value, alone (strict_answer_ok): one that a reader who takes the
     runner-up record would give and still be scored right, or one that rests on how a tie is rounded.
     The 0.2.0 guards (the default, which the legacy path keeps) check none of this."""
-    if not _guards_ok(chain, records, domain=domain, time_margin=time_margin):
+    if not _guards_ok(chain, records, domain=domain, time_margin=time_margin, nearest_max_km=nearest_max_km):
         return False
     return not strict or strict_answer_ok(chain, records, domain=domain)
 
 
 def _guards_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *, domain: Domain,
-               time_margin: int) -> bool:
+               time_margin: int, nearest_max_km: float | None = None) -> bool:
     """The 0.2.0 guards, made generic (see guards_ok)."""
     units = domain.units
     for raw in chain:
@@ -444,7 +447,7 @@ def _guards_ok(chain: Sequence[dict], records: Sequence[ResolvedRecord], *, doma
     if term.kind in ("nearest_to", "nearest_distance"):
         spatial = _spatial(domain)
         d = sorted(distance_km(term.raw, r) for r in rows)
-        return (bool(d) and d[0] <= spatial.nearest_max_km
+        return (bool(d) and d[0] <= (spatial.nearest_max_km if nearest_max_km is None else nearest_max_km)
                 and (len(d) < 2 or d[1] - d[0] >= max(spatial.nearest_gap[0], spatial.nearest_gap[1] * d[0])))
     if term.kind in ("max", "min"):
         return bool(rows)
@@ -623,6 +626,105 @@ def compose_questions(records: Sequence[ResolvedRecord], public: Sequence[Templa
                 usage[template.template_id] = usage.get(template.template_id, 0) + 1
                 break
     return questions
+
+
+NEAREST_TERMINALS = ("nearest_to", "nearest_distance")
+
+
+def _nearest_clear(chain: Sequence[dict], rows: Sequence[Any], spatial: Spatial, units: Mapping[str, Any]) -> bool:
+    """Whether, among `rows` (a digest's reports, each read as a record of its own), the one nearest to a
+    nearest question's place stands clear of the next by the domain's nearest gap, as the key's guards ask of
+    its records: no tie, at the same place or a hair apart, that a careless reader could break either way."""
+    term = Step(terminal_step(chain), units)
+    d = sorted(distance_km(term.raw, r) for r in rows_after_filters(chain, rows, units=units))
+    return len(d) < 2 or d[1] - d[0] >= max(spatial.nearest_gap[0], spatial.nearest_gap[1] * d[0])
+
+
+def reanchor_nearest(questions: Sequence[Question], records: Sequence[ResolvedRecord], reports: Sequence[Any],
+                     kinds: Sequence[Any], rng: random.Random, ctx: Context, used_chains: set[str], *,
+                     domain: Domain, tries: int = 6) -> list[Question]:
+    """Off the legacy path, once a digest's traps are planted: each question that asks which record lies
+    nearest to a place, or how far it lies (nearest_to, nearest_distance), asked about a place drawn near a
+    report of the digest (`reports`, in the generic form), a record's own or a planted one, which then lies
+    nearest to it, instead of near one of its records. `kinds` gives each report's kind: None for a record's
+    own, else the role of what was planted there (a re-report, a phantom, a conflict's line).
+
+    A report the question asks about (one its filters keep) can decide it when one of `tries` places drawn
+    near it, as far from it as _draw_point draws a place from a record, has it for the nearest of the reports
+    the question asks about, clear of the next (_nearest_clear), keeps every guard of the key (guards_ok,
+    strict), with no bound on how far the key's nearest record lies, and is new to the run (`used_chains`).
+    One of the reports that can is drawn to decide it, with the weight of its kind: how many reports of that
+    kind the digest's questions about a place ask about, over how many of them can decide one. So each kind
+    decides these questions about as often as its share of the reports they ask about, though a place near a
+    planted report has a record further away for its key's nearest, which must stand clear of the next, and
+    passes less often than a place near a real one, whose key's nearest is that record. The place gets a
+    label of its own, drawn as _draw_point draws one for the report it lies near (Spatial.point_label). A
+    question that no report can decide keeps its place. Returns the questions whose place moved, whose
+    answers must be computed again.
+
+    A place drawn near a record made the record nearest to it a real one almost always: a planted report could
+    take its place only by lying nearer still, so it rarely did, and by little when it did. Of the reports
+    that decide a question, those that decide one about a place (and lead the next by tens or hundreds of km)
+    were then real ones a third of the time and planted ones almost never (with an AUC of 0.27 for how far a
+    report that decides a question leads the next one, in weather). Two later forms left tells of their own: a
+    place drawn near any report that kept its label was decided by a report lying in the band of a drawn place,
+    and named by the label, less often when it was planted (AUCs of 0.28 to 0.38 in weather); and the bound on
+    the key's nearest record (Spatial.nearest_max_km) bounded how far a planted report that decides such a
+    question leads the next, where a real one, its own key's nearest, leads by any distance (an AUC of 0.38
+    within weather's questions about a place)."""
+    spatial = domain.spatial
+    if spatial is None or not reports:
+        return []
+    units = domain.units
+    taken = {str(step["label"]) for q in questions for step in q.chain if "label" in step}
+
+    def placed(chain: Sequence[dict], index: int, point: Mapping[str, Any]) -> list[dict]:
+        return [dict(step, **point) if k == index else dict(step) for k, step in enumerate(chain)]
+
+    asked = []  # each question about a place: its terminal, the reports it asks about, a place for each that can
+    for q in questions:
+        index = next(i for i, step in enumerate(q.chain) if role(step["op"]) == "terminal")
+        if Step(q.chain[index], units).kind not in NEAREST_TERMINALS:
+            continue
+        inside = {id(r) for r in rows_after_filters(q.chain, reports, units=units)}
+        scope = [k for k, r in enumerate(reports) if id(r) in inside]
+        places: dict[int, dict] = {}
+        for k in scope:
+            for _ in range(tries):
+                lat, lon = destination(reports[k].lat, reports[k].lon, rng.uniform(*spatial.point_offset_km),
+                                       rng.uniform(0.0, 360.0))
+                point = {"lat": round(lat, 3), "lon": round(lon, 3)}  # as _draw_point places it
+                chain = placed(q.chain, index, point)
+                if (min(scope, key=lambda j: distance_km(point, reports[j])) == k
+                        and _nearest_clear(chain, reports, spatial, units)
+                        and fingerprint(chain) not in used_chains
+                        and guards_ok(chain, records, domain=domain, time_margin=ctx.time_margin, strict=True,
+                                      nearest_max_km=math.inf)):
+                    places[k] = point
+                    break
+        asked.append((q, index, scope, places))
+    asked_about = Counter(kinds[k] for _, _, scope, _ in asked for k in scope)
+    able = Counter(kinds[k] for _, _, _, places in asked for k in places)
+    moved = []
+    for q, index, _, places in asked:
+        if not places:
+            continue
+        deciders = sorted(places)
+        k = rng.choices(deciders, weights=[asked_about[kinds[j]] / able[kinds[j]] for j in deciders], k=1)[0]
+        source = reports[k].source.upper()
+        label = spatial.point_label.format(source=source, number=rng.randrange(10, 100))
+        while label in taken:
+            label = spatial.point_label.format(source=source, number=rng.randrange(10, 1000))
+        chain = placed(q.chain, index, dict(places[k], label=label))
+        if fingerprint(chain) in used_chains:
+            continue
+        taken.discard(str(q.chain[index].get("label")))
+        taken.add(label)
+        used_chains.discard(fingerprint(q.chain))
+        used_chains.add(fingerprint(chain))
+        q.chain = chain
+        moved.append(q)
+    return moved
 
 
 # -------------------------------------------------------------------------------- phrasing

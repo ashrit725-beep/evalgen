@@ -427,7 +427,9 @@ def test_the_naive_reader_falls_for_the_traps_and_only_for_them_in_news(news_run
         naive = models["naive"]["traps"]
         assert naive["caught"]["k"] + naive["fell_for_trap"]["k"] == naive["caught"]["n"] > 0
         conflict = "conflicting_magnitude" if name == "earthquakes" else "conflicting_value"
-        assert list(naive["by_kind"]) == ["duplicate", "retraction", conflict]
+        planted = {t.kind for inst in load_instances(run) for t in inst.traps}  # (none to three retractions a digest)
+        assert list(naive["by_kind"]) == [k for k in ("duplicate", "retraction", conflict) if k in planted]
+        assert {"duplicate", conflict} <= planted
         assert models["naive"]["accuracy"]["rate"] < 1.0 == models["oracle"]["accuracy"]["rate"]
         assert models["mock"]["format"]["replies"] == 12 and models["mock"]["accuracy"]["n"] > 0
         instances = load_instances(run)

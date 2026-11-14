@@ -32,7 +32,7 @@ from evalgen.prompt import domain_answer_spec, domain_placeholder, domain_unit_w
 from evalgen.questions import Context, compose_new_templates
 from evalgen.report import load_instances
 from evalgen.rules import Mishandle
-from evalgen.scoring import AnswerType, is_correct, register_answer_type, same_answer
+from evalgen.scoring import AnswerType, is_correct, normalize, register_answer_type, same_answer
 from evalgen.seeds import SeedLog
 from evalgen.solver import extract_digest, solve
 from evalgen.sources import build_domain_snapshot, record_problems
@@ -162,7 +162,7 @@ def test_the_glossary_quotes_any_word_and_refuses_what_it_cannot_print():
 @pytest.mark.parametrize("name", ["earthquakes", "weather", "neo", "invented"])
 def test_the_glossary_states_an_id_pattern_that_every_printed_id_matches(name):
     """A domain's ID pattern describes its IDs lower-cased, and digests print IDs as their sources file
-    them: a station's in capitals ("KJFK-48213"), an invented surface's in the letter case it drew
+    them: a weather observation's in capitals ("WX-482137"), an invented surface's in the letter case it drew
     ("KX/40512"). So the glossary says that the pattern ignores letter case, which makes it true of every
     ID a digest prints, planted ones included; and parse_glossary reads that line back exactly."""
     domain = get_domain(name)
@@ -197,16 +197,19 @@ def test_record_traps_are_planted_and_read_as_earthquake_traps_are(toys, name):
         assert all(isinstance(r, RecordReport) for r in inst.reports)
         kinds.update(t.kind for t in inst.traps)
         forms.update((t.kind, t.form) for t in inst.traps)
-        assert {t.kind for t in inst.traps} == {"duplicate", "retraction", "conflicting_value"}
+        # (a digest off the legacy path holds the traps its plan draws, of each kind none or more: traps.draw_plan)
+        assert {t.kind for t in inst.traps} <= {"duplicate", "retraction", "conflicting_value"}
         data = DigestData(inst.reports, inst.notices)
         vocab = bound.trap_vocab
         for trap in inst.traps:
             planted = [r for r in inst.reports if r.trap_id == trap.trap_id]
             readings = [Mishandle.from_dict(m) for m in trap.mishandles]
-            if trap.kind == "duplicate":
+            if trap.kind == "duplicate":  # a record the digest does not keep, filed as a re-report
                 (dup,) = planted
-                assert dup.status == "preliminary" and dup.source in vocab.rereporting_sources
+                assert dup.status == "preliminary" and dup.source in {r.source for r in by_id.values()}
                 assert (dup.same_as is None) == (trap.form == "same_id")
+                if dup.same_as is not None:  # under an ID of its own, a real record's
+                    assert dup.ref in by_id and dup.ref not in inst.event_ids
                 assert readings == [Mishandle(split=((dup.ref, dup.source, "preliminary"),))]
             elif trap.kind == "retraction":
                 (notice,) = [n for n in inst.notices if n.trap_id == trap.trap_id]
@@ -234,13 +237,14 @@ def test_record_traps_are_planted_and_read_as_earthquake_traps_are(toys, name):
                 misread = [execute(q.chain, data, mishandle=Mishandle.from_dict(m), units=bound.units,
                                    resolver=bound.resolve) for m in trap.mishandles]
                 assert fallen in misread and not same_answer(q.answer_type, fallen, inst.answer_key[qid], unit=q.unit)
-            for qid, answers in trap.fallen.items():
-                q = inst.question(qid)
-                assert answers and not any(same_answer(q.answer_type, a, inst.answer_key[qid], unit=q.unit)
-                                           for a in answers)
+            for qid, answers in trap.fallen.items():  # never exactly the key (traps.score_traps: a joint misreading
+                q = inst.question(qid)               # the scorer would still accept is kept, as test_matrix reads it)
+                key = normalize(q.answer_type, inst.answer_key[qid])
+                assert answers and all(normalize(q.answer_type, a) != key for a in answers)
         for q in inst.questions:  # the key, and the reading rules of the domain applied to the digest
             assert execute(q.chain, data, units=bound.units, resolver=bound.resolve) == inst.answer_key[q.qid]
-    assert forms[("duplicate", "same_id")] and forms[("duplicate", "cross_ref")] and kinds["retraction"] == 5
+    assert forms[("duplicate", "same_id")] and forms[("duplicate", "cross_ref")] and kinds["retraction"]
+    assert forms[("conflicting_value", "correction")] and forms[("conflicting_value", "second_report")]
     assert builders_for(domain).primary is not builders_for(EARTHQUAKES).primary == primary_report
 
 
@@ -340,7 +344,11 @@ def test_classic_reads_back_every_report_and_notice_exactly_in_every_style(toys,
     assert set(seen_formats) == set(TIME_FORMATS)
 
 
-def test_place_notes_and_missing_qualifiers_read_back_and_named_sites_stay_put(toys):
+@pytest.mark.parametrize("ids_name_place", [False, True])
+def test_place_notes_and_missing_qualifiers_read_back_and_named_sites_stay_put(toys, ids_name_place):
+    """A re-report stands where a record that the digest does not keep stands (its slot); one filed under
+    its record's own ID stands at its record's named site only where the domain's IDs name it
+    (Domain.ids_name_place), so that it is not pinned there otherwise (traps._slot_pair)."""
     class Placed(toys.module.Toy):
         """Toy readings, two in three at a named buoy (a place note with a comma and parentheses), and
         one in five without the probe that took its temperature."""
@@ -350,8 +358,10 @@ def test_place_notes_and_missing_qualifiers_read_back_and_named_sites_stay_put(t
             return [replace(r, place=f"{r.group} buoy {i % 7}, (moored)" if i % 3 else None,
                             qualifiers={} if i % 5 == 0 else r.qualifiers) for i, r in enumerate(records)]
 
-    domain = domains.REGISTRY.register(Placed("toy-placed", located=True))
-    sites = 0
+    domain = Placed("toy-placed", located=True)
+    domain.ids_name_place = ids_name_place
+    domain = domains.REGISTRY.register(domain)
+    sites, moved = 0, 0
     for inst in instances_of(domain, seed=6, n=4):
         glossary = domain.glossary()
         reports, notices = printed(inst.reports, inst.notices)
@@ -364,13 +374,17 @@ def test_place_notes_and_missing_qualifiers_read_back_and_named_sites_stay_put(t
         for rendering in inst.renderings:
             assert solve(rendering.prompt, question_specs(inst), domain=domain.name) == inst.answer_key
         settled = {r.ref: r for r in inst.reports if r.role == "primary"}
-        for r in inst.reports:  # a re-report of a record at a named site gives the site's own position
-            if r.role == "duplicate" and settled.get(r.same_as or r.ref, r).place is not None:
-                anchor = settled.get(r.same_as or r.ref)
-                if anchor is not None:
-                    assert (r.lat, r.lon, r.place) == (anchor.lat, anchor.lon, anchor.place)
-                    sites += 1
-    assert sites > 0
+        snapshot = {(r.time, r.source, r.lat, r.lon, r.place) for r in build_domain_snapshot(
+            domain, "synthetic", SeedLog(6))[0].events}
+        for r in inst.reports:  # a re-report under its record's ID stands where a real record stands (a record
+            # the digest does not keep): at its record's named site, where the IDs name it
+            anchor = settled.get(r.same_as or r.ref)
+            if r.role == "duplicate" and anchor is not None and anchor.place is not None and r.same_as is None:
+                assert (r.time, r.source, r.lat, r.lon, r.place) in snapshot
+                assert r.place == anchor.place or not ids_name_place
+                sites += 1
+                moved += r.place != anchor.place
+    assert sites > 0 and (moved == 0) == ids_name_place
 
 
 def _time_slots(line: str, fmt: str) -> list[str]:
@@ -536,7 +550,10 @@ def test_the_naive_reader_falls_for_the_traps_and_only_for_them(toy_runs):
         assert models["oracle"]["traps"]["caught"]["rate"] == 1.0
         naive = models["naive"]["traps"]
         assert naive["caught"]["k"] + naive["fell_for_trap"]["k"] == naive["caught"]["n"] > 0
-        assert list(naive["by_kind"]) == ["duplicate", "retraction", "conflicting_value"]
+        # (every kind a run's digests hold, in this order: a run of a few digests may hold no retraction)
+        assert {"duplicate", "conflicting_value"} <= set(naive["by_kind"])
+        assert list(naive["by_kind"]) == [k for k in ("duplicate", "retraction", "conflicting_value")
+                                          if k in naive["by_kind"]]
         assert models["naive"]["accuracy"]["rate"] < 1.0 == models["oracle"]["accuracy"]["rate"]
         instances = load_instances(run)
         trapped = {(inst.instance_id, qid) for inst in instances for t in inst.traps for qid in t.fallen}
@@ -568,7 +585,9 @@ def test_record_runs_report_their_domain_and_traps(toy_runs):
     for name, run in toy_runs.items():
         data = read_json(run / "report.json")
         assert [m["model"] for m in data["models"]] == ["oracle", "naive", "mock"]
-        assert list(data["run"]["traps"]["by_kind"]) == ["duplicate", "retraction", "conflicting_value"]
+        kinds = list(data["run"]["traps"]["by_kind"])  # (a run of a few digests may hold no retraction)
+        assert {"duplicate", "conflicting_value"} <= set(kinds)
+        assert kinds == [k for k in ("duplicate", "retraction", "conflicting_value") if k in kinds]
         plural = get_domain(name).bind(load_instances(run)[0].surface).plural
         markdown = (run / "report.md").read_text(encoding="utf-8")
         assert "conflicting value" in markdown and ("readings" in markdown or plural in markdown)

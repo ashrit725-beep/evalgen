@@ -21,6 +21,7 @@ from evalgen.genres.classic import CLASSIC, GENRE
 from evalgen.pipeline import build_instance, question_specs
 from evalgen.questions import Context, compose_new_templates
 from evalgen.report import load_instances
+from evalgen.scoring import same_answer
 from evalgen.seeds import SeedLog
 from evalgen.solver import forecast_estimate, parse_digest, read_digest, solve
 from evalgen.sources import build_snapshot
@@ -243,15 +244,22 @@ def test_the_oracle_reads_every_genre_of_a_plan(quoted_run):
         specs = question_specs(inst)
         for rendering in inst.renderings:
             for genre in (rendering.genre, None):  # named, or recognised by sniffing
-                assert solve(rendering.prompt, specs, domain=inst.domain, genre=genre) == inst.answer_key
+                # Within the scoring tolerance: earthquakes in the classic genre print the 0.2.0 digest, whose
+                # depths are rounded to a tenth of a km or of a mile, so a depth answer can be off by a rounding.
+                got = solve(rendering.prompt, specs, domain=inst.domain, genre=genre)
+                assert all(same_answer(q.answer_type, got[q.qid], inst.answer_key[q.qid], unit=q.unit)
+                           for q in inst.questions)
     oracle = read_json(quoted_run / "scores" / "oracle.json")["rows"]
     assert oracle and all(row["correct"] for row in oracle)
     assert {(row["domain"], row["genre"]) for row in oracle} == {("earthquakes", "classic"), ("earthquakes", "quoted")}
     naive = read_json(quoted_run / "scores" / "naive.json")["rows"]
     answers: dict = {}
-    for row in naive:  # the naive reader depends only on the content, so every genre gives the same answers
-        answers.setdefault((row["instance_id"], row["qid"]), set()).add(repr(row["given"]))
-    assert all(len(given) == 1 for given in answers.values())
+    for row in naive:  # the naive reader depends only on the content, so every genre gives the same answers ...
+        answers.setdefault((row["instance_id"], row["qid"]), []).append(row["given"])
+    questions = {(inst.instance_id, q.qid): q for inst in load_instances(quoted_run) for q in inst.questions}
+    for at, given in answers.items():  # ... within the scoring tolerance: the 0.2.0 digest rounds depths
+        q = questions[at]
+        assert all(same_answer(q.answer_type, g, given[0], unit=q.unit) for g in given), (at, given)
     models = {m["model"]: m for m in read_json(quoted_run / "report.json")["models"]}
     assert models["oracle"]["accuracy_all_renderings"]["rate"] == 1.0 and models["mock"]["accuracy"]["n"] > 0
 

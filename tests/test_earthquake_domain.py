@@ -8,6 +8,7 @@ import itertools
 import json
 import random
 import re
+from collections import Counter
 from dataclasses import asdict, fields, replace
 from types import SimpleNamespace
 
@@ -20,10 +21,10 @@ from evalgen.domains import DEFAULT_DOMAIN, get_domain
 from evalgen.domains.base import (REPEAT_RULE, Domain, FieldSpec, Glossary, Lexicon, Record, RecordReport, TrapVocab,
                                   numbered_rules, record_rules)
 from evalgen.domains.base import DISTANCE_WORDINGS, standard_lexicon
-from evalgen.domains.earthquakes import (DOMAIN, EARTHQUAKES, GENRE_LEXICON, LEXICON, OCCURRED_FILTERS,
-                                         OCCURRED_QUESTIONS, genre_lexicon)
+from evalgen.domains.earthquakes import (AFTERSHOCK_SHARE, DOMAIN, EARTHQUAKES, GENRE_LEXICON, LEXICON,
+                                         OCCURRED_FILTERS, OCCURRED_QUESTIONS, RELAY_FILINGS, genre_lexicon)
 from evalgen.domains.weather import WEATHER
-from evalgen.geo import KM_PER_MILE, from_km
+from evalgen.geo import KM_PER_MILE, from_km, haversine_km
 from evalgen.models import EVENT_ID_PATTERN, Notice, Question, Trap
 from evalgen.ops import FILTER_OPS, DigestData, execute, rows_after_filters
 from evalgen.pipeline import sample_events
@@ -35,7 +36,7 @@ from evalgen.rules import READING_RULES, Mishandle, naive_events, report_to_even
 from evalgen.scoring import is_correct, register_answer_type
 from evalgen.seeds import SeedLog
 from evalgen.solver import solve
-from evalgen.sources import build_snapshot, generate_synthetic, mimic_event_id, new_event_id
+from evalgen.sources import build_snapshot, generate_synthetic, mimic_event_id, new_event_id, record_problems
 from evalgen.traps import builders_for, inject_traps, primary_report, threshold_values
 from evalgen.units import LENGTH, MI, Unit
 
@@ -366,7 +367,14 @@ def test_the_earthquake_domain_delegates_to_the_020_functions(instances):
     compiled_at = 1_780_000_000
     for seed in range(4):
         a, b = random.Random(seed), random.Random(seed)
-        assert EARTHQUAKES.synthetic(a, 60, compiled_at, 24) == generate_synthetic(b, 60, compiled_at, 24)
+        # A legacy run draws its snapshot from the 0.2.0 world itself (build_snapshot); off the legacy path the
+        # domain draws that world first, then re-files some of its events and adds aftershocks (synthetic_world).
+        n_after = round(60 * AFTERSHOCK_SHARE)
+        world = EARTHQUAKES.synthetic(a, 60, compiled_at, 24)
+        first = generate_synthetic(b, 60 - n_after, compiled_at, 24)
+        assert {(e.time, e.lat, e.lon, e.depth_km, e.mag, e.region) for e in first} <= {
+            (e.time, e.lat, e.lon, e.depth_km, e.mag, e.region) for e in world}
+        a, b = random.Random(seed), random.Random(seed)
         taken_a, taken_b = set(), set()
         assert ([EARTHQUAKES.new_id(n, a, taken_a) for n in ("us", "nc", "ak")]
                 == [new_event_id(n, b, taken_b) for n in ("us", "nc", "ak")])
@@ -376,6 +384,31 @@ def test_the_earthquake_domain_delegates_to_the_020_functions(instances):
     assert builders_for(EARTHQUAKES).primary(event) == primary_report(event)
     for inst in instances:
         assert EARTHQUAKES.resolve(inst.reports, inst.notices) == resolve(inst.reports, inst.notices)
+
+
+def test_off_the_legacy_path_the_world_has_aftershocks_and_relays_that_file_events():
+    """The synthetic world off the legacy path: the 0.2.0 events, some of them filed by the networks that
+    re-report others' events (RELAY_FILINGS), and aftershocks seconds to hours after a larger event of their
+    network, a few km away, so that two real events are sometimes as close as a re-report to its event. No
+    two events are one quake's solutions (within 3 s and 15 km of each other), as no two of a real feed's."""
+    compiled_at = 1_780_000_000
+    world = EARTHQUAKES.synthetic(random.Random(11), 2000, compiled_at, 24)
+    assert world == EARTHQUAKES.synthetic(random.Random(11), 2000, compiled_at, 24) and len(world) == 2000
+    assert record_problems(EARTHQUAKES, world) == [] and len({e.id for e in world}) == len(world)
+    assert all(re.fullmatch(EVENT_ID_PATTERN, e.id) and e.id.startswith(e.network) for e in world)
+    networks = Counter(e.network for e in world)
+    for network, regions, _, _ in RELAY_FILINGS:  # every network that re-reports files events of its own
+        assert networks[network] > 0 and all(e.region in regions or network == "us" for e in world
+                                             if e.network == network and e.region not in regions)
+    close = 0
+    for i, e in enumerate(world):
+        for o in world[i + 1:i + 60]:
+            if o.time - e.time > 900:
+                break
+            km = haversine_km(e.lat, e.lon, o.lat, o.lon)
+            assert not (o.time - e.time <= 3 and km <= 15.0)  # never one quake's two solutions
+            close += o.region == e.region and o.time - e.time <= 40 and km <= 8.5
+    assert 0.03 * len(world) < close < 0.2 * len(world)  # aftershocks: real events as close as a re-report
 
 
 def test_the_trap_vocabulary_is_what_the_020_digests_print(instances):

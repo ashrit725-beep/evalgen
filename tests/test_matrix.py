@@ -237,8 +237,10 @@ def test_every_trap_is_planted_and_misread_as_recorded_in_every_rendering(cells,
     cell = cells(name)
     domain = get_domain(cell.domain)
     conflict = "conflicting_magnitude" if cell.domain == "earthquakes" else "conflicting_value"
+    # (a digest holds the traps its plan draws, of each kind none or more: traps.draw_plan)
+    assert {"duplicate", conflict} <= {t.kind for inst in cell.instances for t in inst.traps}
     for inst in cell.instances:
-        assert {t.kind for t in inst.traps} == {"duplicate", "retraction", conflict}
+        assert {t.kind for t in inst.traps} <= {"duplicate", "retraction", conflict}
         bound = domain.bind(inst.surface)
         margin = Context(inst.compiled_at, inst.window_hours).time_margin
         for trap in inst.traps:

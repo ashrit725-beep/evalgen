@@ -36,8 +36,7 @@ from evalgen.domains import get_domain
 from evalgen.domains import weather as wx
 from evalgen.domains.base import Record
 from evalgen.domains.weather import (FAHRENHEIT, HPA, ID_PATTERN, INHG, KELVIN, KMH, KNOT, MPH, MPS, PRESSURE,
-                                     REGIONS, STATIONS, TEMPERATURE, WEATHER, WIND, NwsObservations, Weather,
-                                     id_prefix)
+                                     REGIONS, STATIONS, TEMPERATURE, WEATHER, WIND, NwsObservations, Weather)
 from evalgen.genres import detect_genre
 from evalgen.genres.base import RenderContext, parse_glossary
 from evalgen.genres.classic import (CLASSIC, RECORD_COORD_PRESETS, RECORD_HEADERS, RECORD_LAYOUTS,
@@ -147,9 +146,9 @@ def test_weather_is_a_built_in_domain_with_its_own_answer_types():
     assert is_correct("weather_wind_speed", 60.0, 61.2, unit="km/h")  # 2 % of 60 km/h
     assert is_correct("weather_pressure", 29.92, 29.93, unit="inHg") and not is_correct("weather_pressure", 29.92,
                                                                                         29.94, unit="inHg")
-    assert normalize("weather_observation_id", "Observation KJFK-48213.") == "kjfk-48213"
-    assert normalize("weather_observation_id", "NOAAPORT-30571") == "noaaport-30571"
-    assert normalize("weather_observation_id", "KJFK-48213 or KLAX-11111") is None
+    assert normalize("weather_observation_id", "Observation WX-482137.") == "wx-482137"
+    assert normalize("weather_observation_id", "wx-305710") == "wx-305710"
+    assert normalize("weather_observation_id", "WX-482137 or WX-111111") is None
     assert normalize("weather_region", "the Mountain West region") == "mountain west"
     assert normalize("weather_region", "equal") == "tie"
 
@@ -188,22 +187,25 @@ def test_margins_and_steps_cover_a_threshold_restated_in_any_unit():
     assert TEMPERATURE.correctable and TEMPERATURE.signed and not (WIND.correctable or PRESSURE.correctable)
 
 
-def test_ids_name_the_feed_that_filed_them():
+def test_ids_are_opaque_serials_that_name_no_station_feed_or_time(monkeypatch):
+    """An observation ID names nothing about its observation: a re-report filed under it gives a station and a
+    time of its own (traps.py), which an ID that named them would contradict, or pin to its observation's."""
     rng, taken = random.Random(3), set()
     refs = [WEATHER.new_id(source, rng, taken) for source in ("KJFK", "MADIS", "NOAAPORT", "AWOSNET", "KJFK")]
-    assert [ref.rsplit("-", 1)[0] for ref in refs] == ["KJFK", "MADIS", "NOAAPORT", "AWOSNET", "KJFK"]
-    assert all(re.fullmatch(ID_PATTERN, ref.lower()) for ref in refs) and set(refs) == taken and len(taken) == 5
-    crowded = {f"KSEA-{n}" for n in range(10000, 99990)}  # a new ID never takes one in use
-    assert WEATHER.new_id("KSEA", random.Random(0), crowded) in {f"KSEA-{n}" for n in range(99990, 100000)}
-    mimic = WEATHER.mimic_id("KORD-25103", random.Random(1), taken)
-    assert mimic.startswith("KORD-") and mimic != "KORD-25103" and mimic in taken
-    with pytest.raises(ValueError, match="not a weather observation ID"):
-        WEATHER.mimic_id("nc75462032", random.Random(1), set())
-    for bad in ("US", "4KJF", "TOOLONGNAME"):
-        with pytest.raises(ValueError, match="gives no ID prefix"):
-            id_prefix(bad)
-    sources = [s.id for s in STATIONS] + list(WEATHER.trap_vocab.rereporting_sources)
-    assert all(id_prefix(source) == source for source in sources) and len(set(sources)) == len(sources)
+    assert all(re.fullmatch(ID_PATTERN, ref.lower()) and ref.startswith("WX-") for ref in refs)
+    assert set(refs) == taken and len(taken) == 5
+    assert len({WEATHER.new_id(source, random.Random(9), set()) for source in ("KJFK", "MADIS")}) == 1  # any feed alike
+    monkeypatch.setattr(wx, "SERIALS", (100000, 100020))  # a new ID never takes one in use
+    crowded = {f"WX-{n}" for n in range(100000, 100019)}
+    assert WEATHER.new_id("KSEA", random.Random(0), crowded) == "WX-100019"
+    monkeypatch.undo()
+    mimic = WEATHER.mimic_id("WX-251030", random.Random(1), taken)
+    assert re.fullmatch(ID_PATTERN, mimic.lower()) and mimic != "WX-251030" and mimic in taken
+    for bad in ("nc75462032", "KORD-25103"):
+        with pytest.raises(ValueError, match="not a weather observation ID"):
+            WEATHER.mimic_id(bad, random.Random(1), set())
+    records = WEATHER.synthetic(random.Random(4), 600, COMPILED_AT, 24)
+    assert all(re.fullmatch(ID_PATTERN, r.id.lower()) for r in records) and len({r.id for r in records}) == 600
 
 
 # ------------------------------------------------------------------------- the synthetic weather
@@ -222,11 +224,31 @@ def test_the_synthetic_generator_is_seeded_and_never_reads_the_clock():
     assert (snapshot.source, snapshot.domain, snapshot.window_hours, len(snapshot.events)) == ("synthetic", "weather",
                                                                                               24, 360)
     stations = {s.id: s for s in STATIONS}
-    for r in snapshot.events:  # every observation is where its station is, in its region, filed by it
-        station = stations[r.source]
+    by_name = {s.name: s for s in STATIONS}
+    relays = WEATHER.trap_vocab.rereporting_sources
+    for r in snapshot.events:  # every observation is where its station is, in its region, filed by it or a relay
+        station = by_name[r.place]
         assert (r.lat, r.lon, r.group, r.place) == (station.lat, station.lon, station.region, station.name)
-        assert r.id.startswith(f"{station.id}-") and r.qualifiers == {}
-    assert {r.source for r in snapshot.events} == set(stations) and {r.group for r in snapshot.events} == set(REGIONS)
+        assert r.source in (station.id, *relays) and r.qualifiers == {} and re.fullmatch(ID_PATTERN, r.id.lower())
+    assert {r.source for r in snapshot.events} == set(stations) | set(relays)
+    assert {r.group for r in snapshot.events} == set(REGIONS)
+    relayed = sum(r.source in relays for r in snapshot.events) / len(snapshot.events)
+    assert abs(relayed - wx.RELAY_SHARE) < 0.06  # the relays file observations of their own
+    # Observations are timed as NWS stations take them: a station's routine observation at its own minute of
+    # the hour, or a five-minute observation, which gives whole degrees; winds are in whole knots and
+    # pressures in hundredths of an inch of mercury, as the station reports them.
+    routine: dict[str, set] = {}
+    for r in records:
+        station = r.place
+        if r.time % 300 == 0:
+            assert r.values["temp"] == round(r.values["temp"])
+        else:
+            routine.setdefault(station, set()).add(r.time % 3600 // 60)
+            assert r.time % 60 == 0
+        assert r.values["wind"] == wx.whole_knots(r.values["wind"]) and r.values["pressure"] == wx.altimeter(
+            r.values["pressure"])
+    assert all(len(minutes) == 1 and minutes <= set(wx.ROUTINE_MINUTES) for minutes in routine.values())
+    assert 0.2 < sum(r.time % 300 == 0 for r in records) / len(records) < 0.45
 
 
 def climate(day: int, seed: int, n: int = 3000) -> list[Record]:
@@ -252,7 +274,9 @@ def test_synthetic_observations_follow_season_hour_and_climate():
         afternoon = [r.values["temp"] for r in records if 13 <= wx._solar_hour(r.time, r.lon) < 17]
         night = [r.values["temp"] for r in records if 3 <= wx._solar_hour(r.time, r.lon) < 7]
         assert mean(afternoon) > mean(night) + 4  # the diurnal cycle
-        assert 0.2 < sum(t == round(t) for t in temps) / len(temps) < 0.45  # five-minute data in whole degrees
+        routine = [r.values["temp"] for r in records if r.time % 300 != 0]  # routine observations give tenths
+        assert sum(t == round(t) for t in routine) / len(routine) < 0.2  # (a tenth of them whole, by chance)
+        assert all(r.values["temp"] == round(r.values["temp"]) for r in records if r.time % 300 == 0)
         winds = sorted(r.values["wind"] for r in records)
         assert winds[0] >= 0.0 and 8.0 < winds[len(winds) // 2] < 25.0 and winds[-1] <= 100.0
         pressures = sorted(r.values["pressure"] for r in records)
@@ -273,7 +297,7 @@ def test_the_live_source_reads_the_recorded_observations():
         assert (r.time, (r.lat, r.lon), r.values) == (ts(when), position, {"temp": temp, "wind": wind,
                                                                            "pressure": pressure})
         assert (r.group, r.place, r.qualifiers) == (stations[r.source].region, stations[r.source].name, {})
-        assert re.fullmatch(rf"{r.source}-\d{{5}}", r.id)
+        assert re.fullmatch(ID_PATTERN, r.id.lower())
     assert record_problems(WEATHER, records) == []
     assert WEATHER.live.parse(FIXTURE.read_bytes())[0] == records  # the IDs depend on the bytes alone
     head = {"format": wx.BUNDLE_FORMAT, "fetched_at": "2026-11-08T02:40:00Z"}
@@ -579,8 +603,12 @@ def test_every_rendering_reads_back_to_exactly_its_reports_and_notices(run_insta
             assert not re.search(r"\d\.\d|-\d{5}|°", line), line
 
 
-def check_guards(q, records, ctx: Context) -> None:
-    """Every parameter of a question keeps its guard from every record of its instance."""
+def check_guards(q, records, ctx: Context, reports=()) -> None:
+    """Every parameter of a question keeps its guard from every record of its instance. A question about the
+    record nearest to a place has a clear answer, and its nearest record, or else the report nearest to the
+    place (`reports`, the digest's, a record's or a planted one), lies within the domain's bound: a place
+    moved near a report that then decides it (questions.reanchor_nearest) sets no bound on how far its key's
+    nearest record lies."""
     units = WEATHER.units
     for raw in q.chain:
         step = Step(raw, units)
@@ -608,7 +636,9 @@ def check_guards(q, records, ctx: Context) -> None:
         assert all(a - b >= WEATHER.field(term.field).rank_gap - 1e-9 for a, b in zip(values, values[1:]))
     if term.kind in ("nearest_to", "nearest_distance"):
         d = sorted(distance_km(term.raw, r) for r in rows)
-        assert d[0] <= WEATHER.spatial.nearest_max_km and (len(d) < 2 or d[1] - d[0] >= max(
+        near = min((distance_km(term.raw, r) for r in rows_after_filters(q.chain, reports, units=units)),
+                   default=d[0])
+        assert min(near, d[0]) <= WEATHER.spatial.nearest_max_km and (len(d) < 2 or d[1] - d[0] >= max(
             WEATHER.spatial.nearest_gap[0], WEATHER.spatial.nearest_gap[1] * d[0]))
 
 
@@ -619,7 +649,7 @@ def test_questions_keep_their_guards_and_never_repeat(run_instances, run_records
         ctx = Context(inst.compiled_at, inst.window_hours)
         assert 3 <= len(inst.questions) <= 5
         for q in inst.questions:
-            check_guards(q, records, ctx)
+            check_guards(q, records, ctx, inst.reports)
             assert execute(q.chain, records, units=WEATHER.units) == inst.answer_key[q.qid] is not None
             assert q.evidence == [r.id for r in rows_after_filters(q.chain, records, units=WEATHER.units)]
             fingerprints.append(fingerprint(q.chain))
@@ -632,28 +662,37 @@ def test_questions_keep_their_guards_and_never_repeat(run_instances, run_records
 
 
 def test_traps_are_planted_in_weather_words_and_read_as_designed(run_instances, run_records):
-    vocab, kinds = WEATHER.trap_vocab, Counter()
+    """A re-report filed under its observation's ID stands where its slot stands, at a station of the
+    observation's region, which an opaque ID never contradicts: it is not pinned to the observation's own
+    station, where it could never be the only report, as a real observation often is (traps._slot_pair)."""
+    vocab, kinds, same_station = WEATHER.trap_vocab, Counter(), Counter()
     for inst in run_instances:
         records = [run_records[record_id] for record_id in inst.event_ids]
         by_id = {r.id: r for r in records}
         assert check_resolution(inst.reports, inst.notices, records, domain=WEATHER) == []
-        assert {t.kind for t in inst.traps} == {"duplicate", "retraction", "conflicting_value"}
+        # (a digest off the legacy path holds the traps its plan draws, of each kind none or more: traps.draw_plan)
+        assert {t.kind for t in inst.traps} <= {"duplicate", "retraction", "conflicting_value"}
         data = DigestData(inst.reports, inst.notices)
         for trap in inst.traps:
             kinds[(trap.kind, trap.form)] += 1
             planted = [r for r in inst.reports if r.trap_id == trap.trap_id]
-            if trap.kind == "duplicate":  # a relay feed repeats an observation, at its station
+            if trap.kind == "duplicate":  # a feed repeats an observation: in the place of one the digest does not keep
                 (dup,) = planted
                 anchor = by_id[trap.target]
-                assert dup.source in vocab.rereporting_sources and dup.status == "preliminary"
-                assert (dup.lat, dup.lon, dup.place, dup.group) == (anchor.lat, anchor.lon, anchor.place, anchor.group)
-                assert dup.ref == anchor.id if trap.form == "same_id" else dup.ref.startswith(f"{dup.source}-")
-            elif trap.kind == "retraction":  # a phantom of one of the digest's stations, withdrawn
+                station = next(s for s in STATIONS if s.name == dup.place)
+                assert dup.source in (station.id, *vocab.rereporting_sources) and dup.status == "preliminary"
+                assert (dup.lat, dup.lon, dup.place) == (station.lat, station.lon, station.name)
+                assert dup.group == anchor.group and (dup.ref == anchor.id or dup.ref not in by_id)
+                if trap.form == "same_id":  # under its observation's ID, at a station of the observation's region
+                    assert dup.ref == anchor.id
+                    same_station[dup.place == anchor.place] += 1
+            elif trap.kind == "retraction":  # an observation the digest does not keep, withdrawn
                 (phantom,) = planted
                 (notice,) = [n for n in inst.notices if n.trap_id == trap.trap_id]
-                station = next(s for s in STATIONS if s.id == phantom.source)
+                station = next(s for s in STATIONS if s.name == phantom.place)
                 assert (phantom.lat, phantom.lon, phantom.place) == (station.lat, station.lon, station.name)
-                assert phantom.ref.startswith(f"{station.id}-") and notice.reason in vocab.retraction_reasons
+                assert phantom.source in (station.id, *vocab.rereporting_sources)
+                assert phantom.ref not in by_id and notice.reason in vocab.retraction_reasons
             else:  # only temperatures are corrected
                 assert planted[0].values["temp"] != by_id[trap.target].values["temp"]
                 if trap.form == "correction":
@@ -667,6 +706,7 @@ def test_traps_are_planted_in_weather_words_and_read_as_designed(run_instances, 
         for q in inst.questions:  # the reading rules of the domain recover the key from the digest
             assert execute(q.chain, data, units=WEATHER.units, resolver=WEATHER.resolve) == inst.answer_key[q.qid]
     assert kinds[("duplicate", "same_id")] and kinds[("duplicate", "cross_ref")] and kinds[("retraction", "phantom")]
+    assert same_station[False] > 0  # not always at its observation's station
 
 
 def test_the_oracle_scores_100_percent_on_every_rendering_and_the_naive_reader_falls_for_traps(weather_run,

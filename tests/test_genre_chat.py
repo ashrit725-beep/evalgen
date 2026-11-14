@@ -435,6 +435,7 @@ def test_chat_runs_read_back_every_prompt_and_reach_100_percent(chat_runs, tmp_p
 
 
 def test_chat_runs_catch_the_traps_and_the_naive_reader_falls_only_for_them(chat_runs):
+    mocked = []  # (right, questions) of the simulated model in each run: a run of two instances may see it err nowhere
     for label, run in chat_runs.items():
         models = {m["model"]: m for m in read_json(run / "report.json")["models"]}
         assert models["oracle"]["traps"]["caught"]["rate"] == 1.0
@@ -456,4 +457,6 @@ def test_chat_runs_catch_the_traps_and_the_naive_reader_falls_only_for_them(chat
             for rendering in inst.renderings:
                 assert solve(rendering.prompt, question_specs(inst), mode="naive", domain=inst.domain) == want
         mock = models["mock"]
-        assert 0 < mock["accuracy"]["rate"] < 1 and mock["format"]["replies"] == 3 * len(instances)
+        assert mock["format"]["replies"] == 3 * len(instances)
+        mocked.append((mock["accuracy"]["k"], mock["accuracy"]["n"]))
+    assert 0 < sum(k for k, _ in mocked) < sum(n for _, n in mocked)

@@ -25,7 +25,7 @@ from evalgen.domains import get_domain
 from evalgen.domains.neo import (ASTRONOMICAL_UNIT, AU_KM, CAD_URL, CHATTER, KM_PER_H, LD_KM, LUNAR_DISTANCE,
                                  MILES_PER_HOUR, NEO, RULES, SOURCES, SYNTHETIC_WINDOW_DAYS, TRAP_VOCAB, half_month,
                                  parse_cad)
-from evalgen.domains.base import RecordReport, record_rules
+from evalgen.domains.base import RecordReport, record_rules, stored_places
 from evalgen.genres import detect_genre
 from evalgen.genres.base import parse_glossary, render_glossary
 from evalgen.genres.classic import CLASSIC
@@ -83,7 +83,7 @@ def test_neo_is_a_built_in_domain_without_a_location():
     assert (NEO.noun, NEO.id_label, NEO.source_label, NEO.group_label, NEO.statuses) == (
         "close approach", "approach ID", "catalogue", "body", ("confirmed", "preliminary"))
     assert NEO.synthetic_window_hours == SYNTHETIC_WINDOW_DAYS * 24 == 720
-    assert all(set(TRAP_VOCAB.rereporting_sources) - {source} for source in SOURCES)  # another catalogue mirrors each
+    assert set(TRAP_VOCAB.rereporting_sources) <= set(SOURCES)  # every catalogue that mirrors others lists its own
     assert (NEO.live.source, NEO.live.raw_filename) == ("jpl", "raw_cad.json") and NEO.live.source in SOURCES
 
 
@@ -463,10 +463,22 @@ def test_the_traps_are_planted_settled_and_misread_as_designed(neo_runs):
             for trap in inst.traps:
                 kinds[(trap.kind, trap.form)] += 1
                 planted = [r for r in inst.reports if r.trap_id == trap.trap_id]
-                if trap.kind == "duplicate":
+                if trap.kind == "duplicate":  # an approach the digest does not keep, filed as a re-report
                     (dup,) = planted
-                    assert dup.status == "preliminary" and dup.source in TRAP_VOCAB.rereporting_sources
-                    assert dup.source != by_id[trap.target].source and (dup.same_as is None) == (trap.form == "same_id")
+                    record = by_id[trap.target]
+                    assert dup.status == "preliminary" and dup.source in SOURCES
+                    assert (dup.same_as is None) == (trap.form == "same_id") and dup.group == record.group
+                    if trap.form == "same_id":  # the object's H as another catalogue fits it, to as many places,
+                        # of an object that makes no other approach in the digest (traps._with_siblings)
+                        h, places = record.values["h"], stored_places(record.values["h"], 3)
+                        assert stored_places(dup.values["h"], 3) <= places and 0.05 - 1e-9 <= abs(dup.values["h"] - h)
+                        assert abs(dup.values["h"] - h) <= 0.3 + 10 ** -places
+                        stem = dup.ref.rpartition("-")[0]
+                        assert [r.ref for r in inst.reports if r.ref.rpartition("-")[0] == stem
+                                and r.ref != dup.ref] == []
+                    else:  # under another designation, a real one, with its own H
+                        assert dup.ref in by_id and dup.ref not in inst.event_ids
+                        assert dup.values == by_id[dup.ref].values
                 elif trap.kind == "retraction":
                     (notice,) = [n for n in inst.notices if n.trap_id == trap.trap_id]
                     assert notice.reason in TRAP_VOCAB.retraction_reasons and planted[0].role == "phantom"

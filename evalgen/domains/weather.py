@@ -16,14 +16,20 @@ and every value is stored to a tenth of its canonical unit, which every printed 
 (evalgen.units). Margins, threshold steps and rank gaps are scaled to each field's spread over a day
 of US observations: a few tenths of a degree, half a km/h, a few tenths of a hectopascal.
 
-IDs are "<feed>-<5 digits>": a station's observations carry its ICAO identifier ("KJFK-48213") and a
-relay's own references carry the relay's name ("MADIS-30571"). The digits are an opaque serial, not
-the observation's time: the trap builders draw a planted report's ID apart from its time, so an ID
-that encoded the time would give every planted observation away.
+IDs are "WX-" and six digits ("WX-482137"): an opaque serial, which names neither the station nor the
+feed nor the time. A re-report filed under its observation's ID gives a time, a station and values of its
+own (traps.py: it stands in for an observation drawn with the digest but not kept), so an ID that named
+the time or the station would contradict the line it is printed on. An ID that named the station would
+also pin the re-report to its observation's station, so that it could never be the only report at its
+station, as a real observation often is (an AUC of about 0.37 for the number of other observations at its
+station, and 0.40 for the time to the nearest one, when IDs began with the station's identifier).
 
 Synthetic observations follow each station's climate (January and July means, diurnal range, mean
 wind) at the season and local solar hour of their time, plus a weather system per region that moves
-temperature, pressure and wind together over the window (``Weather.synthetic``).
+temperature, pressure and wind together over the window (``Weather.synthetic``). They are timed and
+written as NWS observations are: at the station's own minute of the hour or, a quarter of them, on a
+five-minute mark (a five-minute observation, in whole degrees), with winds in whole knots and
+pressures in hundredths of an inch of mercury; a fifth of them reach the digest through a relay feed.
 
 The live source (``NwsObservations``) asks api.weather.gov for the last 24 hours of observations of
 every station in the table, freezes every response as it was served (its HTTP status and the exact
@@ -36,12 +42,9 @@ status, a timeout) is recorded as such and the others are kept. Replaying the fr
 answers, or the stations give too few usable observations, the synthetic generator is the fallback
 (sources.build_domain_snapshot).
 
-Synthetic observations are timed to the second and their values are continuous, as the reports the
-trap builders plant are. Real NWS reports are not: they are timed to the minute, with winds in whole
-knots and pressures in hundredths of an inch, and the generic trap builders take no hint from the
-domain to plant reports that way. So in a digest of live observations a re-report or a phantom can
-differ in form from the real reports, and a reader could spot it by its form rather than by the note
-or notice that marks it. No answer key depends on this.
+Off the legacy path a planted report is an observation drawn with the digest but not kept (traps.py),
+so in a live digest as in a synthetic one a re-report or a phantom has the form of a real observation:
+only its note, its status or a notice tells it apart.
 """
 from __future__ import annotations
 
@@ -223,25 +226,16 @@ def station_of(record: Any) -> Station | None:
 
 # ----------------------------------------------------------------------------------- IDs
 
-ID_PATTERN = r"[a-z][a-z0-9]{3,7}-\d{5}"  # "kjfk-48213", "madis-30571" (IDs are matched lower-cased)
-_PREFIX = re.compile(r"[A-Z][A-Z0-9]{3,7}")
-_ID = re.compile(r"(?P<prefix>[A-Za-z][A-Za-z0-9]{3,7})-\d{5}")
-SERIALS = (10000, 100000)  # an ID's five digits
+ID_PATTERN = r"wx-\d{6}"  # "wx-482137" (IDs are matched lower-cased; digests print "WX-482137")
+ID_PREFIX = "WX-"
+_ID = re.compile(r"wx-\d{6}", re.IGNORECASE)
+SERIALS = (100000, 1000000)  # an ID's six digits
 
 
-def id_prefix(source: str) -> str:
-    """How the IDs a feed files begin: its name in capitals, letters and digits only ("KJFK",
-    "NOAAPORT"). A name that gives no prefix of four to eight characters, starting with a letter, is
-    an error."""
-    prefix = re.sub(r"[^A-Za-z0-9]", "", source).upper()
-    if not _PREFIX.fullmatch(prefix):
-        raise ValueError(f"the feed {source!r} gives no ID prefix of 4 to 8 letters and digits")
-    return prefix
-
-
-def _fresh(prefix: str, rng: random.Random, taken: set[str]) -> str:
+def _fresh(rng: random.Random, taken: set[str]) -> str:
+    """A new ID, not in `taken` (and added to it)."""
     while True:
-        ref = f"{prefix}-{rng.randrange(*SERIALS)}"
+        ref = f"{ID_PREFIX}{rng.randrange(*SERIALS)}"
         if ref not in taken:
             taken.add(ref)
             return ref
@@ -328,6 +322,14 @@ WEATHER_RULE = ("Temperatures are signed numbers, so -2.5 °C is colder than 0.5
 GAMMA_1_5 = math.gamma(1.5)  # the mean of a Weibull distribution of shape 2 is its scale times this
 MAX_WIND_KMH = 100.0  # sustained winds above this are left to hurricanes
 MEAN_PRESSURE_HPA = 1016.0
+# When observations are taken, as at NWS stations: each station's routine (hourly) observation at a minute
+# of its own near the end of every hour, and five-minute observations, which give whole degrees.
+ROUTINE_MINUTES = (51, 52, 53, 54, 56)
+FIVE_MINUTE_SHARE = 0.25
+# Feeds that relay stations' observations. They file a share of the observations themselves (one that
+# reached the digest through them), as the stations' own feeds file the rest.
+RELAY_SHARE = 0.2
+RELAY_WEIGHTS = (0.5, 0.3, 0.2)  # of TRAP_VOCAB.rereporting_sources, in its order
 
 
 @dataclass(frozen=True)
@@ -366,6 +368,17 @@ def _stored(value: float) -> float:
     return round(value, 1) + 0.0
 
 
+def whole_knots(kmh: float) -> float:
+    """A wind speed (km/h) as an observation reports it: in whole knots, stored in km/h to a tenth."""
+    return _stored(max(0, round(kmh / KNOT.scale)) * KNOT.scale)
+
+
+def altimeter(hpa: float) -> float:
+    """A pressure (hPa) as an observation reports it: in hundredths of an inch of mercury, stored in hPa to
+    a tenth."""
+    return _stored(round(hpa / INHG.scale, 2) * INHG.scale)
+
+
 # ------------------------------------------------------------------------------ the domain
 
 
@@ -392,6 +405,13 @@ class Weather(Domain):
     statuses = ("verified", "preliminary")  # the NWS quality-control codes V and Z
     trap_vocab = TRAP_VOCAB
     chatter = CHATTER
+    # A station's observations are each other's near twins (Domain.twin_key: its region and its place): a
+    # digest often lists a station's next observation, five minutes or an hour later.
+    twin_seconds = 2 * 3600
+    twin_share = 0.6
+    # A station's temperature and pressure move little from one observation to the next (its wind does not:
+    # gusts come and go); a corrected temperature agrees with the station's other observations as a real one does.
+    twin_fields = (TEMPERATURE.key, PRESSURE.key)
 
     def __init__(self, live: NwsObservations | None = None) -> None:
         self.live = NwsObservations() if live is None else live
@@ -408,46 +428,71 @@ class Weather(Domain):
         return standard + (1 if summer else 0)
 
     def synthetic(self, rng: random.Random, n: int, compiled_at: int, window_hours: int) -> list[Record]:
-        """`n` observations at stations drawn alike, at any second of the window: each region's weather
-        system is drawn first, then every station's own offsets of temperature and pressure, then the
-        observations one by one."""
+        """`n` observations at stations drawn alike, timed as NWS stations take them: each region's weather
+        system is drawn first, then every station's own offsets of temperature and pressure and the minute
+        of its routine observations, then the observations one by one, each at its station's routine minute
+        of an hour of the window or, a share of the time, on a five-minute mark (a five-minute observation),
+        to the minute. Values are reported as observations report them: temperatures to a tenth of a degree
+        (whole degrees in a five-minute observation), winds in whole knots and pressures in hundredths of an
+        inch of mercury, stored in the canonical units. A share of the observations are filed by a relay
+        feed. IDs are opaque serials (see the module docstring)."""
         span = window_hours * 3600
         systems = {region: _System.draw(rng) for region in REGIONS}
         offsets = {station.id: (rng.gauss(0.0, 1.0), rng.gauss(0.0, 0.8)) for station in STATIONS}
+        minutes = {station.id: rng.choice(ROUTINE_MINUTES) for station in STATIONS}
         taken: set[str] = set()
+        seen: set[tuple[str, int]] = set()
         records = []
-        for _ in range(n):
+        while len(records) < n:
             station = rng.choice(STATIONS)
-            when = compiled_at - rng.randrange(60, span)
+            drawn = compiled_at - rng.randrange(60, span)
+            five_minute = rng.random() < FIVE_MINUTE_SHARE
+            when = drawn - drawn % 300 if five_minute else drawn - drawn % 3600 + minutes[station.id] * 60
+            if not compiled_at - span < when <= compiled_at - 60 or (station.id, when) in seen:
+                continue  # inside the window, a minute before the compilation at the latest, as ever
+            seen.add((station.id, when))
             progress = (when - (compiled_at - span)) / span - 0.5  # -0.5 at the window's start, 0.5 at its end
             system, (temp_offset, pressure_offset) = systems[station.region], offsets[station.id]
             hour = _solar_hour(when, station.lon)
             afternoon = math.cos(2 * math.pi * (hour - 15.0) / 24.0)  # 1 at 15:00 local time, -1 at 03:00
             temp = (_seasonal_mean(station, when) + station.diurnal / 2 * afternoon + system.temp_anomaly
                     + system.temp_trend * progress + temp_offset + rng.gauss(0.0, 0.5))
-            if rng.random() < 0.25:  # a five-minute observation: whole degrees
+            if five_minute:  # whole degrees
                 temp = float(round(temp))
             mean_wind = station.wind_kt * KNOT.scale * system.wind_factor * (1.0 + 0.25 * afternoon)
             wind = min(rng.weibullvariate(mean_wind / GAMMA_1_5, 2.0), MAX_WIND_KMH)
             pressure = (MEAN_PRESSURE_HPA + system.pressure_anomaly + system.pressure_trend * progress
                         + pressure_offset + rng.gauss(0.0, 0.4))
-            records.append(Record(id=self.new_id(station.id, rng, taken), time=when, lat=station.lat,
-                                  lon=station.lon, group=station.region, source=station.id,
-                                  values={"temp": _stored(temp), "wind": _stored(wind),
-                                          "pressure": _stored(pressure)},
+            relayed = rng.random() < RELAY_SHARE
+            source = (rng.choices(TRAP_VOCAB.rereporting_sources, weights=RELAY_WEIGHTS, k=1)[0] if relayed
+                      else station.id)
+            records.append(Record(id=_fresh(rng, taken), time=when, lat=station.lat, lon=station.lon,
+                                  group=station.region, source=source,
+                                  values={"temp": _stored(temp), "wind": whole_knots(wind),
+                                          "pressure": altimeter(pressure)},
                                   place=station.name))
         return sorted(records, key=lambda r: (r.time, r.id))
 
+    def planted_value(self, spec: FieldSpec, value: float, like: float, peers: Sequence[float] = ()) -> float:
+        """A planted value as an observation reports it (Domain.planted_value): a wind in whole knots and a
+        pressure in hundredths of an inch of mercury when the observation it stands for gives them so (every
+        synthetic one does), and a temperature to the places of that observation (a five-minute observation
+        gives whole degrees, a routine one tenths), whatever the station's other observations give."""
+        if spec.key == WIND.key and like == whole_knots(like):
+            return whole_knots(value)
+        if spec.key == PRESSURE.key and like == altimeter(like):
+            return altimeter(value)
+        return super().planted_value(spec, value, like)
+
     def new_id(self, source: str, rng: random.Random, taken: set[str]) -> str:
-        """A fresh "<feed>-<5 digits>" ID for an observation `source` files, added to `taken`."""
-        return _fresh(id_prefix(source), rng, taken)
+        """A fresh ID, added to `taken`: every feed's IDs look alike, so `source` changes nothing."""
+        return _fresh(rng, taken)
 
     def mimic_id(self, example: str, rng: random.Random, taken: set[str]) -> str:
-        """A fresh ID with the prefix of `example`, added to `taken`."""
-        match = _ID.fullmatch(example)
-        if match is None:
+        """A fresh ID, shaped as every observation ID is (`example` must be one), added to `taken`."""
+        if _ID.fullmatch(example) is None:
             raise ValueError(f"{example!r} is not a weather observation ID")
-        return _fresh(match["prefix"], rng, taken)
+        return _fresh(rng, taken)
 
     def rules_text(self) -> str:
         """The reading rules of every record domain (record_rules) in this domain's words, and one more
@@ -677,8 +722,8 @@ def _hourly(readings: Iterable[_Reading]) -> list[_Reading]:
 
 
 def _identified(readings: Sequence[_Reading]) -> list[Record]:
-    """The readings as Records in time order, each with an ID that depends only on its station and time
-    (a hash, so replaying a bundle gives the same IDs, and a collision takes the next free serial)."""
+    """The readings as Records in time order, each with an opaque ID that depends only on its station and
+    time (a hash, so replaying a bundle gives the same IDs, and a collision takes the next free serial)."""
     taken: set[str] = set()
     records = []
     for reading in sorted(readings, key=lambda r: (r.time, r.station.id)):
@@ -686,9 +731,9 @@ def _identified(readings: Sequence[_Reading]) -> list[Record]:
         digest = hashlib.sha256(f"{station.id}|{reading.time}".encode("utf-8")).digest()
         low, high = SERIALS
         serial = int.from_bytes(digest[:8], "big") % (high - low)
-        while f"{station.id}-{low + serial}" in taken:
+        while f"{ID_PREFIX}{low + serial}" in taken:
             serial = (serial + 1) % (high - low)
-        ref = f"{station.id}-{low + serial}"
+        ref = f"{ID_PREFIX}{low + serial}"
         taken.add(ref)
         records.append(Record(id=ref, time=reading.time, lat=reading.lat, lon=reading.lon, group=station.region,
                               source=station.id, values=dict(reading.values), place=station.name))
