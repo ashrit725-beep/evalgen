@@ -118,7 +118,7 @@ details are in each run's miss analysis: [0.1.0](runs/compare-100/miss_analysis.
   rule, nearly the 41.1% closed by the status rule that the rules intend (keep only the REVIEWED
   reports). evalgen 0.3.0 removes this tell from runs with any `--mix` but `legacy`, the default,
   which keeps these digests byte for byte: off it, on 1,008 digests of every domain and genre, the best
-  of 27 such readers closes 0.0% of that gap (95% CI −0.7 to +0.8), against 38.2% for the status rule
+  of 27 such readers closes 0.0% of that gap (95% CI −0.7 to +0.8), against 37.2% for the status rule
   (see the limitations in [`docs/DESIGN.md`](docs/DESIGN.md)).
 
 ## Reproduce it
