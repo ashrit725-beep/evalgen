@@ -123,7 +123,7 @@ details are in each run's miss analysis: [0.1.0](runs/compare-100/miss_analysis.
 
 ## Reproduce it
 
-Install the dependencies (requests and pytest; Python 3.10 or later), run the 866 tests (about 4
+Install the dependencies (requests and pytest; Python 3.10 or later), run the 1328 tests (about 4
 minutes), and run a full cycle offline, with no API key and no cost:
 
 ```bash
@@ -180,7 +180,11 @@ instance) and six genres (news articles, email threads, chat logs, tables, repor
 transcripts). An evaluator can hold domains and genres out in private plugins, listed by path in a
 private config that the run commits to by hash; a plugin listed with the SHA-256 of its bytes too is
 pinned by that commitment, and one listed by path alone is not, so give every real plugin its
-SHA-256. The report then compares accuracy on the public and the held-out sets (the source gap and
+SHA-256. It covers that one file, so a plugin must also be self-contained: it reads no other file, the
+environment, the clock or the network, and imports only from evalgen and the standard library. Regenerating a
+revealed run executes the plugin code in-process with the verifier's rights: the SHA-256 pins which code runs,
+not that it is safe, so read the plugins first or regenerate in a sandbox. The report then compares
+accuracy on the public and the held-out sets (the source gap and
 the genre gap) and checks that answers agree across genres.
 Answer keys are still computed by code, and the text-only oracle still scores 100% on every domain
 in every genre.
@@ -188,7 +192,8 @@ in every genre.
 The new options are `--mix` (`legacy`, the default; `random`; or a list such as
 `weather,neo:email`), `--private-config` (the held-out domains and genres), `--source live` and
 `--snapshot-dir` (each domain's live source, frozen and replayed), the `verify-config` command
-(which checks a revealed config against a run) and held-out penalties for the simulated model
+(which checks a revealed config against the commitment published before the evaluation, `--commitment HEX`,
+or against a run) and held-out penalties for the simulated model
 (`mock:held_out=0.3`). This runs every built-in domain and genre offline:
 
 ```bash
@@ -210,10 +215,11 @@ metrics and their limitations.
 
 - `evalgen/`: the generator, its domains and genres, model adapters, scorer and report.
 - `cli.py`: the command line (`generate`, `run`, `score`, `report`, `resolve`, `demo`,
-  `verify-config`).
+  and `verify-config`, which checks a revealed config against the commitment published before the evaluation
+  (`--commitment HEX`) or against a run).
 - `configs/private.example.json`: the format of a private run config (an example only: real
   held-out sets must stay private).
-- `tests/`: 866 tests.
+- `tests/`: 1328 tests.
 - `runs/compare-100/` and `runs/compare-100-v2/`: each comparison's report (`report.md` and
   `report.json`), miss analysis and `manifest.json` (seed, settings, code fingerprint). The raw
   prompts and replies are not committed. The 0.1.0 run cannot be regenerated with the current code,
