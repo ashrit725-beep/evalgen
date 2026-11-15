@@ -3,12 +3,15 @@ takes time linear in its length; a hedge of any kind earns no credit; and every 
 the prompt allows still scores."""
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shutil
 import time
 
 import pytest
 
+import cli
 from evalgen import pipeline
 from evalgen.adapters import AdapterError, AnthropicAdapter, OpenAIAdapter, Task, token_usage
 from evalgen.answers import normalize_qid, parse_reply
@@ -152,20 +155,47 @@ def test_token_usage_of_any_shape():
     ("region", "No tie: Nevada"), ("region", "isn't a tie"), ("neo_body", "Mars or tie"),
     ("invented_group", "Drern or tie"), ("weather_region", "Pacific or tie"), ("region", "tie (not really)"),
     ("region", "Nevada (tie)"), ("region", "Nevada and Utah are not tied"),
+    # review: a tie beside a condition, an alternative or a leader, anywhere in the answer (the merged fix kept
+    # only what followed the last " are ", cut at " between " and dropped a closing note, and read these as ties)
+    ("region", "Nevada, unless Utah and Idaho are tied"),
+    ("region", "Nevada if the PT report counts; otherwise Utah and Nevada are tied"),
+    ("region", "Nevada leads; Utah and Idaho are tied"), ("region", "tie (Nevada if the PT report counts)"),
+    ("region", "tie between Nevada and Utah, else Nevada"), ("region", "Nevada; Utah and Idaho tie"),
+    ("region", "Nevada, the others tie"), ("region", "Nevada, maybe a tie"), ("region", "tie broken by depth: Nevada"),
+    ("region", "almost a tie"), ("region", "Nevada and Utah almost tied"), ("region", "tie?"),
+    ("region", "tie with Nevada"), ("region", "Nevada (tied with Utah, Nevada wins on depth)"),
+    ("region", "Gulf of Alaska (tie)"),
 ])
 def test_a_tie_offered_as_an_alternative_or_negated_is_no_tie(answer_type, given):
     # 0.3.0 read every answer containing "tie" or "tied" as a tie, before testing for "or"
     assert normalize(answer_type, given) != "tie"
     assert not is_correct(answer_type, "tie", given)
+    if answer_type == "region":  # a hedge: no credit whichever group is the key either
+        assert not is_correct("region", "Nevada", given) and not is_correct("region", "Utah", given)
 
 
 @pytest.mark.parametrize("given", ["tie", "Tie.", "TIE", "tied", "It's a tie", "it’s a tie", "a tie", "Equal",
                                    "equal counts", "They are equal", "a draw", "the same", "both", "Neither",
                                    "tie (3 each)", "Tie: 2-2", "tied at 3", "**tie**", "Tie!",
                                    "It's a tie between Nevada and Utah", "tie (Nevada 3, Utah 3)",
-                                   "Nevada and Utah are tied"])
+                                   "Nevada and Utah are tied",
+                                   # review: committed ties that name the tied groups, which 0.3.0 credited
+                                   "Tie: Nevada and Utah", "Tied: Nevada, Utah", "Nevada and Utah tie",
+                                   "Nevada/Utah tie", "Nevada, Utah (tie)", "Tie - Nevada and Utah, 3 each",
+                                   "tie of Nevada and Utah", "Nevada = Utah (tie)", "Nevada is tied with Utah",
+                                   "Utah ties Nevada", "tie at 3 events each", "Tie (3 events each)",
+                                   "Nevada 3 events, Utah 3 events: tie", "I think it's a tie",
+                                   "Nevada has 3 and Utah has 3, so it's a tie", "Nevada region and Utah region tie",
+                                   "Tie. Nevada and Utah both have 3."])
 def test_tie_phrases_are_ties(given):
     assert normalize("region", given) == "tie" and is_correct("region", "tie", given)
+    assert not is_correct("region", "Nevada", given)
+
+
+def test_a_tie_reads_the_groups_of_every_domain_by_their_own_words():
+    # a group's own word ("Earth and Moon bodies") and its plural are no name
+    assert normalize("neo_body", "Earth and Moon bodies tie") == "tie" and normalize("region", "both regions tie") == "tie"
+    assert normalize("neo_body", "Moon (tie)") != "tie"  # one group named beside a tie: a hedge
 
 
 @pytest.mark.parametrize("given", ["Nevada", "nevada.", "**Nevada**", "`Nevada`", "Nevada!", "the Nevada region",
@@ -371,12 +401,72 @@ def test_scraped_lines_read_every_reasonable_exact_format():
     assert parse_reply("Q1 => 7\nQ2 = 4.5\nQ3: `nc75012345`").answers == {"Q1": 7, "Q2": 4.5, "Q3": "nc75012345"}
 
 
-def test_a_value_cut_off_at_the_end_of_the_reply_is_dropped():
+def test_a_value_cut_off_at_the_end_of_the_reply_never_replaces_an_earlier_answer():
     # 0.3.0 let "22", cut off by the token limit, replace the complete 2217903 stated earlier
     cut = "Q1: 12\nQ2: 2217903\nFinal answer:\n" + '{"answers": {"Q1": 12, "Q2": 22'
     assert parse_reply(cut, ["Q1", "Q2"]).answers == {"Q1": 12, "Q2": 2217903}
-    assert parse_reply('{"answers": {"Q1": 7, "Q2": 3.4, "Q3": 50', ["Q1", "Q2", "Q3"]).answers == {"Q1": 7, "Q2": 3.4}
+    assert parse_reply('Q1: -3.5\n{"answers": {"Q1": -', ["Q1"]).answers == {"Q1": -3.5}
+    assert parse_reply('Q2: "nc75012345"\n{"answers": {"Q2": "nc75', ["Q2"]).answers == {"Q2": "nc75012345"}
+    # With no earlier mention, it is read as written, as 0.2.0 read it (review: the merged fix dropped it, and so
+    # changed legacy demos, whose simulated model cuts 2% of its replies in half: '{"answers": {"Q1": 183.' of
+    # seed 99 is 183, within the depth tolerance of 183.4), unless it holds no digit or letter.
+    assert parse_reply('{"answers": {"Q1": 7, "Q2": 3.4, "Q3": 50', ["Q1", "Q2", "Q3"]).answers == {
+        "Q1": 7, "Q2": 3.4, "Q3": 50}
+    assert parse_reply('{"answers": {"Q1": 183.', ["Q1"]).answers == {"Q1": 183}
+    assert parse_reply('{"answers": {"Q1": 7, "Q2": -', ["Q1", "Q2"]).answers == {"Q1": 7}
+    assert parse_reply('{"answers": {"Q1": 7, "Q2": "nc75', ["Q1", "Q2"]).answers == {"Q1": 7}
     assert parse_reply("Q1: 7\nQ2: 50", ["Q1", "Q2"]).answers == {"Q1": 7, "Q2": 50}  # a reply that just ends
+
+
+# A legacy demo whose simulated model cut a reply off inside a number ('{"answers": {"Q1": 5.', inst-003 v0), as
+# evalgen 0.2.0 (b9f29b4) wrote it, masked as tests/test_mix.py masks a legacy report: the run's report.json and
+# report.md, and the mock's score file whole.
+CUT_DEMO = {"report.json": "9ef167980ba220e85ee13b1da85ea86ad59b039ef79a22c2fc145d14aa8c5d4d",
+            "report.md": "9cf82d605e96855f493e653f262ff174c2c3af0d081d6d297e6f2614a96433c1",
+            "scores/mock.json": "b6d008841ada253d6c7b3299e4c7cc1f8b5df06c6ffbcc26bec13e04c62cf7c6"}
+
+
+def test_a_legacy_demo_with_a_reply_cut_off_in_a_number_scores_it_as_0_2_0_did(tmp_path):
+    """Legacy output is 0.2.0's, score files and reports included: the merged fix dropped the cut-off 5 (key 5) and
+    recorded the reply as failed, which changed the mock's accuracy, format counts and consistency."""
+    run = tmp_path / "demo-s1-n4"  # the folder 0.2.0's run was written to: the report is titled by it
+    assert cli.main(["demo", "--seed", "1", "--instances", "4", "--out", str(run)]) == 0
+    assert read_json(run / "responses" / "mock" / "inst-003__v0.json")["text"] == '{"answers": {"Q1": 5.'
+    data = read_json(run / "report.json")
+    for key in ("seed_commitment", "code_sha256", "evalgen_version"):
+        data["run"][key] = None
+    text = (run / "report.md").read_text(encoding="utf-8")
+    text = re.sub(r"evalgen \S+ \(the reading rules", "evalgen X (the reading rules", text)
+    text = re.sub(r"commitment `[0-9a-f]{24}…`", "commitment `X`", text)
+    got = {"report.json": hashlib.sha256(json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")).hexdigest(),
+           "report.md": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+           "scores/mock.json": hashlib.sha256((run / "scores" / "mock.json").read_bytes()).hexdigest()}
+    assert got == CUT_DEMO
+
+
+# ------------------------------------------------------------- reply parsing: working notes (review)
+
+
+@pytest.mark.parametrize("notes", [
+    '{"Q1": "3 PT + 4 NC", "Q2": "largest M4.3 -> nc75012345"}',
+    '{"Q1": [3, 4], "Q2": ["nc75012345", "pt75975146"]}',
+    '{"Q1": "How many events?", "Q2": "Which ID?"}',
+])
+def test_working_notes_beside_the_wrapped_answer_are_not_an_answer(notes):
+    """Of the objects that cover the most questions, those wrapped in "answers", the shape the prompt asks for,
+    are the answer (0.3.0's tie-break); the merged fix combined working notes keyed by question ID with the
+    final answer, and scored every question where they differed as a hedge."""
+    two = {"Q1": ("count", 7), "Q2": ("event_id", "nc75012345")}
+    final = '{"answers": {"Q1": 7, "Q2": "nc75012345"}}'
+    for text in (f"Working: {notes}\nFinal: {final}", f"Final: {final}\nWorking: {notes}"):
+        reply = parse_reply(text, list(two))
+        assert reply.answers == {"Q1": 7, "Q2": "nc75012345"} and reply.error is None, text
+        assert credited(text, two) == {"Q1": True, "Q2": True}
+    # complete answers in the requested shape that disagree are still a hedge, notes or not
+    hedge = f"Working: {notes}\nIf the PT report counts: " + '{"answers": {"Q1": 8, "Q2": "nc75012345"}}\nElse: ' + final
+    assert credited(hedge, two) == {"Q1": False, "Q2": True}
+    # and, with no object in that shape, complete objects that disagree are one too
+    assert credited(notes + "\n" + '{"Q1": 7, "Q2": "nc75012345"}', two)["Q1"] is False
 
 
 # ----------------------------------------------------------------------------- linear time

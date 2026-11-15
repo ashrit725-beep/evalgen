@@ -31,6 +31,7 @@ from .ops import Step, terminal_step
 from .scoring import AnswerType, get_answer_type
 from .seeds import SeedLog
 from .solver import forecast_estimate, solve
+from .sources import proxies_for
 from .util import sha256_hex
 
 
@@ -373,6 +374,21 @@ def _text_parts(parts: Any, data: Any, what: str) -> str:
     return "\n".join(texts)
 
 
+class _Untrusting:
+    """What an API adapter posts through unless it is given a session: like requests.post, a session of its own
+    for each call (calls from several threads share nothing), but one with trust_env off, as every live request
+    is (sources.http_get). So it sends no credentials from a netrc file, which requests would add as HTTP Basic
+    auth to every host its 'default' entry matches (to api.anthropic.com beside the key, and in place of
+    OpenAI's Bearer key), on the first request and again on a redirect; and it reads no CA bundle or proxy
+    settings from the environment, going through a proxy only where the proxy variables name one
+    (sources.proxies_for)."""
+
+    def post(self, url: str, **kwargs: Any) -> requests.Response:
+        with requests.Session() as session:
+            session.trust_env = False
+            return session.post(url, proxies=proxies_for(url), **kwargs)
+
+
 def _post_json(session: Any, url: str, headers: dict, body: dict, timeout: float, *, retries: int = 4,
                drop_on_400: tuple[str, ...] = ()) -> dict:
     body = dict(body)
@@ -422,7 +438,7 @@ class AnthropicAdapter(Adapter):
         self.model = model or os.environ.get("EVALGEN_ANTHROPIC_MODEL", self.DEFAULT_MODEL)
         self.name = f"anthropic:{self.model}"
         self.max_tokens, self.temperature, self.timeout = max_tokens, temperature, timeout
-        self.session = session or requests
+        self.session = session or _Untrusting()
 
     def complete(self, prompt: str, task: Task) -> Completion:
         body: dict[str, Any] = {"model": self.model, "max_tokens": self.max_tokens,
@@ -453,7 +469,7 @@ class OpenAIAdapter(Adapter):
         base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         self.url = f"{base}/chat/completions"  # OPENAI_BASE_URL also allows compatible local servers
         self.max_tokens, self.temperature, self.timeout = max_tokens, temperature, timeout
-        self.session = session or requests
+        self.session = session or _Untrusting()
 
     def complete(self, prompt: str, task: Task) -> Completion:
         body: dict[str, Any] = {"model": self.model, "max_completion_tokens": self.max_tokens,

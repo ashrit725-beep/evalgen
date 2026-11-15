@@ -25,6 +25,7 @@ from urllib3.exceptions import ProtocolError
 
 import cli
 from evalgen import pipeline, sources
+from evalgen.adapters import AnthropicAdapter, OpenAIAdapter, Task
 from evalgen.domains import all_domains
 from evalgen.domains import weather as wx
 from evalgen.domains.earthquakes import EARTHQUAKES
@@ -303,6 +304,34 @@ def test_every_live_request_goes_through_a_session_that_ignores_the_environment(
     for request in sent["seen"]:
         assert request["trust_env"] is False and "Authorization" not in request["headers"], request
         assert request["headers"]["User-Agent"].startswith("evalgen/") and request["proxies"] == {}
+
+
+def test_an_api_model_posts_through_a_session_that_ignores_the_environment(tmp_path, sent, monkeypatch):
+    """Review (sweep-network#9, for the API models): the adapters posted through module-level requests, whose
+    session trusts the environment, so a netrc 'default' entry went to the API hosts as HTTP Basic credentials:
+    beside Anthropic's key, and in place of OpenAI's Bearer key, so that every OpenAI call carried the wrong ones."""
+    netrc = tmp_path / "netrc"
+    netrc.write_text("default login alice password s3cret\n", encoding="utf-8")
+    netrc.chmod(0o600)
+    monkeypatch.setenv("NETRC", str(netrc))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    sent["answer"] = lambda request: response(json.dumps(
+        {"content": [{"type": "text", "text": "{}"}]} if "anthropic" in request.url
+        else {"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]}).encode())
+    task = Task("inst-000", "v0", [])
+    AnthropicAdapter("claude-test").complete("PROMPT", task)
+    OpenAIAdapter("gpt-test").complete("PROMPT", task)
+    anthropic, openai = sent["seen"]
+    assert anthropic["url"].startswith("https://api.anthropic.com/") and openai["url"].startswith("https://api.openai.com/")
+    for request in (anthropic, openai):
+        assert request["trust_env"] is False and request["proxies"] == {}, request
+    assert "Authorization" not in anthropic["headers"] and anthropic["headers"]["x-api-key"] == "sk-ant-test"
+    assert openai["headers"]["Authorization"] == "Bearer sk-test"
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")  # a proxy the environment names is still used
+    OpenAIAdapter("gpt-test").complete("PROMPT", task)
+    assert sent["seen"][-1]["proxies"] == {"https": "http://proxy.example:3128"}
 
 
 def test_a_proxy_is_used_only_where_the_environment_names_one(monkeypatch):

@@ -670,7 +670,8 @@ def test_traps_are_planted_in_weather_words_and_read_as_designed(run_instances, 
         records = [run_records[record_id] for record_id in inst.event_ids]
         by_id = {r.id: r for r in records}
         assert check_resolution(inst.reports, inst.notices, records, domain=WEATHER) == []
-        # (a digest off the legacy path holds the traps its plan draws, of each kind none or more: traps.draw_plan)
+        # (a digest off the legacy path holds the traps its plan draws, of each kind none or more, but for a correction
+        # now and then in the heaviest plans: traps.draw_plan)
         assert {t.kind for t in inst.traps} <= {"duplicate", "retraction", "conflicting_value"}
         data = DigestData(inst.reports, inst.notices)
         for trap in inst.traps:

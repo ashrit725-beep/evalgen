@@ -197,7 +197,8 @@ def test_record_traps_are_planted_and_read_as_earthquake_traps_are(toys, name):
         assert all(isinstance(r, RecordReport) for r in inst.reports)
         kinds.update(t.kind for t in inst.traps)
         forms.update((t.kind, t.form) for t in inst.traps)
-        # (a digest off the legacy path holds the traps its plan draws, of each kind none or more: traps.draw_plan)
+        # (a digest off the legacy path holds the traps its plan draws, of each kind none or more, but for a correction
+        # now and then in the heaviest plans: traps.draw_plan)
         assert {t.kind for t in inst.traps} <= {"duplicate", "retraction", "conflicting_value"}
         data = DigestData(inst.reports, inst.notices)
         vocab = bound.trap_vocab

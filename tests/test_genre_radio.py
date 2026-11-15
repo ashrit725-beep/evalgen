@@ -423,7 +423,8 @@ def test_the_naive_reader_falls_for_the_traps_and_only_for_them(radio_runs):
         instances = load_instances(run)
         kinds = {t.kind for inst in instances for t in inst.traps}
         conflict = "conflicting_magnitude" if label in ("earthquakes", "usgs") else "conflicting_value"
-        # (off the legacy path a digest holds the traps its plan draws, of each kind none or more: traps.draw_plan)
+        # (off the legacy path a digest holds the traps its plan draws, of each kind none or more, but for a correction
+        # now and then in the heaviest plans: traps.draw_plan)
         assert {"duplicate", conflict} <= kinds <= {"duplicate", "retraction", conflict}
         trapped = {(inst.instance_id, qid) for inst in instances for t in inst.traps for qid in t.fallen}
         for row in read_json(run / "scores" / "naive.json")["rows"]:

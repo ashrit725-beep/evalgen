@@ -501,7 +501,8 @@ def test_traps_are_planted_and_their_careless_readings_give_their_wrong_answers(
     for inst, bound, records in worlds:
         data = DigestData(inst.reports, inst.notices)
         vocab = bound.trap_vocab
-        # (a digest off the legacy path holds the traps its plan draws, of each kind none or more: traps.draw_plan)
+        # (a digest off the legacy path holds the traps its plan draws, of each kind none or more, but for a correction
+        # now and then in the heaviest plans: traps.draw_plan)
         assert {t.kind for t in inst.traps} <= {"duplicate", "retraction", "conflicting_value"}
         for trap in inst.traps:
             forms[(trap.kind, trap.form)] += 1

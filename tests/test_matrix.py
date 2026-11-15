@@ -10,9 +10,10 @@ The run is answered by the oracle and the naive reader, scored and reported. The
   - the oracle scores 100% on every rendering;
   - no question is asked twice in the run;
   - every cell plants re-reports and conflicts, and each instance the traps its plan draws (none or more of
-    each kind: traps.draw_plan); every careless reading a trap records gives, from the text of every
-    rendering, the wrong answer recorded for it, and holds at the printed precision (the misread digest
-    passes the key's guards), and the naive reader is wrong only where a trap explains it;
+    each kind: traps.draw_plan), but for a correction now and then in the heaviest plans, which find no
+    record for it (the plan in traps.py gives the rate); every careless reading a trap records gives, from
+    the text of every rendering, the wrong answer recorded for it, and holds at the printed precision (the
+    misread digest passes the key's guards), and the naive reader is wrong only where a trap explains it;
   - sniffing is exclusive: a genre's digests are claimed by that genre and by no other.
 
 Only classic claims a legacy (0.2.0) digest. Last, a random mix that draws every domain in every genre is
@@ -239,7 +240,8 @@ def test_every_trap_is_planted_and_misread_as_recorded_in_every_rendering(cells,
     cell = cells(name)
     domain = get_domain(cell.domain)
     conflict = "conflicting_magnitude" if cell.domain == "earthquakes" else "conflicting_value"
-    # (a digest holds the traps its plan draws, of each kind none or more: traps.draw_plan)
+    # (a digest holds the traps its plan draws, of each kind none or more, but for a correction now and then in the
+    # heaviest plans: traps.draw_plan and the plan above it)
     assert {"duplicate", conflict} <= {t.kind for inst in cell.instances for t in inst.traps}
     for inst in cell.instances:
         assert {t.kind for t in inst.traps} <= {"duplicate", "retraction", conflict}

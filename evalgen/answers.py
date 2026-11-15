@@ -7,14 +7,17 @@ Models are asked for one strict JSON object. We record how well they complied:
            a last resort "Q1: 7" lines (the last mention of each question wins)
   failed   nothing usable
 When a reply contains several JSON objects, those covering the most expected question IDs are the
-answer. If no single object covers them all, e.g. one object per question, all the objects are merged.
-A question that the objects used (or one object, by giving it twice) answer with different values is
-ambiguous: its answer is the list of those values, which the scorer reads as no answer unless they all
-read the same, as it reads "7 or 8". Two complete answers that disagree are a hedge, whichever comes
-last. A value that is the prompt's own placeholder ("<event ID>", "HH:MM") is not an answer. A scraped
-line keeps its whole value ("7 or 8", "5,088.8 km") for the scorer to read, and a value that runs into
-the end of a reply cut off inside its final JSON object is dropped, as it may be cut short. Answer
-*values* are normalised in scoring.py.
+answer: of them, those wrapped in "answers" (the shape the prompt asks for) when there are any, so that
+working notes keyed by question ID beside the answer are not read as one. If no single object covers
+them all, e.g. one object per question, all the objects are merged. A question that the objects used (or
+one object, by giving it twice) answer with different values is ambiguous: its answer is the list of
+those values, which the scorer reads as no answer unless they all read the same, as it reads "7 or 8".
+Two complete answers that disagree are a hedge, whichever comes last. A value that is the prompt's own
+placeholder ("<event ID>", "HH:MM") is not an answer. A scraped line keeps its whole value ("7 or 8",
+"5,088.8 km") for the scorer to read. A value that runs into the end of a reply cut off inside its final
+JSON object may be cut short ("2217903" cut to "22"): it never replaces an earlier mention of its
+question, and is read as written (as 0.2.0 read it) when there is none, unless it holds no digit or
+letter (a lone "-"). Answer *values* are normalised in scoring.py.
 
 Replies are untrusted input: parse_reply never raises, takes time linear in the length of the reply,
 and gives the same answers on every Python version. JSON nested deeper than any answer object is not
@@ -265,10 +268,10 @@ def _repairs(candidate: str) -> Iterator[str]:
         yield pythonic.replace("'", '"')  # single-quoted keys and strings
 
 
-def _objects(text: str) -> list[dict[str, list]]:
-    """The answer objects in a reply, in order: in its code fences, and every top-level object, found in
-    the reply and in the reply with its comments blanked out (a comment can hide a brace from the first),
-    each span parsed once, with the first repair that parses."""
+def _objects(text: str) -> list[tuple[dict[str, list], bool]]:
+    """The answer objects in a reply, in order, each with whether it is wrapped in "answers": in its code
+    fences, and every top-level object, found in the reply and in the reply with its comments blanked out
+    (a comment can hide a brace from the first), each span parsed once, with the first repair that parses."""
     spans = sorted(set(_fences(text)) | set(_json_objects(text)) | set(_json_objects(_blank_comments(text))))
     found = []
     for start, end in spans:
@@ -277,7 +280,7 @@ def _objects(text: str) -> list[dict[str, list]]:
             if obj is not _FAIL:  # a repair only mends what does not parse
                 answers = _answers_from(obj)
                 if answers:
-                    found.append(answers)
+                    found.append((answers, isinstance(obj, dict) and "answers" in obj))
                 break
     return found
 
@@ -331,8 +334,10 @@ def _scrape(text: str) -> dict[str, Any]:
     """'Q1: 7' lines over the whole reply, the last mention of each question winning. A value ends at the
     end of its line, at a '}' or where the next question begins; a quoted value at its closing quote, unless
     more than punctuation follows it there ('"nc75012345" or "pt75975146"' is read whole). A value that runs
-    into the end of a reply cut off inside its final JSON object (its last '{' is never closed) is dropped:
-    it may be cut short ("2217903" cut to "22")."""
+    into the end of a reply cut off inside its final JSON object (its last '{' is never closed) may be cut
+    short ("2217903" cut to "22"), so it never replaces an earlier mention of its question; with none, it is
+    read as written, as 0.2.0 read it (a reply cut off in its only answer object: "183." is 183), unless it
+    holds no digit or letter ("-", the start of a negative number). A quoted value cut off there is dropped."""
     n, mentions = len(text), list(_MENTION.finditer(text))
     starts = [m.start() for m in mentions]
     lines, braces = _Positions(text, "\n"), _Positions(text, "}")
@@ -349,6 +354,7 @@ def _scrape(text: str) -> dict[str, Any]:
         if i >= limit:
             continue
         cut = m.start() > cut_from
+        qid = normalize_qid(m.group(1))
         line_end = lines.next(i, n)
         stop = min(limit, line_end)
         close = _QUOTES.get(text[i])
@@ -369,7 +375,8 @@ def _scrape(text: str) -> dict[str, Any]:
             raw = text[i:stop]
             if stop == n:  # the last value of the reply: no key cut off after it ('28, "Q3"'), and maybe cut short
                 raw, ended = _before_cut_key(raw)
-                if cut and not ended and raw.rstrip("\"'`*“‘")[-1:] not in (" ", "\t", "\r"):
+                if (cut and not ended and raw.rstrip("\"'`*“‘")[-1:] not in (" ", "\t", "\r")
+                        and (qid in found or not _LETTER_OR_DIGIT.search(raw))):
                     continue  # it runs into the end of a reply cut off inside its final object
             if raw.strip().strip("*`").strip().rstrip(",;") in ("null", "None"):
                 value = _NULL  # JSON's null (Python's None): no answer
@@ -377,13 +384,13 @@ def _scrape(text: str) -> dict[str, Any]:
                 value = _unquoted(raw)
         if value is None or value == "" or (isinstance(value, str) and _PLACEHOLDER.fullmatch(value)):
             continue
-        qid = normalize_qid(m.group(1))
         if qid:
             found[qid] = None if value is _NULL else value
     return found
 
 
 _CUT_KEY = re.compile(r"[\s\"'`*“‘”’]*(?:[QqFf]\d*[\s\"'`*”’]*)?")
+_LETTER_OR_DIGIT = re.compile(r"[^\W_]")
 _NULL = object()
 
 
@@ -418,11 +425,15 @@ def parse_reply(text: Any, expected: Sequence[str] | None = None) -> ParsedReply
 
     objects = _objects(text)
     if objects:
-        most = max(coverage(answers) for answers in objects)
-        chosen = [answers for answers in objects if coverage(answers) == most]
+        most = max(coverage(answers) for answers, _ in objects)
+        chosen = [answers for answers, _ in objects if coverage(answers) == most]
+        # Of those, the ones in the shape the prompt asks for: working notes keyed by question ID beside them
+        # ('Working: {"Q1": "3 PT + 4 NC"}') are no answer. Wrapped ones that disagree are still a hedge.
+        wrapped = [answers for answers, shaped in objects if shaped and coverage(answers) == most]
+        chosen = wrapped or chosen
         if wanted and most < len(wanted):  # e.g. one JSON object per question: merge them
-            if len(set().union(*objects) & wanted) > most:
-                chosen = objects
+            if len(set().union(*(answers for answers, _ in objects)) & wanted) > most:
+                chosen = [answers for answers, _ in objects]
         answers, ambiguous = _combined(chosen)
         return ParsedReply(answers, "lenient", _repeated_note([], ambiguous))
     scraped = _scrape(text)

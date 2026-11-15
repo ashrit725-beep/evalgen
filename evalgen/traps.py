@@ -143,18 +143,25 @@ _PLACE = re.compile(r"^(\d+(?:\.\d+)?) km ([NSEW]{1,3}) of (.+)$")
 # scope holds a given share of the records, and by none below a third; by 20 points before). The weights are this family's (none in a share of
 # digests, else a number from one up drawn alike) that leave about the least such gain with about as many planted
 # reports as before (5.0 a digest). A digest prints every report its plan adds, and holds every trap its plan
-# draws: the second reports are planted first, each about a record free of traps, then the re-reports, which
-# re-report a record that re-reports alone carry where no record is free, or where no more are free than the
-# corrections still to come need (_tiers: in the heaviest plans of the smallest digests), then the retractions,
-# and the corrections last, which need a record free of traps too but add no report (where none is left, one that
-# only re-reports carry, none of which changes its values when misread: _valued). A report planned under its
-# record's own ID that no record can carry (in neo, where every record's object may make another approach in the
-# digest or its slots: _with_siblings) is filed under its slot's own ID with a note naming its record instead, so
-# that it is still printed. Only a correction planned where every record carries a conflict or one report under
-# its own ID, whose values a careless reader may take for the record's, still finds no place: none of the 7,618
-# planned in the samples measured did (every built-in domain, the heaviest plans included), where 1 to 5% were
-# dropped before, with a few of neo's same-ID lines, so that a digest of neo printed as few as 13 reports. A domain
-# with no correctable field plants its corrections as second reports, which the digest makes room for
+# draws but, now and then in the heaviest plans, a correction: the second reports are planted first, each about a
+# record free of traps, then the re-reports, which re-report a record that re-reports alone carry where no record
+# is free, or where no more are free than the corrections still to come need and a slot of the record's group and
+# another source lets them (_tiers: in the heaviest plans of the smallest digests), then the retractions, and the
+# corrections last, which need a record free of traps too but add no report (where none is left, or none of those
+# left has room for a wrong value, one that only re-reports carry, none of which changes its values when misread:
+# _valued). A report planned under its record's own ID that no record can carry (in neo, where every record's
+# object may make another approach in the digest or its slots: _with_siblings) is filed under its slot's own ID
+# with a note naming its record instead, so that it is still printed. A correction planned where every record
+# carries a conflict or one report under its own ID, whose values a careless reader may take for the record's,
+# finds no place and is dropped: where no slot let a re-report share a record, the re-reports took the records the
+# corrections needed. That happens in the heaviest plans, of ten or more added reports (about one plan in eleven).
+# Measured on instances of seed 77 each built as a run's first (pipeline.build_instance), those plans in instances
+# 0-2999 dropped 5 of the 559 corrections they drew in earthquakes (0.9%) and none in weather, neo or invented,
+# and every plan of instances 0-999 dropped 2 of 1,969 in earthquakes and none in neo. No domain is spared: whole
+# runs dropped 1 of 120 (seed 502, 60 instances of the random mix with the example config's toy domain, in toy)
+# and 1 of 313 (seed 7, 150 instances of neo on a CAD feed whose objects pass a body twice). Before, 1 to 5% were
+# dropped, with a few of neo's same-ID lines, so that a digest of neo printed as few as 13 reports. A domain with
+# no correctable field plants its corrections as second reports, which the digest makes room for
 # (TrapPlan.for_domain). Corrections, which change no count, make up the traps that change an answer (two a
 # digest; the plan before planted 0.6).
 RETRACTION_WEIGHTS = (0.5, 0.25, 0.25)
@@ -267,7 +274,8 @@ class _Site:
     correction: bool = False  # the form the conflict being planted drew (_slot_conflict)
     form: str | None = None  # the form the re-report being planted was planned in (None: drawn, _slot_duplicate)
     reserve: int = 0  # the planned corrections still to be planted after this trap, each on a record free of traps
-    planned: bool = False  # the traps are the digest's plan (draw_plan), every one of which it holds
+    planned: bool = False  # the traps are the digest's plan (draw_plan), which it holds (see the plan for the exception)
+    shared_only: bool = False  # a correction's second search: only records that re-reports alone carry (inject_traps)
     pairs: list[tuple[int, dict[str, float]]] | None = None  # the real twin pairs (_twin_pairs), once read
 
 
@@ -1151,7 +1159,9 @@ def _tiers(site: _Site, barred: set[str]) -> list[list[Record]]:
     conflict), so that a digest prints every report its plan adds. Where no more records are free of traps
     than the corrections still to be planted need (_Site.reserve: each needs a record of its own and is planted
     last), a re-report shares a record before it takes a free one, so that the plan's corrections are planted
-    too. `barred` records are never in a tier."""
+    too; but where no slot can share one (_slot_pair: a slot of the record's group, of another source), it
+    still takes a free one, and a correction may then find no record (see the plan). `barred` records are
+    never in a tier."""
     free = [r for r in site.records if r.id not in site.used and r.id not in barred]
     if site.form is None:
         return [free]
@@ -1584,13 +1594,15 @@ def _slot_conflict(trap_id: str, site: _Site) -> _Candidate | None:
     unit = "" if spec.canonical_unit is None else f" {spec.canonical_unit}"
     final, draft = domain.statuses
     if spec.correctable and site.correction:  # the settling report shows the wrong value, a correction fixes it
-        e = _pick_unused(site.records, site.used, rng)
+        e = None if site.shared_only else _pick_unused(site.records, site.used, rng)
         if e is None and site.planned:
-            # No record is free of traps: one that only re-reports carry, none of whose careless readings touches
-            # the record's own values (each counts its report as a record of its own: _valued), so that the
-            # correction's readings and theirs act on rows of their own, and the digest holds every trap its
-            # plan draws.
-            e = _pick_unused(site.records, site.conflicted | _valued(site), rng)
+            # No record is free of traps (or, in a second search, none that is free had room for a wrong value:
+            # inject_traps): one that only re-reports carry, none of whose careless readings touches the record's
+            # own values (each counts its report as a record of its own: _valued), so that the correction's
+            # readings and theirs act on rows of their own, and the digest holds the trap its plan draws. (Where
+            # no such record is left either, the correction is dropped: see the plan above.)
+            free = {r.id for r in site.records if r.id not in site.used} if site.shared_only else set()
+            e = _pick_unused(site.records, site.conflicted | _valued(site) | free, rng)
         if e is None:
             return None
         value = e.values[spec.key]
@@ -1736,6 +1748,14 @@ def inject_traps(events: list[Event], questions: list[Question], rng: random.Ran
             kind, form = "duplicate", "cross_ref"
             site.form, site.tried = form, set()
             best = search(kind)
+        if best is None and config.plan is not None and form == "correction":
+            # No record free of traps had room for a wrong value (in neo, an approach whose values are tied to its
+            # twin's, none of which differs enough from its own: _wrong_value): the correction takes a record that
+            # only re-reports carry, as it does where none is free (_slot_conflict). This second search runs only
+            # where the plan's correction would otherwise be dropped.
+            site.shared_only, site.tried = True, set()
+            best = search(kind)
+            site.shared_only = False
         if best is None:
             continue
         chosen = best[2]

@@ -10,12 +10,15 @@ Scoring rules (public, like everything else):
   utc_time          within 1 minute (HH:MM, 24-hour)
   probability       not scored for accuracy; Brier score once the forecast resolves
 A string answer is read only when it is unambiguous: "7 events" and "seven events" are 7, "5,088.8 km"
-is 5088.8, ".5" is 0.5, "9:47 PM" and "21:47:00+00:00" are 21:47, and "It's a tie" or "equal counts" is
-a tie. A string that is no single committed value counts as no answer: several different values ("7 or
-8", "3-4", two event IDs, "nc75012345 or none", "Nevada or tie"), a bound ("at least 7", "7+", "<5%",
-"before 21:47", "21:47 ± 5 min"), a time with an offset other than +00:00, or a negated tie ("not a
-tie"). "About 7" and "~7" name one value and are read as it. A list of values (several values given for
-one question) is an answer only when every one of them reads the same; an object ({"value": 7}) is none.
+is 5088.8, ".5" is 0.5, "9:47 PM" and "21:47:00+00:00" are 21:47, and "It's a tie", "equal counts" or
+a tie that names the tied groups ("Tie: Nevada and Utah", "Nevada/Utah tie", "Nevada and Utah are tied")
+is a tie. A string that is no single committed value counts as no answer: several different values ("7
+or 8", "3-4", two event IDs, "nc75012345 or none", "Nevada or tie"), a bound ("at least 7", "7+", "<5%",
+"before 21:47", "21:47 ± 5 min"), a time with an offset other than +00:00, a negated tie ("not a tie"),
+or a tie beside a condition, an alternative or a leader ("Nevada, unless Utah and Idaho are tied", "tie,
+else Nevada", "Nevada leads; Utah and Idaho tie"). "About 7" and "~7" name one value and are read as it.
+A list of values (several values given for one question) is an answer only when every one of them reads
+the same; an object ({"value": 7}) is none.
 Readers never raise and take time linear in the length of an answer, whatever it holds: a number beyond
 the range of a float is no answer.
 
@@ -71,13 +74,40 @@ _CLOCK_HEDGE = re.compile(
     rf"|{_TIME}(?::\d{{2}})?\s*(?:[ap]\.?\s?m\.?\s*)?(?:(?:z|utc|gmt)\s*)?(?:at\s+the\s+(?:latest|earliest)"
     r"|and\s+(?:later|after|earlier|before)|onwards?\b)", re.IGNORECASE)
 _NEGATION = re.compile(r"\b(?:no|not|never|nor|none|without)\b|n't\b")
-_TIE_TOKEN = re.compile(r"[^\W\d_]+(?:'[^\W\d_]+)?|\d+")
-# Words a tie answer may hold besides a tie word and numbers: "It's a tie", "they are equal", "tied at 3 each".
+# A tie is never read beside a word that offers an alternative or sets a condition, names a leader or a winner,
+# breaks the tie, brings in other groups or makes it a near tie, nor in a question: "Nevada, unless Utah and Idaho
+# are tied", "tie between Nevada and Utah, else Nevada", "Nevada leads; Utah and Idaho are tied", "tie?".
+_TIE_REFUSED = re.compile(
+    r"\b(?:or|either|if|unless|otherwise|else|except|excepting|but|however|though|although|whereas|instead|leads?"
+    r"|leading|led|wins?|winning|winner|won|beats?|beaten|ahead|behind|edges?|edged|most|more|fewer|less|greater"
+    r"|larger|bigger|higher|lower|smaller|than|almost|nearly|close|closely|narrowly|barely|break|breaks|broken"
+    r"|breaker|tiebreak|tiebreaker|favou?rs?|favou?red|rest|remaining)\b|(?<!each )\bothers?\b|\?")
+# A tie answer read part by part: a word, a number ("2-2" is two), or any other sign.
+_TIE_PART = re.compile(r"(?P<word>[^\W\d_]+(?:'[^\W\d_]+)*)|(?P<number>\d+(?:[.,:]\d+)*)|(?P<sign>\S)")
+_TIE_FORMS = frozenset(TIE_WORDS | {"ties", "equally"})
+# Words that may stand between the names of the tied groups, as well as around them: "Nevada and Utah", "Nevada is
+# tied with Utah", "Nevada has 3, Utah has 3", "the Nevada and Utah regions".
+_TIE_JOINERS = frozenset((
+    "and", "vs", "v", "versus", "with", "plus", "is", "are", "was", "were", "be", "been", "at", "as", "to", "each",
+    "apiece", "all", "has", "have", "had", "a", "an", "the", "count", "counts", "number", "numbers", "total", "totals",
+    "tally", "tallies", "score"))
+# Other words a tie answer may hold, around the names but not between them: "It's a tie", "they are equal", "tie
+# between Nevada and Utah", "tie of Nevada and Utah", "I think it's a tie" (so that one name of several words,
+# "Gulf of Alaska (tie)", is not taken for two).
 _TIE_FILLERS = frozenset((
-    "a", "an", "the", "it", "it's", "its", "is", "this", "that", "that's", "there", "there's", "they", "they're",
-    "are", "was", "were", "be", "answer", "result", "exact", "exactly", "dead", "perfect", "at", "with", "each",
-    "apiece", "all", "vs", "v", "versus", "to", "and", "of", "count", "counts", "number", "numbers", "total", "totals",
-    "tally", "tallies", "split", "score", "game"))
+    "it", "it's", "its", "this", "that", "that's", "there", "there's", "they", "they're", "answer", "result",
+    "outcome", "verdict", "exact", "exactly", "dead", "perfect", "split", "game", "between", "among", "amongst", "for",
+    "of", "in", "on", "by", "so", "then", "thus", "hence", "therefore", "final", "finally", "overall", "here", "now",
+    "just", "simply", "really", "actually", "indeed", "also", "too", "still", "only", "precisely", "very", "quite",
+    "fully", "entirely", "clearly", "definitely", "probably", "likely", "maybe", "perhaps", "possibly", "effectively",
+    "essentially", "technically", "many", "much", "amount", "one", "ones", "side", "sides", "group", "groups", "i",
+    "i'd", "i'm", "we", "my", "our", "their", "think", "believe", "say", "would", "will", "should", "can", "could",
+    "must", "do", "does", "did", "end", "ends", "ended", "up", "come", "comes", "came", "out", "yes"))
+# Signs that may stand between the names of the tied groups: "Nevada, Utah", "Nevada/Utah", "Nevada = Utah", "Nevada:
+# 3, Utah: 3", "Nevada-Utah", "**Nevada** and **Utah**". Others (". ; !") end a sentence: never inside the list.
+_TIE_LIST_SIGNS = frozenset(",/&=+:-–—'\"*`“”‘’~%≈")
+_TIE_NOTES = {"(": 1, "[": 1, ")": -1, "]": -1}
+_TIE_IN_LIST = frozenset(("name", "joiner", "tie", "group", "number", "unit", "note", "sign"))
 _GROUP_ENDS = " .!\"'*`“”‘’"  # stripped from both ends of a group answer: "**Nevada**", "Nevada!"
 
 
@@ -219,25 +249,52 @@ def _read_id(t: AnswerType, value: Any) -> str | None:
 
 def _is_tie(text: str, suffixes: tuple[str, ...]) -> bool:
     """Whether a group answer (cased and spaced as _read_group leaves it) says that there is a tie and
-    nothing else: a tie word, with only fillers, numbers and the type's group words beside it ("It's a tie",
-    "equal counts", "tied at 3"), maybe followed by a note in parentheses or by "between ... and ..." ("tie
-    (Nevada 3, Utah 3)"), or said of the groups ("Nevada and Utah are tied"). A negated tie ("not a tie",
-    "Nevada, no tie") is none."""
+    nothing else, read as a whole: a tie word, with fillers, numbers and the type's group words around it
+    ("It's a tie", "equal counts", "tied at 3 events each"), and either no group named at all or the tied
+    groups, at least two, listed together before or after it ("Tie: Nevada and Utah", "Nevada/Utah tie",
+    "Nevada and Utah are tied", "Nevada is tied with Utah"). A note in parentheses may name groups and give
+    counts ("tie (Nevada 3, Utah 3)", "Nevada, Utah (tie)"); one group named beside a tie ("Nevada (tie)") is
+    no tie, nor is a tie beside a word that offers an alternative, sets a condition, names a leader or other
+    groups, or negates it, wherever that word stands ("tie (Nevada if the PT report counts)", "Nevada leads;
+    Utah and Idaho are tied", "not a tie": _TIE_REFUSED, _NEGATION). A word that follows a number is its unit,
+    not a name ("3 events")."""
     text = text.replace("’", "'")
-    if _NEGATION.search(text):
+    if _NEGATION.search(text) or _TIE_REFUSED.search(text):
         return False
-    if text.endswith(")") and text.rfind("(") > 0:
-        text = text[:text.rfind("(")]
-    for clause in (" between ", " among "):
-        if clause in text:
-            text = text[:text.index(clause)]
-    for verb in (" are ", " were "):
-        if verb in text:
-            text = text[text.rindex(verb) + len(verb):]
-    words = [word for word in _TIE_TOKEN.findall(text) if not word.isdigit()]
-    return any(word in TIE_WORDS for word in words) and all(
-        word in TIE_WORDS or word in _TIE_FILLERS or word in suffixes or (word[-1] == "s" and word[:-1] in suffixes)
-        for word in words)
+    groups = set(suffixes) | {f"{word}s" for word in suffixes} | {f"{word}es" for word in suffixes} | {
+        f"{word[:-1]}ies" for word in suffixes if word.endswith("y")}
+    tie, depth, kinds = False, 0, []  # kinds: what each part outside the notes is, in order
+    for m in _TIE_PART.finditer(text):
+        part = m.group()
+        if part in _TIE_NOTES:  # a note in parentheses stands as one part, whatever it holds
+            if depth == 0 and _TIE_NOTES[part] > 0:
+                kinds.append("note")
+            depth = max(0, depth + _TIE_NOTES[part])
+            continue
+        if m.lastgroup == "number":
+            kind = "number"
+        elif m.lastgroup == "sign":
+            kind = "sign" if part in _TIE_LIST_SIGNS else "stop"
+        elif part in _TIE_FORMS:
+            kind = "tie"
+        elif part in _TIE_JOINERS:
+            kind = "joiner"
+        elif part in _TIE_FILLERS:
+            kind = "filler"
+        elif part in groups:
+            kind = "group"
+        elif depth == 0 and kinds and kinds[-1] in ("number", "unit"):
+            kind = "unit"
+        else:
+            kind = "name"
+        tie = tie or kind == "tie"
+        if depth == 0:
+            kinds.append(kind)
+    names = [i for i, kind in enumerate(kinds) if kind == "name"]
+    if not tie or not names:
+        return tie
+    runs = sum(1 for i in names if i == 0 or kinds[i - 1] != "name")  # the groups named: runs of name words
+    return runs >= 2 and all(kind in _TIE_IN_LIST for kind in kinds[names[0]:names[-1] + 1])
 
 
 def _read_group(t: AnswerType, value: Any) -> str | None:

@@ -253,13 +253,17 @@ def test_a_heavy_plan_files_its_weather_reports_in_real_observations_places(seed
 # ------------------------------------------------------------- code-pipeline#3: every planned correction
 
 
-@pytest.mark.parametrize("domain, seed, index", [(WEATHER, 77, 336), (WEATHER, 606, 47), (INVENTED, 77, 2710)])
+@pytest.mark.parametrize("domain, seed, index", [(WEATHER, 77, 336), (WEATHER, 606, 47), (INVENTED, 77, 2710),
+                                                 (NEO, 77, 2883)])
 def test_a_heavy_plan_holds_every_trap_it_draws(domain, seed, index):
     """Corrections, planted last, need a record free of traps, and a heavy plan's re-reports took every record:
     these instances dropped every planned correction. The re-reports now leave as many records free as the
     corrections need, where they can share one, and a correction otherwise takes a record that only re-reports
     carry, none of which changes its values when misread. Their readings and the correction's act on rows of
-    their own, so misreading both changes what misreading each changes, no more."""
+    their own, so misreading both changes what misreading each changes, no more. Review: neo inst-2883 of seed 77
+    still dropped its third correction, its one record free of traps having no room for a wrong value (an
+    approach whose values are tied to its twin's): a correction that finds no place is now looked for again on
+    the records that only re-reports carry."""
     inst, _, bound, _ = built(domain, seed, index)
     assert Counter(t.form for t in inst.traps) == planned(seed, index)
     assert len(inst.reports) == drawn_size(seed, index)
@@ -275,6 +279,29 @@ def test_a_heavy_plan_holds_every_trap_it_draws(domain, seed, index):
                 added = [r for r in bound.resolve(inst.reports, inst.notices, Mishandle.from_dict(m))
                          if r not in bound.resolve(inst.reports, inst.notices)]
                 assert sorted(map(repr, both)) == sorted(map(repr, alone + added))
+
+
+@pytest.mark.parametrize("index", [336, 799, 1229, 2615, 2672])
+def test_a_correction_is_dropped_only_where_every_record_carries_a_conflict_or_one_report_under_its_id(index):
+    """Review: what is left of code-pipeline#3, as it is. A re-report shares a record to leave one free for each
+    correction to come only where a slot of the record's group and another source lets it; where none does, it takes
+    a free record, and the plan's last correction can find no record that is free of traps or carries only re-reports
+    none of which changes its values when misread (_valued). It is dropped, and nothing else is: the digest holds
+    every other trap its plan draws and prints its drawn size. These are the instances of seed 77 (0-2999, built as
+    a run's first, on synthetic data) whose plans of ten or more added reports drop a correction in any built-in
+    domain: all five in earthquakes, with 10 to 13 added reports on 7 to 10 records. traps.py gives the rate, which
+    is no domain's alone (a run of neo on a crafted CAD feed and one of the toy domain drop one too)."""
+    domain, seed = EARTHQUAKES, 77
+    inst, _, bound, _ = built(domain, seed, index)
+    want, got = planned(seed, index), Counter(t.form for t in inst.traps)
+    assert want - got == Counter({"correction": 1}) and not got - want
+    assert len(inst.reports) == drawn_size(seed, index)
+    conflicted = {t.target for t in inst.traps if t.kind.startswith("conflicting")}
+    naming: dict = {}
+    for g in unsettled(inst, bound):
+        naming.setdefault(g.same_as or g.ref, []).append(g.same_as is None)
+    valued = {record for record, own in naming.items() if own == [True]}
+    assert set(inst.event_ids) <= conflicted | valued  # no record a correction could have taken
 
 
 # --------------------------------------------------------- code-questions#0, sweep-guarantees#0: readings
