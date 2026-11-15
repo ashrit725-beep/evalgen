@@ -286,7 +286,7 @@ through, and no reader sees half a file.
 is rejection-sampled so that mishandling it changes at least one answer. When no placement does,
 the trap is still planted, as plain noise, and the report counts it as not load-bearing. Off the legacy path a
 placement whose unguarded reading changes an answer ranks below one that changes nothing; 3 of 1,642 such traps on
-seed 11 still change an answer, through readings that fail guards the key also keeps, and are counted in *fallen*,
+seed 11 still change an answer (from the audit fixes, not recomputed at b5a8d59), through readings that fail guards the key also keeps, and are counted in *fallen*,
 not *affected*.)
 
 Off the legacy path (0.3.0) the cycle is the same, step for step, in every domain:
@@ -498,7 +498,7 @@ to every reasonable reading of the wording:
   and dense ranking.
 * **Nearest questions:** the nearest quake must beat the runner-up by 3 km (or 8%) and, when questions are
   composed and on the legacy path, lie within 500 km, which keeps the 3% distance tolerance tight. Questions
-  moved by `reanchor_nearest` have no such bound (a key can lie thousands of km away, for example 7,448.3 km);
+  moved by `reanchor_nearest` have no such bound (a key can lie thousands of km away);
   the nearest gap still holds.
 * **Filters that cannot matter are banned:** filter/terminal pairs where the filter can never
   change the answer (e.g. `mag_at_least` → `max_mag`) are never generated.
@@ -513,8 +513,7 @@ filters, a different filter set, and never a public skeleton. Questions are bala
 two pools: each instance asks as many public as new questions, give or take one (an odd number of
 questions draws the pool of its last one at random), or rarely more, when no template of one pool fits
 an instance's records: two apart in 2 instances of 300 in the built-in domains, and three apart in 3 of
-the 300 instances of a random mix with the example config, such as random seed 7's inst-176 (neo), which asks
-4 public and 1 new. The cause is the twin rule, which leaves a slot of one pool with no candidate in its step (or
+the 300 instances of a random mix with the example config. The cause is the twin rule, which leaves a slot of one pool with no candidate in its step (or
 its six candidates fail), with spare slots trying public templates first. Off the legacy path, twin pairs stay within one question in every run. And once a template's
 twin has been used, the
 template never runs more than one question ahead of it. That matters when run-wide uniqueness
@@ -758,8 +757,8 @@ note naming one, the status, and the notices. Nine more things make that hold:
   another H, which no real approach gives. So a report is filed under an approach's own ID only where
   its object makes no other approach in the digest, its slots or its reports (`traps._with_siblings`), so that the
   slot's twin is never left beside it under another designation, and gives the object's H as another catalogue fits
-  it. Measured tie-break 0.540 -> 0.501 synthetic and 0.533 -> 0.500 CAD replay. A cross-referenced re-report's note
-  never names another approach of its own object, which rule 10 counts on its own (crafted CAD feed: 6/2/4 -> 0 in
+  it. Tie-break 0.540 -> 0.501 synthetic and 0.533 -> 0.500 CAD replay (from the audit fixes, not recomputed at b5a8d59). A cross-referenced re-report's note
+  never names another approach of its own object, which rule 10 counts on its own (crafted CAD feed, from the audit fixes, not recomputed at b5a8d59: 6/2/4 -> 0 in
   150-instance runs).
 - *Scopes.* Placing traps where a careless reading changes an answer puts planted reports in more of
   the questions' scopes (the questions all of whose filters they pass) than real records lie in, above
@@ -807,7 +806,7 @@ note naming one, the status, and the notices. Nine more things make that hold:
   near a record keeps (`Spatial.nearest_max_km`) let a planted report that decides such a question lead
   the next by no more than it, where a real one, its own key's answer, leads by any distance. Its answer
   and every trap's readings are computed again under the key's own guards, with no distance bound (`score_traps`
-  `unbounded`); before that, 8 answer-changing readings in 600 instances of seed 11 were left out of `affected` and
+  `unbounded`); before that, 8 answer-changing readings in 600 instances of seed 11 (from the audit fixes, not recomputed at b5a8d59) were left out of `affected` and
   `trap_exposure`.
 - *The plan.* A digest's traps are planned before its records (`traps.draw_plan`, seed path
   `instance/<i>/plan`), each kind on its own: none, one or two retractions (`RETRACTION_WEIGHTS`, none
@@ -834,7 +833,7 @@ note naming one, the status, and the notices. Nine more things make that hold:
   no free record takes one that only re-reports carry, none of which changes its values when misread (`_valued`); a
   report planned under a record's ID that no record can carry is filed as a cross-referenced re-report; and a domain
   with no correctable field plants its corrections as second reports and makes room for them (`TrapPlan.for_domain`).
-  Measured: all 7,618 planned corrections planted (1 to 5% dropped before; neo digests printed as few as 13 of 21
+  From the audit fixes, not recomputed at b5a8d59: all 7,618 planned corrections planted (1 to 5% dropped before; neo digests printed as few as 13 of 21
   reports). A correction finds no place only where every record carries a conflict or a lone same-ID report.
 - *Tied values.* A record's values are sometimes tied to its near twins': a station's temperature to its
   observations an hour away, an object's speed and distance past the Moon to its speed and distance
@@ -880,7 +879,7 @@ their range. Made-up slots did arise in heavy plans of the default synthetic poo
 weather about 1 digest in 100, with tells (off the station's minutes, tenths on five-minute marks, a median 13 °C
 jump), and in neo 1.2% of planted reports. Re-reports now share a record in a slot's place first, after which weather
 has 0 of 1,027 digests, neo 2 of 7,490 planted reports, earthquakes 1 in 600, and invented 5 in one heavy plan. The
-runs measured below, which are not heavy plans, needed none.
+runs measured below, which are not heavy plans, needed none. The heavy-plan rates in this paragraph come from the audit fixes and were not recomputed at b5a8d59.
 
 The measurements in the paragraphs that follow (*Measured*, *Measured again*, *Measured a third time*,
 *Reviewed* and *Measured at the final commit*), and the simulated readers of the Limitations, were made
@@ -1031,7 +1030,7 @@ the seed (one run a seed and domain, 1,008 instances, G), the same instances in 
 random` (one run a seed, 252 instances, R) and the legacy path (one run a seed, 252, L; see
 Limitations). Shares are of the gap between the naive reader and the oracle,
 with 95% intervals over instances; the 27 rule-free readers (13 single rules and 14 combinations, none
-reading a status, an ID, a note or a notice) are picked after the fact in each slice, which favours
+reading a status, an ID, a note or a notice; the reader lists in the measurement scripts give this count) are picked after the fact in each slice, which favours
 them:
 
 - Off the legacy path the best of them closes 0.0% [−0.7, +0.8] on G and 0.0% on R and C. On R and C
@@ -1531,7 +1530,7 @@ is cut to ±100 points, and a raw interval has zero width where neither side's a
   Limitations: one instance leaves its side's interval unwidened). A gap needs rows on both sides, so
   it exists only when the private config holds something out and draws rows of both sides. The held-out
   section appears whenever the run holds out a domain or genre; a gap that no model has gets a line saying
-  why: this run holds out none, none of the held-out ones was drawn, or no public one was drawn.
+  why: this run holds out none, none of the held-out ones was drawn, no public one was drawn, or no model was scored on both sides.
 
 The run section adds the mix, the inventory (each domain with its instances, each genre with its
 renderings), each domain's snapshot and the config's commitment. The console summary shows each
@@ -1848,8 +1847,8 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   from networks that file no event of their own. Readers that read no status, note or notice close
   much of the gap between the naive reader and the oracle there. Measured over every rendering of 252
   fresh synthetic legacy instances (seeds 5001–5084), at 8e63aee and again at the final commit
-  (b5a8d59), whose instances, prompts and figures are the same (legacy output is the same at every
-  0.3.0 commit), with 95% intervals over instances: merging reports within 40 s and 8.5 km, keeping the
+  (b5a8d59), whose instances, prompts and figures are the same (legacy output is the same at 4179c0c, 8e63aee and
+  b5a8d59), with 95% intervals over instances: merging reports within 40 s and 8.5 km, keeping the
   commoner network's, closes 24.7% [21.4, 28.2] (minute-rounded times blunt the window); the same merge
   within a region over 10 minutes or an hour, 35.6% and 37.8% (the 10-minute figure is not among the b5a8d59 outputs); dropping every report from at, pt and ew,
   the re-reporting networks that file no event of their own in the synthetic world, 28.5% [24.9, 32.4];
@@ -1968,7 +1967,7 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   interval implies (not recomputed at b5a8d59). With few held-out instances (a demo of 20) every interval is rough. A side whose
   compared rows all come from one
   instance shows no spread between instances, so nothing widens its interval: one misread digest of a
-  held-out domain beside thirty public instances made an adjusted gap of +80 points (+49 to +111 as computed, +49 to +100 in a report off the legacy path). A
+  held-out domain beside thirty public instances made an adjusted gap of +80 points (+55 to +105 as computed, +55 to +100 in a report off the legacy path; tests/test_gap_intervals.py builds this case: thirty public instances of five rows, four right each, and one held-out instance of five rows, all wrong). A
   gap is therefore flagged only when the compared rows of each side come from two instances or more.
 * **Legacy consistency compares as 0.2.0 did.** A legacy report's metamorphic consistency compares
   two answers by the scoring tolerance alone, so two right answers on either side of the key (4.96
@@ -2124,8 +2123,8 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   its note says which record it is, as the rules say. That is deliberate: placed beside its record,
   or kept clear of every printed one, it would stand where no real record does, a tell that the red
   teams measured (an AUC of about 0.6 for the gap to the nearest report of its group, and up to 0.66
-  for the reports at a weather re-report's station, before slots). Blind readers at 4179c0c flagged such reports
-  as odd (not re-read at b5a8d59), and every one of them answered by the rules; reading one by its place instead breaks rule 1.
+  for the reports at a weather re-report's station, before slots). A blind reader at 4179c0c noted such reports
+  as odd (one note, not re-read at b5a8d59), and every one of them answered by the rules; reading one by its place instead breaks rule 1.
 * **neo's renderings say a catalogue "recorded" an approach.** Every genre prints a close approach's
   time beside the words of every record domain ("the catalogue jpl recorded close approach
   2026dk15-ca1 near Venus at ...", "Recorded:"), which a reader could take for when a catalogue
@@ -2172,17 +2171,17 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   designation can name two objects. These are realism limits only: rule 1 settles every count. Barring sibling-free
   slots for cross-references, or refitting the alias H to the named object's, would each add a measurable tell (real
   approaches have a twin about a quarter of the time; a refitted H would give one designation two values whenever its
-  twin is printed), so neither is done. The answer-changing subcase, a note naming its own object's approach, is fixed.
+  twin is printed), so neither is done. The answer-changing subcase, a note naming its own object's approach, is fixed. The figures in this item come from the audit fixes and were not recomputed at b5a8d59.
 * **Correction magnitudes keep the record's type (deferred).** An earthquake correction's wrong magnitude keeps the
   record's magnitude type: 44 of 239 reviewed conflict reports lie outside their type's range in real-feed runs. The
   correction notice settles every answer. A root fix needs a new domain hook, since `planted_value` never sees the
   type; same-type donors would change most earthquake corrections off the legacy path, and the fallbacks would still
-  ignore the type. This is a known limitation.
+  ignore the type. This is a known limitation. The 44 of 239 count comes from the audit fixes and was not recomputed at b5a8d59.
 * **Made-up slots (deferred).** Where a record's group has no slot left, a made-up slot can still be planted (see
   *When no slot is left* under Traps).
 * **Re-reports pinned to a station (deferred).** Filing a weather re-report at its record's station and time would bring
   back measured tells (AUC about 0.37 and 0.40 for station-pinned re-reports, and about 0.6 for the gap to the nearest
-  report), so it is not done. Rules 1 and 2 settle every case.
+  report), so it is not done. Rules 1 and 2 settle every case. The AUC figures come from the audit fixes and were not recomputed at b5a8d59.
 
 **Mixes**
 
