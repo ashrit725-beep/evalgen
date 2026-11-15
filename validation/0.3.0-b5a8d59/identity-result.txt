@@ -1,0 +1,10 @@
+Legacy identity check at b5a8d59 against 0.2.0 (b9f29b4). Same commands in both trees, same --out folder names.
+1. Pinned run: generate --seed 16222556419173536875 --instances 100 (no new flags).
+files 406 406 only in old [] only in new []
+identical after masking 406 differ 0 []
+2. Legacy demo: demo --seed 42 --instances 20.
+files 271 271 only in old [] only in new []
+identical after masking 270 differ 1 ['report.md']
+   The only other differing lines: report.md lines 7-8 ('Generated with: evalgen 0.2.0' vs 0.3.0, and the master-seed commitment prefix), both volatile.
+Volatile manifest keys masked: run_id, seed_commitment, seed_nonce, generated_at_utc, code_sha256, evalgen_version (and their copies in report.json).
+Pinned hashes: tests/test_regression_020.py passes in the full suite at b5a8d59 (1328 passed).

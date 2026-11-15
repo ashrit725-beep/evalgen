@@ -1,0 +1,58 @@
+rows 870 random 840 confounded 30
+seeds 120 1 120
+['mock', 'mock:held_out_domains=0.15', 'mock:held_out_domains=0.3', 'mock:held_out_genres=0.15', 'mock:held_out_genres=0.3', 'naive', 'oracle']
+
+== flag rates over seeds (Wilson 95%)
+mock                            n=120  template 120/120 [96.9,100.0]  source 1/120 [0.1,4.6]  genre 0/120 [0.0,3.1]
+mock:held_out_domains=0.15      n=120  template 120/120 [96.9,100.0]  source 60/120 [41.2,58.8]  genre 0/120 [0.0,3.1]
+mock:held_out_domains=0.3       n=120  template 120/120 [96.9,100.0]  source 115/120 [90.6,98.2]  genre 0/120 [0.0,3.1]
+mock:held_out_genres=0.15       n=120  template 120/120 [96.9,100.0]  source 2/120 [0.5,5.9]  genre 109/120 [84.3,94.8]
+mock:held_out_genres=0.3        n=120  template 120/120 [96.9,100.0]  source 2/120 [0.5,5.9]  genre 120/120 [96.9,100.0]
+naive                           n=120  template 0/120 [0.0,3.1]  source 1/120 [0.1,4.6]  genre 0/120 [0.0,3.1]
+oracle                          n=120  template 0/120 [0.0,3.1]  source 0/120 [0.0,3.1]  genre 0/120 [0.0,3.1]
+
+== pooled false-flag (oracle+naive+plain mock), per gap
+  source_gap oracle+naive+mock: 2/360 = 0.6% [0.2,2.0]
+  source_gap mock: 1/120 = 0.8% [0.1,4.6]
+  genre_gap oracle+naive+mock: 0/360 = 0.0% [0.0,1.1]
+  genre_gap mock: 0/120 = 0.0% [0.0,3.1]
+  template_gap oracle+naive+mock: 120/360 = 33.3% [28.7,38.4]
+  template_gap mock: 120/120 = 100.0% [96.9,100.0]
+
+== coverage: does the adjusted CI contain -injected (penalised mocks); and contain 0 (plain mock)
+  mock                           source_gap: CI contains 0 115/120; mean half-width 13.7; like-for-like share 55.0%
+  mock                           genre_gap: CI contains 0 111/120; mean half-width 6.4; like-for-like share 87.9%
+  mock                           template_gap: CI contains 0 0/120; mean half-width 7.9; like-for-like share 100.0%
+  mock:held_out_domains=0.15     source_gap: covers -injected 113/120 = 94.2% [88.4,97.1]; mean injected -14.5, mean adjusted +13.7, mean half-width 13.8
+  mock:held_out_domains=0.3      source_gap: covers -injected 114/120 = 95.0% [89.5,97.7]; mean injected -29.4, mean adjusted +28.5, mean half-width 13.9
+  mock:held_out_genres=0.15      genre_gap: covers -injected 111/120 = 92.5% [86.4,96.0]; mean injected -14.9, mean adjusted +14.9, mean half-width 6.5
+  mock:held_out_genres=0.3       genre_gap: covers -injected 111/120 = 92.5% [86.4,96.0]; mean injected -29.5, mean adjusted +29.5, mean half-width 6.5
+  naive                          source_gap: CI contains 0 119/120; mean half-width 13.2; like-for-like share 55.0%
+  naive                          genre_gap: CI contains 0 119/120; mean half-width 5.4; like-for-like share 87.9%
+  naive                          template_gap: CI contains 0 116/120; mean half-width 6.4; like-for-like share 100.0%
+  oracle                         source_gap: CI contains 0 120/120; mean half-width 12.1; like-for-like share 55.0%
+  oracle                         genre_gap: CI contains 0 120/120; mean half-width 4.7; like-for-like share 87.9%
+  oracle                         template_gap: CI contains 0 120/120; mean half-width 2.4; like-for-like share 100.0%
+
+== cross flags (penalty on one kind flags the other gap)
+  mock:held_out_domains=0.15: genre gap flagged 0/120
+  mock:held_out_domains=0.3: genre gap flagged 0/120
+  mock:held_out_genres=0.15: source gap flagged 2/120
+  mock:held_out_genres=0.3: source gap flagged 2/120
+
+== accuracy (originals) and cross-genre consistency, mean over seeds
+  mock                           acc 75.8%  cross-genre 56.1% (n=120)
+  mock:held_out_domains=0.15     acc 72.2%  cross-genre 52.4% (n=120)
+  mock:held_out_domains=0.3      acc 68.5%  cross-genre 50.2% (n=120)
+  mock:held_out_genres=0.15      acc 71.5%  cross-genre 51.0% (n=120)
+  mock:held_out_genres=0.3       acc 67.3%  cross-genre 46.4% (n=120)
+  naive                          acc 60.2%  cross-genre 100.0% (n=120)
+  oracle                         acc 100.0%  cross-genre 100.0% (n=120)
+
+== confounded mix
+  ('mock', 'genre_gap') {'n/a': 15}
+  ('mock', 'source_gap') {'n/a': 15}
+  ('mock', 'template_gap') {'flagged': 15}
+  ('mock:held_out_domains=0.3', 'genre_gap') {'n/a': 15}
+  ('mock:held_out_domains=0.3', 'source_gap') {'n/a': 15}
+  ('mock:held_out_domains=0.3', 'template_gap') {'flagged': 15}

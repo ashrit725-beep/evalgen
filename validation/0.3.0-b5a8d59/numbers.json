@@ -1,0 +1,1713 @@
+{
+  "prov.code_commit_b5a8d59": {
+    "value": "b5a8d59e370b82343f5f83b6bed04d35b2363202",
+    "source": "validation/HEAD.txt"
+  },
+  "prov.tree_code_fingerprint": {
+    "value": "11d06dc71115a544687f2f1d9568cd8954cefb5f3c207335f8a9f7507c70409f",
+    "source": "validation/calibration/calib-1-40/checks.json (tree_code_fingerprint); results.jsonl code_sha256 (870 of 870)"
+  },
+  "prov.calibration_report_rows": {
+    "value": 870,
+    "source": "validation/calibration/calib-*/results.jsonl (pool_check.txt: rows 870)",
+    "unit": "rows"
+  },
+  "prov.random_seeds": {
+    "value": 120,
+    "source": "pool_check.txt (seeds 120, 1..120)",
+    "unit": "seeds"
+  },
+  "prov.confounded_seeds": {
+    "value": 15,
+    "source": "calib-*/config-confounded.json runs; pool_check.txt (confounded 30 rows = 15 x 2)",
+    "unit": "seeds"
+  },
+  "prov.generation_runs": {
+    "value": 135,
+    "source": "validation/calibration/calib-*/checks.json (runs; all ok)",
+    "unit": "runs"
+  },
+  "prov.runs_ok": {
+    "value": 135,
+    "source": "validation/calibration/calib-*/checks.json (status.ok)",
+    "unit": "runs"
+  },
+  "prov.instances_per_run": {
+    "value": 100,
+    "source": "validation/run_calib.sh (--instances 100)"
+  },
+  "prov.tests_passed": {
+    "value": 1328,
+    "source": "validation/tests-final.log (1328 passed, 264.90 s); repair_result.json (tests_failed 0)"
+  },
+  "prov.tests_failed": {
+    "value": 0,
+    "source": "validation/repair_result.json"
+  },
+  "cal.self_check_agree": {
+    "value": "161958/161958",
+    "source": "results.jsonl self_check (1,007,454/7 random + 36,072/2 confounded; calib_more.py)"
+  },
+  "cal.questions_per_run_min_max": {
+    "value": [
+      377,
+      421
+    ],
+    "source": "results.jsonl accuracy.n (calib_more.py range)",
+    "unit": "questions"
+  },
+  "cal.oracle_accuracy_originals": {
+    "value": 100.0,
+    "source": "results.jsonl accuracy.rate (calib_stats.txt)",
+    "unit": "percent"
+  },
+  "cal.oracle_accuracy_all_renderings": {
+    "value": 100.0,
+    "source": "results.jsonl accuracy_all_renderings (calib_more.py)",
+    "unit": "percent"
+  },
+  "false_flags.oracle.template": {
+    "value": {
+      "k": 0,
+      "n": 120,
+      "wilson95": [
+        0.0,
+        3.1
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (flag rates over seeds); calib_stats.json flags",
+    "unit": "flagged runs / 120"
+  },
+  "false_flags.oracle.source": {
+    "value": {
+      "k": 0,
+      "n": 120,
+      "wilson95": [
+        0.0,
+        3.1
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (flag rates over seeds); calib_stats.json flags",
+    "unit": "flagged runs / 120"
+  },
+  "false_flags.oracle.genre": {
+    "value": {
+      "k": 0,
+      "n": 120,
+      "wilson95": [
+        0.0,
+        3.1
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (flag rates over seeds); calib_stats.json flags",
+    "unit": "flagged runs / 120"
+  },
+  "false_flags.naive.template": {
+    "value": {
+      "k": 0,
+      "n": 120,
+      "wilson95": [
+        0.0,
+        3.1
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (flag rates over seeds); calib_stats.json flags",
+    "unit": "flagged runs / 120"
+  },
+  "false_flags.naive.source": {
+    "value": {
+      "k": 1,
+      "n": 120,
+      "wilson95": [
+        0.1,
+        4.6
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (flag rates over seeds); calib_stats.json flags",
+    "unit": "flagged runs / 120"
+  },
+  "false_flags.naive.genre": {
+    "value": {
+      "k": 0,
+      "n": 120,
+      "wilson95": [
+        0.0,
+        3.1
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (flag rates over seeds); calib_stats.json flags",
+    "unit": "flagged runs / 120"
+  },
+  "false_flags.mock.template": {
+    "value": {
+      "k": 120,
+      "n": 120,
+      "wilson95": [
+        96.9,
+        100.0
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (flag rates over seeds); calib_stats.json flags",
+    "unit": "flagged runs / 120"
+  },
+  "false_flags.mock.source": {
+    "value": {
+      "k": 1,
+      "n": 120,
+      "wilson95": [
+        0.1,
+        4.6
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (flag rates over seeds); calib_stats.json flags",
+    "unit": "flagged runs / 120"
+  },
+  "false_flags.mock.genre": {
+    "value": {
+      "k": 0,
+      "n": 120,
+      "wilson95": [
+        0.0,
+        3.1
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (flag rates over seeds); calib_stats.json flags",
+    "unit": "flagged runs / 120"
+  },
+  "false_flags.pooled.oracle+naive+mock.source": {
+    "value": {
+      "k": 2,
+      "n": 360,
+      "wilson95": [
+        0.2,
+        2.0
+      ],
+      "seed_bootstrap95": [
+        0.0,
+        1.4
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (pooled false-flag rows); calib_stats.json pooled_false",
+    "unit": "flagged gap-runs"
+  },
+  "false_flags.pooled.oracle+naive+mock.genre": {
+    "value": {
+      "k": 0,
+      "n": 360,
+      "wilson95": [
+        0.0,
+        1.1
+      ],
+      "seed_bootstrap95": [
+        0.0,
+        0.0
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (pooled false-flag rows); calib_stats.json pooled_false",
+    "unit": "flagged gap-runs"
+  },
+  "false_flags.pooled.oracle+naive+mock.template": {
+    "value": {
+      "k": 120,
+      "n": 360,
+      "wilson95": [
+        28.7,
+        38.4
+      ],
+      "seed_bootstrap95": [
+        33.3,
+        33.3
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (pooled false-flag rows); calib_stats.json pooled_false",
+    "unit": "flagged gap-runs"
+  },
+  "false_flags.pooled.mock.source": {
+    "value": {
+      "k": 1,
+      "n": 120,
+      "wilson95": [
+        0.1,
+        4.6
+      ],
+      "seed_bootstrap95": [
+        0.0,
+        2.5
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (pooled false-flag rows); calib_stats.json pooled_false",
+    "unit": "flagged gap-runs"
+  },
+  "false_flags.pooled.mock.genre": {
+    "value": {
+      "k": 0,
+      "n": 120,
+      "wilson95": [
+        0.0,
+        3.1
+      ],
+      "seed_bootstrap95": [
+        0.0,
+        0.0
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (pooled false-flag rows); calib_stats.json pooled_false",
+    "unit": "flagged gap-runs"
+  },
+  "false_flags.pooled.mock.template": {
+    "value": {
+      "k": 120,
+      "n": 120,
+      "wilson95": [
+        96.9,
+        100.0
+      ],
+      "seed_bootstrap95": [
+        100.0,
+        100.0
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (pooled false-flag rows); calib_stats.json pooled_false",
+    "unit": "flagged gap-runs"
+  },
+  "false_flags.source_plus_genre.oracle_naive_mock": {
+    "value": {
+      "k": 2,
+      "n": 720,
+      "rate_pct": 0.28,
+      "wilson95": [
+        0.08,
+        1.01
+      ]
+    },
+    "source": "calib_more.py (Wilson on 2/720)",
+    "unit": "flagged checks"
+  },
+  "false_flags.flagged_seeds.naive_source": {
+    "value": {
+      "seed": 71,
+      "adjusted": 13.2,
+      "ci": [
+        0.7,
+        25.6
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl (naive, source_gap)"
+  },
+  "false_flags.flagged_seeds.mock_source": {
+    "value": {
+      "seed": 20,
+      "adjusted": 20.2,
+      "ci": [
+        6.7,
+        33.7
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl (mock, source_gap)"
+  },
+  "power.domains_0.15.targeted": {
+    "value": {
+      "k": 60,
+      "n": 120,
+      "rate_pct": 50.0,
+      "wilson95": [
+        41.2,
+        58.8
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt; calib_stats.json flags",
+    "unit": "flagged runs / 120"
+  },
+  "power.domains_0.15.other_gap": {
+    "value": {
+      "k": 0,
+      "n": 120,
+      "wilson95": [
+        0.0,
+        3.1
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (cross flags)",
+    "unit": "flagged runs / 120"
+  },
+  "power.domains_0.30.targeted": {
+    "value": {
+      "k": 115,
+      "n": 120,
+      "rate_pct": 95.8,
+      "wilson95": [
+        90.6,
+        98.2
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt; calib_stats.json flags",
+    "unit": "flagged runs / 120"
+  },
+  "power.domains_0.30.other_gap": {
+    "value": {
+      "k": 0,
+      "n": 120,
+      "wilson95": [
+        0.0,
+        3.1
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (cross flags)",
+    "unit": "flagged runs / 120"
+  },
+  "power.genres_0.15.targeted": {
+    "value": {
+      "k": 109,
+      "n": 120,
+      "rate_pct": 90.8,
+      "wilson95": [
+        84.3,
+        94.8
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt; calib_stats.json flags",
+    "unit": "flagged runs / 120"
+  },
+  "power.genres_0.15.other_gap": {
+    "value": {
+      "k": 2,
+      "n": 120,
+      "wilson95": [
+        0.5,
+        5.9
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (cross flags)",
+    "unit": "flagged runs / 120"
+  },
+  "power.genres_0.30.targeted": {
+    "value": {
+      "k": 120,
+      "n": 120,
+      "rate_pct": 100.0,
+      "wilson95": [
+        96.9,
+        100.0
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt; calib_stats.json flags",
+    "unit": "flagged runs / 120"
+  },
+  "power.genres_0.30.other_gap": {
+    "value": {
+      "k": 2,
+      "n": 120,
+      "wilson95": [
+        0.5,
+        5.9
+      ]
+    },
+    "source": "validation/calibration/pool_check.txt (cross flags)",
+    "unit": "flagged runs / 120"
+  },
+  "cross_flags.domain_penalties_genre_gap": {
+    "value": {
+      "k": 0,
+      "n": 240
+    },
+    "source": "validation/calibration/pool_check.txt; calib_extra.py"
+  },
+  "cross_flags.genre_penalties_source_gap": {
+    "value": {
+      "k": 4,
+      "n": 240,
+      "seeds": {
+        "0.15": [
+          20,
+          33
+        ],
+        "0.30": [
+          20,
+          96
+        ]
+      },
+      "beyond_plain_mock": 2
+    },
+    "source": "calib_extra.py (seed lists)"
+  },
+  "realised_injected_gap": {
+    "value": {
+      "domains_0.15": -14.452339715165056,
+      "domains_0.30": -29.400427779294674,
+      "genres_0.15": -14.887381029291387,
+      "genres_0.30": -29.518442700314154
+    },
+    "source": "validation/calibration/calib-*/results.jsonl (injected); calib_stats.json cover",
+    "unit": "points (mean over seeds)"
+  },
+  "recovery_ratio": {
+    "value": {
+      "domains_0.15": [
+        1.004,
+        0.959,
+        1.05
+      ],
+      "domains_0.30": [
+        0.995,
+        0.968,
+        1.022
+      ],
+      "genres_0.15": [
+        0.988,
+        0.973,
+        1.004
+      ],
+      "genres_0.30": [
+        0.994,
+        0.984,
+        1.003
+      ]
+    },
+    "source": "calib_more.py (estimate, seed-bootstrap 95%)",
+    "unit": "ratio of means"
+  },
+  "coverage.domains_0.15": {
+    "value": {
+      "k": 113,
+      "n": 120,
+      "wilson95": [
+        88.4,
+        97.1
+      ],
+      "rate_pct": 94.2
+    },
+    "source": "validation/calibration/pool_check.txt (covers -injected); calib_stats.json cover",
+    "unit": "covering runs / 120"
+  },
+  "coverage.domains_0.30": {
+    "value": {
+      "k": 114,
+      "n": 120,
+      "wilson95": [
+        89.5,
+        97.7
+      ],
+      "rate_pct": 95.0
+    },
+    "source": "validation/calibration/pool_check.txt (covers -injected); calib_stats.json cover",
+    "unit": "covering runs / 120"
+  },
+  "coverage.genres_0.15": {
+    "value": {
+      "k": 111,
+      "n": 120,
+      "wilson95": [
+        86.4,
+        96.0
+      ],
+      "rate_pct": 92.5
+    },
+    "source": "validation/calibration/pool_check.txt (covers -injected); calib_stats.json cover",
+    "unit": "covering runs / 120"
+  },
+  "coverage.genres_0.30": {
+    "value": {
+      "k": 111,
+      "n": 120,
+      "wilson95": [
+        86.4,
+        96.0
+      ],
+      "rate_pct": 92.5
+    },
+    "source": "validation/calibration/pool_check.txt (covers -injected); calib_stats.json cover",
+    "unit": "covering runs / 120"
+  },
+  "coverage.pooled_four_penalised": {
+    "value": {
+      "k": 449,
+      "n": 480,
+      "rate_pct": 93.5,
+      "wilson95": [
+        91.0,
+        95.4
+      ],
+      "seed_bootstrap95": [
+        90.8,
+        95.8
+      ]
+    },
+    "source": "calib_stats.json cover_pooled; calib_extra.py (seed bootstrap)",
+    "unit": "covering runs / 480"
+  },
+  "halfwidth.five_mocks.template": {
+    "value": {
+      "mean": 8.42,
+      "seed_bootstrap95": [
+        8.37,
+        8.46
+      ]
+    },
+    "source": "calib_extra.py (five-mock average of per-run half-widths)",
+    "unit": "points"
+  },
+  "halfwidth.five_mocks.source": {
+    "value": {
+      "mean": 13.97,
+      "seed_bootstrap95": [
+        13.74,
+        14.21
+      ]
+    },
+    "source": "calib_extra.py (five-mock average of per-run half-widths)",
+    "unit": "points"
+  },
+  "halfwidth.five_mocks.genre": {
+    "value": {
+      "mean": 6.53,
+      "seed_bootstrap95": [
+        6.46,
+        6.6
+      ]
+    },
+    "source": "calib_extra.py (five-mock average of per-run half-widths)",
+    "unit": "points"
+  },
+  "halfwidth.mock.template": {
+    "value": {
+      "mean": 7.95,
+      "seed_bootstrap95": [
+        7.9,
+        8.0
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl; calib_stats.json hw",
+    "unit": "points"
+  },
+  "halfwidth.mock.source": {
+    "value": {
+      "mean": 13.7,
+      "seed_bootstrap95": [
+        13.46,
+        13.96
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl; calib_stats.json hw",
+    "unit": "points"
+  },
+  "halfwidth.mock.genre": {
+    "value": {
+      "mean": 6.44,
+      "seed_bootstrap95": [
+        6.36,
+        6.52
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl; calib_stats.json hw",
+    "unit": "points"
+  },
+  "halfwidth.naive.template": {
+    "value": {
+      "mean": 6.39,
+      "seed_bootstrap95": [
+        6.33,
+        6.44
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl; calib_stats.json hw",
+    "unit": "points"
+  },
+  "halfwidth.naive.source": {
+    "value": {
+      "mean": 13.22,
+      "seed_bootstrap95": [
+        12.97,
+        13.48
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl; calib_stats.json hw",
+    "unit": "points"
+  },
+  "halfwidth.naive.genre": {
+    "value": {
+      "mean": 5.37,
+      "seed_bootstrap95": [
+        5.31,
+        5.42
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl; calib_stats.json hw",
+    "unit": "points"
+  },
+  "halfwidth.oracle.template": {
+    "value": {
+      "mean": 2.45,
+      "seed_bootstrap95": [
+        2.42,
+        2.48
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl; calib_stats.json hw",
+    "unit": "points"
+  },
+  "halfwidth.oracle.source": {
+    "value": {
+      "mean": 12.1,
+      "seed_bootstrap95": [
+        11.9,
+        12.3
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl; calib_stats.json hw",
+    "unit": "points"
+  },
+  "halfwidth.oracle.genre": {
+    "value": {
+      "mean": 4.65,
+      "seed_bootstrap95": [
+        4.6,
+        4.71
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl; calib_stats.json hw",
+    "unit": "points"
+  },
+  "like_for_like.source": {
+    "value": {
+      "mean_pct": 55.0,
+      "seed_bootstrap95": [
+        53.9,
+        56.2
+      ],
+      "run_range_pct": [
+        36.2,
+        71.9
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl (coverage field; plain mock, identical across models)",
+    "unit": "percent of rows"
+  },
+  "like_for_like.genre": {
+    "value": {
+      "mean_pct": 87.9,
+      "seed_bootstrap95": [
+        87.4,
+        88.3
+      ],
+      "run_range_pct": [
+        78.7,
+        94.0
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl (coverage field; plain mock, identical across models)",
+    "unit": "percent of rows"
+  },
+  "like_for_like.template": {
+    "value": {
+      "mean_pct": 100.0,
+      "seed_bootstrap95": [
+        100.0,
+        100.0
+      ],
+      "run_range_pct": [
+        98.7,
+        100.0
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl (coverage field; plain mock, identical across models)",
+    "unit": "percent of rows"
+  },
+  "confounded.template_flagged": {
+    "value": {
+      "plain_mock": 15,
+      "domains_0.30": 15,
+      "n_each": 15
+    },
+    "source": "calib_stats.json confounded (statuses); results.jsonl config-confounded"
+  },
+  "confounded.source_and_genre_na": {
+    "value": {
+      "plain_mock": [
+        15,
+        15
+      ],
+      "domains_0.30": [
+        15,
+        15
+      ]
+    },
+    "source": "calib_stats.json confounded",
+    "unit": "n/a runs (of 15 each)"
+  },
+  "confounded.raw_means": {
+    "value": {
+      "mock": {
+        "genre": -0.3566507051302947,
+        "source": -1.1121516837679093,
+        "template": 31.092333560434508,
+        "template_adjusted": 31.284826498466355
+      },
+      "mock:held_out_domains=0.3": {
+        "genre": 30.210306502724922,
+        "source": 28.630560632585215,
+        "template": 31.189959654860864,
+        "template_adjusted": 31.59381862703577
+      }
+    },
+    "source": "calib_stats.json confounded raw_means",
+    "unit": "points"
+  },
+  "accuracy.oracle": {
+    "value": {
+      "mean": 100.0,
+      "seed_bootstrap95": [
+        100.0,
+        100.0
+      ],
+      "run_range": [
+        100.0,
+        100.0
+      ],
+      "cross_genre_mean": 100.0,
+      "cross_genre_bootstrap95": [
+        100.0,
+        100.0
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl (accuracy.rate, cross_genre_consistency.rate); calib_stats.json",
+    "unit": "percent"
+  },
+  "accuracy.naive": {
+    "value": {
+      "mean": 60.2,
+      "seed_bootstrap95": [
+        59.7,
+        60.6
+      ],
+      "run_range": [
+        55.0,
+        66.4
+      ],
+      "cross_genre_mean": 100.0,
+      "cross_genre_bootstrap95": [
+        100.0,
+        100.0
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl (accuracy.rate, cross_genre_consistency.rate); calib_stats.json",
+    "unit": "percent"
+  },
+  "accuracy.mock": {
+    "value": {
+      "mean": 75.8,
+      "seed_bootstrap95": [
+        75.4,
+        76.2
+      ],
+      "run_range": [
+        70.6,
+        81.7
+      ],
+      "cross_genre_mean": 56.1,
+      "cross_genre_bootstrap95": [
+        55.8,
+        56.4
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl (accuracy.rate, cross_genre_consistency.rate); calib_stats.json",
+    "unit": "percent"
+  },
+  "accuracy.mock:held_out_domains=0.15": {
+    "value": {
+      "mean": 72.2,
+      "seed_bootstrap95": [
+        71.8,
+        72.6
+      ],
+      "run_range": [
+        66.8,
+        77.5
+      ],
+      "cross_genre_mean": 52.4,
+      "cross_genre_bootstrap95": [
+        52.1,
+        52.7
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl (accuracy.rate, cross_genre_consistency.rate); calib_stats.json",
+    "unit": "percent"
+  },
+  "accuracy.mock:held_out_domains=0.3": {
+    "value": {
+      "mean": 68.5,
+      "seed_bootstrap95": [
+        68.1,
+        69.0
+      ],
+      "run_range": [
+        62.9,
+        74.9
+      ],
+      "cross_genre_mean": 50.2,
+      "cross_genre_bootstrap95": [
+        49.8,
+        50.5
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl (accuracy.rate, cross_genre_consistency.rate); calib_stats.json",
+    "unit": "percent"
+  },
+  "accuracy.mock:held_out_genres=0.15": {
+    "value": {
+      "mean": 71.5,
+      "seed_bootstrap95": [
+        71.1,
+        72.0
+      ],
+      "run_range": [
+        65.1,
+        77.5
+      ],
+      "cross_genre_mean": 51.0,
+      "cross_genre_bootstrap95": [
+        50.7,
+        51.3
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl (accuracy.rate, cross_genre_consistency.rate); calib_stats.json",
+    "unit": "percent"
+  },
+  "accuracy.mock:held_out_genres=0.3": {
+    "value": {
+      "mean": 67.3,
+      "seed_bootstrap95": [
+        66.8,
+        67.8
+      ],
+      "run_range": [
+        58.9,
+        73.9
+      ],
+      "cross_genre_mean": 46.4,
+      "cross_genre_bootstrap95": [
+        46.1,
+        46.7
+      ]
+    },
+    "source": "validation/calibration/calib-*/results.jsonl (accuracy.rate, cross_genre_consistency.rate); calib_stats.json",
+    "unit": "percent"
+  },
+  "shortcut.L.prox_40s_8p5km": {
+    "value": "+24.7 [+21.4, +28.2]",
+    "source": "validation/shortcuts/tables.md (tables.md, L table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.L.relay_drop": {
+    "value": "-22.1 [-30.3, -14.1]",
+    "source": "validation/shortcuts/tables.md (tables.md, L table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.L.best_combination": {
+    "value": "+38.9 [+35.3, +42.9] c_g3600+relay_x",
+    "source": "validation/shortcuts/tables.md (tables.md, L table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.L.status_rule": {
+    "value": "+41.1 [+37.3, +44.9]",
+    "source": "validation/shortcuts/tables.md (tables.md, L table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.L.paired_status_minus_best": {
+    "value": "+2.2 [-0.6, +4.9]",
+    "source": "validation/shortcuts/tables.md (tables.md, L table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.G.prox_40s_8p5km": {
+    "value": "-0.7 [-1.6, +0.0]",
+    "source": "validation/shortcuts/tables.md (tables.md, G table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.G.relay_drop": {
+    "value": "-38.0 [-42.5, -33.6]",
+    "source": "validation/shortcuts/tables.md (tables.md, G table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.G.best_rule_free": {
+    "value": "+0.0 [-0.7, +0.8] vsim_t3600",
+    "source": "validation/shortcuts/tables.md (tables.md, G table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.G.status_rule": {
+    "value": "+37.2 [+34.5, +39.8]",
+    "source": "validation/shortcuts/tables.md (tables.md, G table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.G.paired_status_minus_best": {
+    "value": "+37.2 [+34.5, +39.9]",
+    "source": "validation/shortcuts/tables.md (tables.md, G table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.R.prox_40s_8p5km": {
+    "value": "-1.0 [-3.1, +1.0]",
+    "source": "validation/shortcuts/tables.md (tables.md, R table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.R.relay_drop": {
+    "value": "-43.6 [-55.0, -34.1]",
+    "source": "validation/shortcuts/tables.md (tables.md, R table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.R.status_rule": {
+    "value": "+38.6 [+32.7, +44.3]",
+    "source": "validation/shortcuts/tables.md (tables.md, R table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.C.prox_40s_8p5km": {
+    "value": "-0.6 [-1.4, +0.1]",
+    "source": "validation/shortcuts/tables.md (tables.md, C table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.C.relay_drop": {
+    "value": "-38.0 [-42.7, -33.4]",
+    "source": "validation/shortcuts/tables.md (tables.md, C table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.C.status_rule": {
+    "value": "+37.2 [+34.4, +39.8]",
+    "source": "validation/shortcuts/tables.md (tables.md, C table)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.G.4179c0c.status_rule": {
+    "value": "+38.2 [+35.5, +40.8]",
+    "source": "the 4179c0c shortcut tables, not committed (G table (4179c0c))",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.R.4179c0c.status_rule": {
+    "value": "+37.5 [+31.9, +43.2]",
+    "source": "the 4179c0c shortcut tables, not committed (R table (4179c0c))",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.C.4179c0c.status_rule": {
+    "value": "+38.2 [+35.5, +40.6]",
+    "source": "the 4179c0c shortcut tables, not committed (C table (4179c0c))",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.G.4179c0c.prox_40s_8p5km": {
+    "value": "-0.9 [-1.8, -0.1]",
+    "source": "the 4179c0c shortcut tables, not committed (G table (4179c0c))",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "shortcut.L.paired_ratio": {
+    "value": "0.95 [0.88, 1.01]",
+    "source": "validation/shortcuts/L-paired.txt (L-paired.txt)",
+    "unit": "share of naive-to-oracle gap, % [95% CI over instances]"
+  },
+  "auc.L.all": {
+    "value": {
+      "interval": 182,
+      "point": 147,
+      "cells": 600,
+      "id_excluded": [
+        175,
+        141
+      ]
+    },
+    "source": "validation/shortcuts/L-auc-fail.txt; summary.json samples.L.auc_fail_counts"
+  },
+  "auc.L.domain": {
+    "value": {
+      "interval": 184,
+      "point": 147,
+      "cells": 600
+    },
+    "source": "validation/shortcuts/L-auc-fail.txt"
+  },
+  "auc.L.genre": {
+    "value": {
+      "interval": 184,
+      "point": 147,
+      "cells": 600
+    },
+    "source": "validation/shortcuts/L-auc-fail.txt"
+  },
+  "auc.G.all": {
+    "value": {
+      "interval": 3,
+      "point": 0,
+      "cells": 1314
+    },
+    "source": "validation/shortcuts/tables.md (G AUC line); summary.json"
+  },
+  "auc.G.domain": {
+    "value": {
+      "interval": 15,
+      "point": 4,
+      "cells": 2515
+    },
+    "source": "validation/shortcuts/tables.md; G-auc-fail.txt"
+  },
+  "auc.G.genre": {
+    "value": {
+      "interval": 186,
+      "point": 29,
+      "cells": 8929
+    },
+    "source": "validation/shortcuts/tables.md; G-auc-fail.txt"
+  },
+  "auc.G.cell": {
+    "value": {
+      "interval": 617,
+      "point": 83,
+      "cells": 17120
+    },
+    "source": "validation/shortcuts/tables.md"
+  },
+  "auc.R.all": {
+    "value": {
+      "interval": 20,
+      "point": 2,
+      "cells": 1290
+    },
+    "source": "validation/shortcuts/tables.md"
+  },
+  "auc.R.domain": {
+    "value": {
+      "interval": 50,
+      "point": 3,
+      "cells": 2468
+    },
+    "source": "validation/shortcuts/tables.md"
+  },
+  "auc.R.genre": {
+    "value": {
+      "interval": 254,
+      "point": 81,
+      "cells": 6800
+    },
+    "source": "validation/shortcuts/tables.md"
+  },
+  "auc.C.all": {
+    "value": {
+      "interval": 2,
+      "point": 0,
+      "cells": 1314
+    },
+    "source": "validation/shortcuts/tables.md"
+  },
+  "auc.C.domain": {
+    "value": {
+      "interval": 14,
+      "point": 2,
+      "cells": 2515
+    },
+    "source": "validation/shortcuts/tables.md"
+  },
+  "auc.G.4179c0c": {
+    "value": {
+      "all": [
+        2,
+        0,
+        1314
+      ],
+      "domain": [
+        13,
+        4,
+        2515
+      ],
+      "genre": [
+        185,
+        22,
+        8919
+      ],
+      "cell": [
+        589,
+        77,
+        17115
+      ]
+    },
+    "source": "the 4179c0c shortcut tables (not committed) (4179c0c)"
+  },
+  "blind.cells": {
+    "value": 28,
+    "source": "audit-final/blind-round-4179c0c-b.json; finish3-results/blind-read-*.json (7 genres x 4 domains)",
+    "unit": "cells"
+  },
+  "blind.questions": {
+    "value": 118,
+    "source": "recounted from blind-read answers (28 prompts) and checker text questions= (14 passes)",
+    "unit": "questions"
+  },
+  "blind.matched": {
+    "value": 118,
+    "source": "checks: questions=N matched=N, slips 0, ambiguities 0, bugs 0 (14 checker passes)",
+    "unit": "questions"
+  },
+  "blind.problem_notes": {
+    "value": 24,
+    "source": "checks problems (severity nit: 24)",
+    "unit": "notes"
+  },
+  "live_8ef8657.replay_identical": {
+    "value": false,
+    "source": "the 8ef8657 run replayed at b5a8d59 (cmp of 32 files; run folder not committed)"
+  },
+  "live_8ef8657.files_total": {
+    "value": 32,
+    "source": "the 8ef8657 run folder's file list (not committed)"
+  },
+  "live_8ef8657.files_identical": {
+    "value": 6,
+    "source": "cmp: .evalgen-run, snapshot/earthquakes/{events.json,raw_feed.geojson}, snapshot/neo/{events.json,raw_cad.json}, snapshot/weather/raw_feed.json"
+  },
+  "live_8ef8657.files_differ": {
+    "value": 26,
+    "source": "cmp: 6 instances, 12 prompts, 2 audit, forecasts.json, manifest.json, 3 snapshot.json, weather/events.json"
+  },
+  "live_8ef8657.replay_at_8ef8657": {
+    "value": {
+      "files_identical": 28,
+      "files_provenance_only": 4
+    },
+    "source": "the 8ef8657 replay compared with its run (not committed)"
+  },
+  "live_8ef8657.instance_domains": {
+    "value": {
+      "8ef8657": [
+        "weather",
+        "earthquakes",
+        "neo",
+        "weather",
+        "weather",
+        "neo"
+      ],
+      "b5a8d59": [
+        "earthquakes",
+        "weather",
+        "neo",
+        "earthquakes",
+        "earthquakes",
+        "neo"
+      ]
+    },
+    "source": "instances/inst-000..005.json domain fields"
+  },
+  "live_8ef8657.forecast_rules": {
+    "value": {
+      "8ef8657": 1,
+      "b5a8d59": 3
+    },
+    "source": "forecasts.json"
+  },
+  "live_8ef8657.weather_events_sha256": {
+    "value": {
+      "8ef8657": "2ab416ef3807dcc4aa77eef03867fa09f869252f2317c19356314d6250f39a83",
+      "b5a8d59": "1d258f4590432ef299560b19d102b99e2c7e91ac6e8e429d9e5bedd44f7cb65f",
+      "raw_feed_sha256": "0d2b55df583e9fe3fc051391982ac44cd7dd39992b26e1f1c98546891e50d7f1"
+    },
+    "source": "runs/live-smoke-2026-11-12/manifest.json (snapshots.weather); the replay's snapshot (not committed)"
+  },
+  "demo.instances": {
+    "value": 40,
+    "source": "the demo log (not committed); the demo report (not committed)"
+  },
+  "demo.questions": {
+    "value": 157,
+    "source": "the demo report (not committed) (Instances / questions)"
+  },
+  "demo.self_check": {
+    "value": "471/471 renderings; 40/40 instances recovered",
+    "source": "the demo report (not committed) (Generator audit)"
+  },
+  "demo.accuracy": {
+    "value": {
+      "oracle": [
+        157,
+        157,
+        100.0
+      ],
+      "naive": [
+        93,
+        157,
+        59.2
+      ],
+      "mock": [
+        117,
+        157,
+        74.5
+      ]
+    },
+    "source": "the demo report (not committed) (Model accuracy); the demo log (not committed)",
+    "unit": "correct/questions, percent"
+  },
+  "demo.consistency": {
+    "value": {
+      "metamorphic": {
+        "oracle": 100.0,
+        "naive": 100.0,
+        "mock": 57.0
+      },
+      "cross_genre": {
+        "oracle": 100.0,
+        "naive": 100.0,
+        "mock": 56.1
+      }
+    },
+    "source": "the demo report (not committed) (Metamorphic, Cross-genre)",
+    "unit": "percent"
+  },
+  "demo.template_gap_adjusted": {
+    "value": {
+      "oracle": [
+        0.0,
+        -6,
+        6
+      ],
+      "naive": [
+        -3.8,
+        -14,
+        6
+      ],
+      "mock": [
+        32.9,
+        20,
+        46
+      ]
+    },
+    "source": "the demo report (not committed) (Seen vs new templates); flag: mock 'overfitting?'",
+    "unit": "points [95% CI]"
+  },
+  "demo.source_gap_adjusted": {
+    "value": {
+      "oracle": [
+        0.0,
+        -24,
+        24
+      ],
+      "naive": [
+        -5.9,
+        -32,
+        20
+      ],
+      "mock": [
+        -1.4,
+        -31,
+        28
+      ]
+    },
+    "source": "the demo report (not committed) (Sources); no flags",
+    "unit": "points [95% CI]"
+  },
+  "demo.genre_gap_adjusted": {
+    "value": {
+      "oracle": [
+        0.0,
+        -9,
+        9
+      ],
+      "naive": [
+        3.4,
+        -6,
+        13
+      ],
+      "mock": [
+        3.9,
+        -10,
+        18
+      ]
+    },
+    "source": "the demo report (not committed) (Genres); no flags",
+    "unit": "points [95% CI]"
+  },
+  "demo.trap_catch": {
+    "value": {
+      "oracle": 100.0,
+      "naive": 12.9,
+      "mock": 70.5,
+      "triples": 699
+    },
+    "source": "the demo report (not committed) (Trap catch rate)",
+    "unit": "percent"
+  },
+  "demo.audit_sample": {
+    "value": {
+      "checked": 4,
+      "of": 157,
+      "reviewed": 0
+    },
+    "source": "the demo report (not committed) (Generator audit)"
+  },
+  "identity.files_0_2_0": {
+    "value": 677,
+    "source": "the identity runs (not committed) (demo-legacy 271, pinned 406)"
+  },
+  "identity.masked_identical": {
+    "value": "677/677",
+    "source": "the identity runs (not committed) masking plus the Generated-with line (verify_identity check)"
+  },
+  "identity.strict_differ": {
+    "value": [
+      "demo-legacy/manifest.json",
+      "demo-legacy/report.json",
+      "demo-legacy/report.md",
+      "pinned/manifest.json"
+    ],
+    "source": "cmp of the identity runs (not committed) vs new"
+  },
+  "identity.pinned_files": {
+    "value": {
+      "incl_marker": 406,
+      "without_marker": 405
+    },
+    "source": "the identity runs (not committed)"
+  },
+  "shortcut.L.identical_to_4179c0c_and_8e63aee": {
+    "value": true,
+    "source": "the 4179c0c shortcut outputs (not committed) (ok true); L-paired.txt identical; L-runs-compare.json (1428 files identical; 84 manifests differ in provenance keys)"
+  },
+  "shortcut.L.relay_drop_atptew_only": {
+    "value": "+28.5 [+24.9, +32.4]",
+    "source": "validation/shortcuts/report.md (L table, 'relay drop, at, pt, ew only')"
+  },
+  "shortcut.L.proximity_1h": {
+    "value": "+37.8 [+34.1, +41.4]",
+    "source": "validation/shortcuts/report.md (comparison table, L column)"
+  },
+  "shortcut.L.precision_neo": {
+    "value": "+0.0 [+0.0, +0.0]",
+    "source": "validation/shortcuts/tables.md"
+  },
+  "shortcut.G.best_combination": {
+    "value": "-0.7 [-1.6, +0.0] c_prox_src+neo",
+    "source": "validation/shortcuts/tables.md"
+  },
+  "shortcut.G.relay_drop_atptew_only": {
+    "value": "-1.7 [-2.7, -0.6]",
+    "source": "validation/shortcuts/report.md (G table, comparison column)"
+  },
+  "shortcut.R.best_rule_free": {
+    "value": "+0.0 [0, 0] neo_prec_drop",
+    "source": "validation/shortcuts/tables.md"
+  },
+  "shortcut.R.relay_drop_atptew_only": {
+    "value": "-0.3 [-2.5, +2.1]",
+    "source": "validation/shortcuts/report.md (R table)"
+  },
+  "shortcut.C.best_rule_free": {
+    "value": "+0.0 [0, 0] neo_prec_drop",
+    "source": "validation/shortcuts/tables.md"
+  },
+  "shortcut.C.relay_drop_atptew_only": {
+    "value": "-1.7 [-2.7, -0.7]",
+    "source": "validation/shortcuts/report.md (C table)"
+  },
+  "shortcut.G.domain_best_rule_free": {
+    "value": {
+      "weather": "+1.4 [-1.1, +3.8] vsim_t3600",
+      "neo": "+0.2 [+0.0, +0.8]",
+      "invented": "+0.9 [-0.9, +2.6]",
+      "earthquakes": "+0.0"
+    },
+    "source": "validation/shortcuts/tables.md",
+    "unit": "share, %"
+  },
+  "shortcut.G.genre_best_rule_free": {
+    "value": {
+      "table": "+1.9 [-0.0, +4.3]",
+      "form": "+1.3 [-0.5, +3.4]",
+      "radio": "+1.7 [-0.7, +3.9]",
+      "email": "+0.4 [-0.8, +1.9]",
+      "classic_news_chat": "+0.0"
+    },
+    "source": "validation/shortcuts/tables.md",
+    "unit": "share, %"
+  },
+  "shortcut.G.domain_status_rule": {
+    "value": {
+      "weather": "+50.0 [+44.2, +55.6]",
+      "earthquakes": "+39.6 [+34.1, +45.3]",
+      "neo": "+30.8 [+25.3, +36.2]",
+      "invented": "+31.0 [+26.2, +36.2]"
+    },
+    "source": "validation/shortcuts/tables.md",
+    "unit": "share, %"
+  },
+  "shortcut.R.domain_best_rule_free.weather": {
+    "value": "+2.0 [+0.0, +5.2] vsim_03",
+    "source": "validation/shortcuts/tables.md"
+  },
+  "shortcut.G.cell_largest": {
+    "value": {
+      "weather/radio": "+7.6 [-4.7, +17.7] prox_g3600",
+      "weather/table": "+6.7 [+0.0, +14.4]",
+      "weather/classic": "+6.4 [-4.3, +17.0]"
+    },
+    "source": "validation/shortcuts/tables.md"
+  },
+  "shortcut.G.4179c0c.best_rule_free": {
+    "value": "+0.0 [-0.7, +0.8] vsim_t3600",
+    "source": "the 4179c0c shortcut tables (not committed)"
+  },
+  "shortcut.R.4179c0c.prox_40s_8p5km": {
+    "value": "-1.2 [-3.2, +0.8]",
+    "source": "the 4179c0c shortcut tables (not committed)"
+  },
+  "shortcut.R.4179c0c.relay_drop": {
+    "value": "-41.1 [-51.4, -31.8]",
+    "source": "the 4179c0c shortcut tables (not committed)"
+  },
+  "shortcut.C.4179c0c.relay_drop": {
+    "value": "-37.8 [-42.5, -33.1]",
+    "source": "the 4179c0c shortcut tables (not committed)"
+  },
+  "shortcut.G.4179c0c.relay_drop": {
+    "value": "-37.8 [-42.4, -33.0]",
+    "source": "the 4179c0c shortcut tables (not committed)"
+  },
+  "shortcut.G.4179c0c.paired": {
+    "value": "+38.1 [+35.4, +40.7]",
+    "source": "the 4179c0c shortcut tables (not committed)"
+  },
+  "shortcut.R.4179c0c.naive_accuracy": {
+    "value": 0.618,
+    "source": "the 4179c0c shortcut tables (not committed)",
+    "unit": "fraction"
+  },
+  "shortcut.G.naive_accuracy": {
+    "value": {
+      "4179c0c": 0.603,
+      "b5a8d59": 0.602
+    },
+    "source": "tables.md G rows (both commits)"
+  },
+  "auc.R.4179c0c": {
+    "value": {
+      "all": [
+        19,
+        2,
+        1290
+      ],
+      "domain": [
+        44,
+        3,
+        2468
+      ],
+      "genre": [
+        261,
+        93,
+        6771
+      ]
+    },
+    "source": "the 4179c0c shortcut tables (not committed) (4179c0c)"
+  },
+  "auc.C.4179c0c": {
+    "value": {
+      "all": [
+        2,
+        0,
+        1314
+      ],
+      "domain": [
+        14,
+        5,
+        2515
+      ]
+    },
+    "source": "the 4179c0c shortcut tables (not committed) (4179c0c)"
+  },
+  "auc.G.strongest.b5a8d59": {
+    "value": {
+      "second_x4_grp_tz": [
+        0.601,
+        0.515,
+        0.682,
+        35
+      ],
+      "corr_x4_neo_sib_ddist": [
+        0.417,
+        0.347,
+        0.487,
+        64
+      ],
+      "earthquake_second_x4_grp_tz": [
+        0.695,
+        0.56,
+        0.811,
+        19
+      ],
+      "weather_dup_same_x3_decide_gap": [
+        0.347,
+        0.266,
+        0.418,
+        50
+      ],
+      "earthquake_phantom_x3_decide_gap": [
+        0.349,
+        0.262,
+        0.447,
+        16
+      ],
+      "weather_dup_x3_decide_gap": [
+        0.349,
+        0.288,
+        0.409,
+        73
+      ]
+    },
+    "source": "validation/shortcuts/G-auc-fail.txt",
+    "unit": "[AUC, CI low, CI high, planted]"
+  },
+  "auc.R.strongest.b5a8d59": {
+    "value": {
+      "dup_xref_x3_wx_dwind": [
+        0.317,
+        0.229,
+        0.418,
+        31
+      ],
+      "corr_x4_grp_tz": [
+        0.678,
+        0.555,
+        0.784,
+        23
+      ]
+    },
+    "source": "validation/shortcuts/tables.md (R strongest)"
+  },
+  "blind.per_genre_answers": {
+    "value": {
+      "chat": 16,
+      "classic": 17,
+      "email": 17,
+      "form": 17,
+      "news": 19,
+      "radio": 14,
+      "table": 18
+    },
+    "source": "recounted from blind-read answers and checks",
+    "unit": "questions"
+  },
+  "blind.checker_passes": {
+    "value": 14,
+    "source": "blind-round-4179c0c-b.json checks (8) + finish3 blind-check (6)",
+    "unit": "passes"
+  },
+  "live_8ef8657.code_sha256": {
+    "value": {
+      "8ef8657": "c281a51ae725456d3588c98e838e037d542b3d9cfe24fc0af160532da20b4ce4",
+      "b5a8d59": "11d06dc71115a544687f2f1d9568cd8954cefb5f3c207335f8a9f7507c70409f"
+    },
+    "source": "runs/live-smoke-2026-11-12/manifest.json; calibration results in this folder"
+  },
+  "live_8ef8657.seed_labels_changed": {
+    "value": true,
+    "source": "manifest.json seeds keys (8ef8657 vs b5a8d59)"
+  },
+  "live_8ef8657.instances_differ": {
+    "value": 6,
+    "source": "instances/inst-000..005.json",
+    "unit": "files"
+  },
+  "live_8ef8657.prompts_differ": {
+    "value": 12,
+    "source": "prompts/inst-*/v0,v1.txt",
+    "unit": "files"
+  },
+  "live_8ef8657.audit_differ": {
+    "value": 2,
+    "source": "audit/audit_sample.jsonl, audit_sample.md",
+    "unit": "files"
+  },
+  "live_8ef8657.snapshot_differ": {
+    "value": 4,
+    "source": "snapshot/*/snapshot.json (2) and weather events.json, weather snapshot.json",
+    "unit": "files"
+  },
+  "live_8ef8657.repl_8ef8657_provenance": {
+    "value": [
+      "manifest.json",
+      "snapshot/earthquakes/snapshot.json",
+      "snapshot/neo/snapshot.json",
+      "snapshot/weather/snapshot.json"
+    ],
+    "source": "the 8ef8657 replay compared with its run (not committed)"
+  },
+  "demo.traps_planted": {
+    "value": 306,
+    "source": "the demo report (not committed) (Run)",
+    "unit": "traps"
+  },
+  "demo.load_bearing": {
+    "value": 199,
+    "source": "the demo report (not committed) (Run)",
+    "unit": "traps"
+  },
+  "demo.questions_76_81": {
+    "value": [
+      76,
+      81
+    ],
+    "source": "the demo report (not committed) (Seen vs new templates)"
+  },
+  "identity.demo_legacy_files": {
+    "value": 271,
+    "source": "the identity runs (not committed) file count"
+  },
+  "identity.strict_differ_count": {
+    "value": 4,
+    "source": "identity cmp list"
+  },
+  "coverage.design_expected_not_recomputed": {
+    "value": "94.8% [92.3, 96.9] (4179c0c)",
+    "source": "not recomputed at b5a8d59"
+  },
+  "calib.template_plain_mock_adjusted": {
+    "value": {
+      "mean": 30.07,
+      "boot95": [
+        29.38,
+        30.78
+      ]
+    },
+    "source": "calib_stats.json adj mock template_gap",
+    "unit": "points"
+  },
+  "calib.naive_template_zero": {
+    "value": "0/120",
+    "source": "pool_check.txt"
+  },
+  "live_b5a8d59.run_date": {
+    "value": "2026-11-15",
+    "source": "runs/live-smoke-2026-11-15/manifest.json (fetched_at)"
+  },
+  "live_b5a8d59.nws_observations": {
+    "value": 546,
+    "source": "runs/live-smoke-2026-11-15/manifest.json (snapshots.weather.n_events)"
+  },
+  "live_b5a8d59.jpl_close_approaches": {
+    "value": 61,
+    "source": "runs/live-smoke-2026-11-15/manifest.json (snapshots.neo.n_events)"
+  },
+  "live_b5a8d59.usgs_events": {
+    "value": 199,
+    "source": "runs/live-smoke-2026-11-15/manifest.json (snapshots.earthquakes.n_events)"
+  },
+  "live_b5a8d59.oracle_self_check": {
+    "value": "56/56 checks; resolution invariant 6/6; no problems",
+    "source": "runs/live-smoke-2026-11-15/manifest.json (self_check)"
+  },
+  "live_b5a8d59.sources_fallen_back": {
+    "value": 0,
+    "source": "runs/live-smoke-2026-11-15/manifest.json (note is null in all three snapshots)"
+  },
+  "live_b5a8d59.replay_instances_prompts_audit_forecasts_identical": {
+    "value": true,
+    "source": "cmp of instances/, prompts/, audit/ and forecasts.json against the live run folder (not committed)"
+  },
+  "live_b5a8d59.replay_frozen_feeds_identical": {
+    "value": true,
+    "source": "cmp of the raw feeds and events.json in snapshot/ against the live run folder (not committed)"
+  },
+  "live_b5a8d59.replay_differences": {
+    "value": "snapshot.json: note only; manifest.json: run_id, seed_commitment, seed_nonce, generated_at_utc, replay, config.snapshot_dir, snapshots.*.note",
+    "source": "key-by-key comparison of the two run folders (not committed)"
+  },
+  "live_b5a8d59.manifest": {
+    "value": "runs/live-smoke-2026-11-15/manifest.json",
+    "source": "committed"
+  }
+}
