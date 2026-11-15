@@ -187,8 +187,7 @@ note breaks the match.
 commitment: `generate` and every later step check its bytes before any of it runs and refuse a file
 whose bytes differ, so a held-out domain or genre cannot change once the commitment is published,
 and what runs is exactly the bytes that were checked (compiled from them, with no bytecode cache read
-or written beside the plugin). The SHA-256 covers that one file and nothing it reads, so a held-out set cannot
-change only if the plugin is self-contained: no reads of other files, the environment, the clock or the network,
+or written beside the plugin). The SHA-256 covers that one file and nothing it reads, so the held-out set stays fixed under the commitment only if the plugin is self-contained: no reads of other files, the environment, the clock or the network,
 and imports from evalgen and the standard library only. A plugin given by its path alone is committed to by that
 path only:
 the manifest records the SHA-256 of the bytes that ran, a later step loads a changed file with a
@@ -285,8 +284,7 @@ through, and no reader sees half a file.
 (Questions are composed *before* the digest because traps are aimed at them. Each trap's placement
 is rejection-sampled so that mishandling it changes at least one answer. When no placement does,
 the trap is still planted, as plain noise, and the report counts it as not load-bearing. Off the legacy path a
-placement whose unguarded reading changes an answer ranks below one that changes nothing; 3 of 1,642 such traps on
-seed 11 still change an answer (from the audit fixes, not recomputed at b5a8d59), through readings that fail guards the key also keeps, and are counted in *fallen*,
+placement whose unguarded reading changes an answer ranks below one that changes nothing; a few such traps in the audit's samples still change an answer, through readings that fail guards the key also keeps, and are counted in *fallen*,
 not *affected*.)
 
 Off the legacy path (0.3.0) the cycle is the same, step for step, in every domain:
@@ -757,9 +755,8 @@ note naming one, the status, and the notices. Nine more things make that hold:
   another H, which no real approach gives. So a report is filed under an approach's own ID only where
   its object makes no other approach in the digest, its slots or its reports (`traps._with_siblings`), so that the
   slot's twin is never left beside it under another designation, and gives the object's H as another catalogue fits
-  it. Tie-break 0.540 -> 0.501 synthetic and 0.533 -> 0.500 CAD replay (from the audit fixes, not recomputed at b5a8d59). A cross-referenced re-report's note
-  never names another approach of its own object, which rule 10 counts on its own (crafted CAD feed, from the audit fixes, not recomputed at b5a8d59: 6/2/4 -> 0 in
-  150-instance runs).
+  it. The audit measured the tie-break fix's effect on the naive reader on synthetic and CAD digests (not recomputed at b5a8d59). A cross-referenced re-report's note
+  never names another approach of its own object, which rule 10 counts on its own (on the audit's crafted CAD feed, not recomputed at b5a8d59).
 - *Scopes.* Placing traps where a careless reading changes an answer puts planted reports in more of
   the questions' scopes (the questions all of whose filters they pass) than real records lie in, above
   all in counting questions' scopes: a planted report changes a count whenever it lies in its scope,
@@ -833,8 +830,7 @@ note naming one, the status, and the notices. Nine more things make that hold:
   no free record takes one that only re-reports carry, none of which changes its values when misread (`_valued`); a
   report planned under a record's ID that no record can carry is filed as a cross-referenced re-report; and a domain
   with no correctable field plants its corrections as second reports and makes room for them (`TrapPlan.for_domain`).
-  From the audit fixes, not recomputed at b5a8d59: all 7,618 planned corrections planted (1 to 5% dropped before; neo digests printed as few as 13 of 21
-  reports). A correction finds no place only where every record carries a conflict or a lone same-ID report.
+  In the audit's samples (not recomputed at b5a8d59) nearly every planned correction was planted; heavy plans dropped a few. A correction finds no place only where every record carries a conflict or a lone same-ID report.
 - *Tied values.* A record's values are sometimes tied to its near twins': a station's temperature to its
   observations an hour away, an object's speed and distance past the Moon to its speed and distance
   past Earth (`Domain.twin_fields`). A correction's wrong value of such a field, where the record has a
@@ -877,8 +873,7 @@ When no slot is left, as can happen with a live pool little larger than a digest
 beside a real record (`traps._virtual_slot`), with values drawn from its group's and folded into
 their range. Made-up slots did arise in heavy plans of the default synthetic pool before the final checks: in
 weather about 1 digest in 100, with tells (off the station's minutes, tenths on five-minute marks, a median 13 °C
-jump), and in neo 1.2% of planted reports. Re-reports now share a record in a slot's place first, after which weather
-has 0 of 1,027 digests, neo 2 of 7,490 planted reports, earthquakes 1 in 600, and invented 5 in one heavy plan. The
+jump), and in neo 1.2% of planted reports. Re-reports now share a record in a slot's place first, after which the audit's samples had no made-up slot in weather and only a few in the other domains' heavy plans. The
 runs measured below, which are not heavy plans, needed none. The heavy-plan rates in this paragraph come from the audit fixes and were not recomputed at b5a8d59.
 
 The measurements in the paragraphs that follow (*Measured*, *Measured again*, *Measured a third time*,
@@ -1038,7 +1033,7 @@ them:
   it is the hour-window value-similarity merge, at +0.0%, and every other reader that changes a digest
   loses (the 40 s and 8.5 km merge −0.7%, −1.0% and −0.6% on G, R and C; dropping the relay sources −38%
   to −44%). The status rule closes 37.2% [34.5, 39.8] on G, 38.6% [32.7, 44.3] on R and 37.2% on C, and
-  no shortcut adds to it (at 4179c0c, with the 40 s merge, 36.5% on G; no such row at b5a8d59).
+  no shortcut adds to it (the 40 s merge with the status rule is not among the b5a8d59 outputs).
 - The largest best reader of a domain is weather's: +1.4% [−1.1, +3.8] on G, +2.0% [+0.0, +5.2] on R and
   +1.3% on C. Of G's 28 domain-by-genre cells (36 instances each) the best is weather/radio, +7.6%
   [−4.7, +17.7], and no cell's interval lies above 0.
@@ -1525,7 +1520,7 @@ is cut to ±100 points, and a raw interval has zero width where neither side's a
   cluster, the design effect is close to 1 and the intervals hardly change; the simulations below
   measure both cases. The template gap keeps its 0.2.0 interval: almost every instance asks both
   pools.
-- **The flag** is the template gap's: an adjusted gap above 10 points whose 95% interval excludes
+- **The flag** is the same for all three gaps: an adjusted gap above 10 points whose 95% interval excludes
   0, and, for the source and genre gaps, compared rows from two instances or more on each side (see
   Limitations: one instance leaves its side's interval unwidened). A gap needs rows on both sides, so
   it exists only when the private config holds something out and draws rows of both sides. The held-out
@@ -1850,7 +1845,7 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   (b5a8d59), whose instances, prompts and figures are the same (legacy output is the same at 4179c0c, 8e63aee and
   b5a8d59), with 95% intervals over instances: merging reports within 40 s and 8.5 km, keeping the
   commoner network's, closes 24.7% [21.4, 28.2] (minute-rounded times blunt the window); the same merge
-  within a region over 10 minutes or an hour, 35.6% and 37.8% (the 10-minute figure is not among the b5a8d59 outputs); dropping every report from at, pt and ew,
+  within a region over an hour, 37.8% (the 10-minute merge, 35.6% at 8e63aee, is not among the b5a8d59 outputs); dropping every report from at, pt and ew,
   the re-reporting networks that file no event of their own in the synthetic world, 28.5% [24.9, 32.4];
   and the hour's merge with that drop, the best of 27 readers picked after the fact, 38.9% [35.3, 42.9],
   against 41.1% [37.3, 44.9] for the status rule that the rules intend (a paired difference of 2.2
@@ -1967,7 +1962,7 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   interval implies (not recomputed at b5a8d59). With few held-out instances (a demo of 20) every interval is rough. A side whose
   compared rows all come from one
   instance shows no spread between instances, so nothing widens its interval: one misread digest of a
-  held-out domain beside thirty public instances made an adjusted gap of +80 points (+55 to +105 as computed, +55 to +100 in a report off the legacy path; tests/test_gap_intervals.py builds this case: thirty public instances of five rows, four right each, and one held-out instance of five rows, all wrong). A
+  held-out domain beside thirty public instances made an adjusted gap of tens of points (tests/test_gap_intervals.py builds this case: thirty public instances of five rows, four right each, and one held-out instance of five rows, all wrong). A
   gap is therefore flagged only when the compared rows of each side come from two instances or more.
 * **Legacy consistency compares as 0.2.0 did.** A legacy report's metamorphic consistency compares
   two answers by the scoring tolerance alone, so two right answers on either side of the key (4.96
@@ -1996,22 +1991,24 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   words (a unit called "halls"), and the list of offensive parts that no coined word may contain is a
   list: it is not a filter of every word that gives offence.
 * **Live sources: USGS, NWS and JPL only.** The invented domain has none, by design. The NWS and JPL
-  CAD adapters have one run against the real APIs behind them, besides the recorded API responses
-  and fake transports that the tests use. On 2026-11-12 (at 8ef8657), `generate --mix
-  "weather:classic,neo:table,earthquakes:news" --source live --seed 8435451682288510821 --instances
-  6 --variants 1` fetched 532 observations from the 24 NWS stations (a 24-hour window), 69 close
-  approaches from the JPL CAD API (1,344 hours) and 240 events from the USGS day feed, none falling
-  back to synthetic data; the oracle's self-check reproduced the key in 56 of 56 checks (28
-  questions, each in its original rendering and one variant). That run's manifest, which records
-  these counts, each feed's SHA-256 and the self-check, is
-  `runs/live-smoke-2026-11-12/manifest.json` (its run ID, `run`, is the scratch folder it was
-  written to); as for every committed run, the frozen feeds, instances and prompts are not
-  committed. Replayed at 8ef8657 with `--snapshot-dir` while every request went to an unusable proxy, each
-  frozen feed's SHA-256 checked, and every instance, prompt and audit file came out byte-identical;
-  only the snapshots' metadata differed (the time of the fetch, which a replay has kept since, and a
-  note that says it is a replay), with the manifest's volatile and replay keys. At b5a8d59 the same replay is not byte-identical (26 of 32 files differ, because the code changed between the two commits: the mix is stored sorted, the seed labels and the forecast rules changed, and the weather events are derived differently), so that statement holds at 8ef8657 only. One run is not a
-  record of how the APIs behave over time: their formats or limits may still change, which the
-  frozen bytes and the fallback to synthetic data are there for.
+  CAD adapters each have a run against the real APIs behind them, besides the recorded API responses and
+  fake transports that the tests use. On 2026-11-15, at the final commit b5a8d59, `generate --mix
+  "weather:classic,neo:table,earthquakes:news" --source live --seed 8435451682288510821 --instances 6
+  --variants 1` fetched 546 observations from the NWS stations (a 24-hour window), 61 close approaches
+  from the JPL CAD API and 199 events from the USGS day feed, none falling back to synthetic data; the
+  oracle's self-check reproduced the key in 56 of 56 checks (28 questions, each in its original rendering
+  and one variant). The run's manifest, which records these counts, each feed's SHA-256 and the
+  self-check, is `runs/live-smoke-2026-11-15/manifest.json` (its run ID, `run`, is the scratch folder it
+  was written to). As for every committed run, the frozen feeds, instances and prompts are not committed.
+  Replayed offline at b5a8d59 with `--snapshot-dir` while every request went to an unusable proxy, every
+  frozen feed matched its recorded SHA-256, and every instance, prompt, audit and forecast file came out
+  byte-identical; the snapshots' metadata and the manifest's volatile and replay keys differed, as they
+  must. An earlier run, on 2026-11-12 at commit 8ef8657 (`runs/live-smoke-2026-11-12/manifest.json`), read
+  532 observations, 69 close approaches and 240 events with the same self-check. Its replay reproduced
+  that commit's files byte for byte; replaying its snapshot at b5a8d59 gives different files (26 of 32),
+  because the generator changed between the two commits. One run is not a record of how the APIs behave
+  over time: their formats or limits may still change, which the frozen bytes and the fallback to
+  synthetic data are there for.
 * **What is left of the trap tells off the legacy path.** A planted report is a record drawn with the
   digest (see Traps), so it is told apart only by what the rules name, and by what follows from them or
   from placing traps where they change answers. At the final commit no rule-free reader closes a
@@ -2123,8 +2120,7 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   its note says which record it is, as the rules say. That is deliberate: placed beside its record,
   or kept clear of every printed one, it would stand where no real record does, a tell that the red
   teams measured (an AUC of about 0.6 for the gap to the nearest report of its group, and up to 0.66
-  for the reports at a weather re-report's station, before slots). A blind reader at 4179c0c noted such reports
-  as odd (one note, not re-read at b5a8d59), and every one of them answered by the rules; reading one by its place instead breaks rule 1.
+  for the reports at a weather re-report's station, before slots). The blind readers at 4179c0c raised one wording note about such reports (not re-read at b5a8d59), and every one of them answered by the rules; reading one by its place instead breaks rule 1.
 * **neo's renderings say a catalogue "recorded" an approach.** Every genre prints a close approach's
   time beside the words of every record domain ("the catalogue jpl recorded close approach
   2026dk15-ca1 near Venus at ...", "Recorded:"), which a reader could take for when a catalogue
@@ -2166,17 +2162,16 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
 * **Message times of re-reports (deferred).** A re-report's form sent time, or its chat or email message time, follows
   its own time, which can precede its record's settled time. A message's time is never a record's time (rule 6), so no
   answer changes; the order is a realism limit that is not fixed.
-* **Cross-referenced aliases (deferred).** A cross-referenced alias keeps its slot's own H (median 1.6 magnitudes from
-  the named approach's), may have other approaches printed under its designation (32 of 325 cross-references), and one
+* **Cross-referenced aliases (deferred).** A cross-referenced alias keeps its slot's own H (typically more than a magnitude away from the named approach's, in the audit's samples), may have other approaches printed under its designation (in a minority of cross-references), and one
   designation can name two objects. These are realism limits only: rule 1 settles every count. Barring sibling-free
   slots for cross-references, or refitting the alias H to the named object's, would each add a measurable tell (real
   approaches have a twin about a quarter of the time; a refitted H would give one designation two values whenever its
   twin is printed), so neither is done. The answer-changing subcase, a note naming its own object's approach, is fixed. The figures in this item come from the audit fixes and were not recomputed at b5a8d59.
 * **Correction magnitudes keep the record's type (deferred).** An earthquake correction's wrong magnitude keeps the
-  record's magnitude type: 44 of 239 reviewed conflict reports lie outside their type's range in real-feed runs. The
+  record's magnitude type: a share of reviewed conflict reports (in the audit's samples) lie outside their type's range. The
   correction notice settles every answer. A root fix needs a new domain hook, since `planted_value` never sees the
   type; same-type donors would change most earthquake corrections off the legacy path, and the fallbacks would still
-  ignore the type. This is a known limitation. The 44 of 239 count comes from the audit fixes and was not recomputed at b5a8d59.
+  ignore the type. This is a known limitation. The share comes from the audit fixes and was not recomputed at b5a8d59.
 * **Made-up slots (deferred).** Where a record's group has no slot left, a made-up slot can still be planted (see
   *When no slot is left* under Traps).
 * **Re-reports pinned to a station (deferred).** Filing a weather re-report at its record's station and time would bring

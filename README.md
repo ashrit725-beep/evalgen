@@ -225,8 +225,9 @@ metrics and their limitations.
   prompts and replies are not committed. The 0.1.0 run cannot be regenerated with the current code,
   because the rules text is part of every prompt.
 - `runs/demo-synthetic-seed42/`, `runs/usgs-live-seed5/`: smaller demo runs (reports only).
-- `runs/live-smoke-2026-11-12/`: the manifest of the one 0.3.0 run that read the live NWS, JPL and USGS
-  sources (see the design doc's limitations).
+- `runs/live-smoke-2026-11-15/`: the manifest of the 0.3.0 run at the final commit (b5a8d59) that read the
+  live NWS, JPL and USGS sources; `runs/live-smoke-2026-11-12/` is the earlier run at 8ef8657 (see the design
+  doc's limitations).
 - [`docs/DESIGN.md`](docs/DESIGN.md): how evalgen works, including the threat model, the question
   grammar, traps, scoring, reproducibility and the method's limitations, and the domains, genres,
   mixes and held-out sets of 0.3.0. [`docs/PLAN-0.3.md`](docs/PLAN-0.3.md) is the plan of 0.3.0.
