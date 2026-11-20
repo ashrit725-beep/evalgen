@@ -1,9 +1,12 @@
 # evalgen 0.3.0: validation numbers at its final code commit b5a8d59
 
 Compiled 2026-11-14 from the measured outputs in this folder (calibration, trap shortcuts, identity; the demo report is not committed),
-the run folders kept outside the repository (live replay), the blind-reader counts and the checks named below. Every figure carries its source
-in brackets; nothing is taken from a document. Where a figure of the earlier 4179c0c round is needed for comparison,
-its source is the 4179c0c output file, named in full. Figures not recomputed at b5a8d59 are marked as such (section 14).
+the run folders kept outside the repository (live replay), the blind-reader counts and the checks named below; section 9 adds the live run of
+2026-11-15. Every figure carries its source in brackets; nothing is taken from a document. Where a figure of the earlier 4179c0c round is
+needed for comparison, its source is the 4179c0c output file, named in full. Figures not recomputed at b5a8d59 are marked as such (section 14).
+Some sources are working files of the measurement and are not committed: `run_calib.sh`, `calib_stats.txt`, `calib_more.py`,
+`calib_extra.py`, `compare.py`, `tests-final.log`, `repair_result.json`, the calibration configs, and every shortcut file except
+`shortcuts/tables.md` and `shortcuts/summary.json`.
 
 ## Provenance
 
@@ -35,9 +38,9 @@ its source is the 4179c0c output file, named in full. Figures not recomputed at 
 - **Trap shortcuts.** Seeds 5001-5084 (84 seeds): L = legacy (plain generate), G = every built-in domain with the genre
   rotating by seed, R = `--mix random`, C = each domain in classic; 3 instances x 3 renderings per run. Trees:
   `tree` (b5a8d59; manifests code_sha256 `11d06dc7...`, checked on 400 of them). Scripts:
-  the shortcut scripts (not committed); the
-  scripts folder is `shortcuts/scripts/`. Outputs: `shortcuts/` (tables.md, summary.json, *-paired.txt,
-  *-auc-fail.txt, *-sc-table.txt, L-runs-compare.json, L-check-same.json). The `report.md` there is stale (section 14).
+  the shortcut scripts (not committed). Outputs: `shortcuts/tables.md` and `shortcuts/summary.json` (committed);
+  the *-paired.txt, *-auc-fail.txt, *-sc-table.txt, L-runs-compare.json and L-check-same.json files and a stale shortcut
+  report (section 14) are not committed.
 - **Demo.** `cli.py demo --mix random --private-config <the demo's private config, not committed> --seed 42 --instances 40 --out <output folder> --force`,
   then `verify-config`: rc 0, "ok" (the demo report and its manifest are not committed).
 - **Identity.** `demo --seed 42 --instances 20` and `generate --seed 16222556419173536875 --instances 100`, run in 0.2.0 (b9f29b4) and at b5a8d59 with the same `--out` names and compared file by file (`identity-result.txt`; the comparison script is not committed).
@@ -233,7 +236,7 @@ Interval rule (95% CI excludes 0.5 and reaches outside [0.35, 0.65]) / point rul
 
 ## 12. Tests and reproduction
 
-- Full suite at b5a8d59: 1328 passed, 0 failed, 264.9 s. The README and DESIGN quote 866 tests (section 14 and `numbers-changes.md`).
+- Full suite at b5a8d59: 1328 passed, 0 failed, 264.9 s. The README and DESIGN quote the same count.
 
 ## 13. Caveats
 
@@ -243,8 +246,8 @@ Interval rule (95% CI excludes 0.5 and reaches outside [0.35, 0.65]) / point rul
 
 ## 14. Unresolved and stale items (not resolved in this measurement)
 
-1. **Live replay not identical at b5a8d59** (section 9). The docs' statement that the offline replay reproduces every instance, prompt and audit file holds at 8ef8657 only.
-2. **Stale labels in `shortcuts/`.** the shortcut report written with the measurement is the 4179c0c narrative (superseded; not committed): its title and "Comparison with the 8e63aee measurement" section say 4179c0c, the comparison columns labelled "at 4179c0c" carry b5a8d59 values, and its prose quotes 4179c0c figures (G status 38.2, R 37.5, C 38.2) that disagree with its own tables (37.2, 38.6, 37.2). `out/summary.json` `comparison` entries labelled 4179c0c hold b5a8d59 values (G naive 0.6022, against 0.603 in the 4179c0c tables). The `*-auc-fail.txt` headers and `shortcuts/README.txt` also say 4179c0c. The tables (tables.md; summary.json `samples`) are b5a8d59 and are the source used here.
+1. **The earlier live run (8ef8657) does not replay identically at b5a8d59** (section 9), because the generator changed. The docs' replay statement rests on the fresh run at b5a8d59 (2026-11-15), which does.
+2. **Stale labels in `shortcuts/`.** The shortcut report written with the measurement is the 4179c0c narrative (superseded; not committed): its title and "Comparison with the 8e63aee measurement" section say 4179c0c, the comparison columns labelled "at 4179c0c" carry b5a8d59 values, and its prose quotes 4179c0c figures (G status 38.2, R 37.5, C 38.2) that disagree with its own tables (37.2, 38.6, 37.2). `shortcuts/summary.json` `comparison` entries labelled 4179c0c hold b5a8d59 values (G naive 0.6022, against 0.603 in the 4179c0c tables). The `*-auc-fail.txt` headers and `shortcuts/README.txt` also say 4179c0c. The tables (tables.md; summary.json `samples`) are b5a8d59 and are the source used here.
 3. **Status rule plus the 40 s merge on G (36.5% at 4179c0c, DESIGN.md:936) is not reproduced at b5a8d59**: no such row exists in the outputs; the only combination with the status rule is `status_neo_prec_drop`, +0.0.
 4. **Design-expected quantities not recomputed**: the design-expected coverage (94.8%, 95.9% of 1,800), the design SD and SD/SE ratios, the design bias (-0.30 [-0.59, -0.03], SD 1.6; the first 40 instances, SD 4.4; genre SD 0.4), and the design-expected template gap. These need `design_expect_all.py` and `design_sd_all.py` from the 4179c0c synthesis, which are not among this measurement's inputs. The nearest realised quantity: plain-mock adjusted source gap -0.80 [-1.97, +0.37] (`calib_stats.txt`).
 5. **40-instance calibration not recomputed** (the 4179c0c design_bias_40 run): the source interval at 40 instances (about +-29) and the 20-instance demo of the example config (+-48 at 29% coverage) are 4179c0c figures.

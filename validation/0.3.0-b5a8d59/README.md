@@ -4,7 +4,8 @@ This folder records the validation of evalgen 0.3.0 at its final code commit, `b
 `1b0d3d7`) change only the README, the design document and one live manifest. Every calibration run here has code
 fingerprint `11d06dc7...`, the fingerprint of the `evalgen/` package at `b5a8d59`.
 
-Start with [paper-numbers.md](paper-numbers.md). Each figure there names the file in this folder that it comes from.
+Start with [paper-numbers.md](paper-numbers.md). Each figure there names its source; the sources that are not in this
+folder are listed at its top or marked as not committed.
 
 ## Contents
 
