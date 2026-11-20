@@ -25,8 +25,9 @@ folder are listed at its top or marked as not committed.
 
 - **Calibration configs.** They hold each slice's nonce and private settings, which stay private until the reveal. The
   held-out domains and genres they use are already named in `docs/DESIGN.md`.
-- **Run folders, frozen snapshots, prompts and model replies.** They are large and regenerate from a seed and a config.
-  The committed live-run manifest is `runs/live-smoke-2026-11-15/manifest.json`.
+- **Run folders, frozen snapshots, prompts and model replies.** They are large. Synthetic runs regenerate from a seed
+  and a config. A live run's frozen feeds cannot be regenerated and are not committed either; its manifest, which
+  records each feed's SHA-256, is: `runs/live-smoke-2026-11-15/manifest.json`.
 - **Synthesis and shortcut scripts.** They refer to local folders. `pool_check.py` is the independent pooling script.
 - **Careful-reader prompts and transcripts.** They are test material; the counts are in `blind-readers.md`.
 - **The demo report.** It needs the demo's private config, which is not committed. The public command is

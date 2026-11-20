@@ -1994,17 +1994,18 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   CAD adapters each have a run against the real APIs behind them, besides the recorded API responses and
   fake transports that the tests use. On 2026-11-15, at the final commit b5a8d59, `generate --mix
   "weather:classic,neo:table,earthquakes:news" --source live --seed 8435451682288510821 --instances 6
-  --variants 1` fetched 546 observations from the NWS stations (a 24-hour window), 61 close approaches
-  from the JPL CAD API and 199 events from the USGS day feed, none falling back to synthetic data; the
-  oracle's self-check reproduced the key in 56 of 56 checks (28 questions, each in its original rendering
-  and one variant). The run's manifest, which records these counts, each feed's SHA-256 and the
-  self-check, is `runs/live-smoke-2026-11-15/manifest.json` (its run ID, `run`, is the scratch folder it
+  --variants 1` fetched 3,166 observations from 24 NWS stations over a 24-hour window (the weather domain
+  keeps one per station and UTC hour: 546), 61 close approaches from the JPL CAD API and 199 events from
+  the USGS day feed, none falling back to synthetic data; the oracle's self-check reproduced the key in 56
+  of 56 checks (28 questions, each in its original rendering and one variant). The run's manifest, which
+  records the counts kept, each feed's SHA-256 and the self-check, is
+  `runs/live-smoke-2026-11-15/manifest.json` (its run ID, `run`, is the scratch folder it
   was written to). As for every committed run, the frozen feeds, instances and prompts are not committed.
   Replayed offline at b5a8d59 with `--snapshot-dir` while every request went to an unusable proxy, every
   frozen feed matched its recorded SHA-256, and every instance, prompt, audit and forecast file came out
   byte-identical; the snapshots' metadata and the manifest's volatile and replay keys differed, as they
-  must. An earlier run, on 2026-11-12 at commit 8ef8657 (`runs/live-smoke-2026-11-12/manifest.json`), read
-  532 observations, 69 close approaches and 240 events with the same self-check. Its replay reproduced
+  must. An earlier run, on 2026-11-12 at commit 8ef8657 (`runs/live-smoke-2026-11-12/manifest.json`), kept
+  532 hourly NWS observations, 69 close approaches and 240 events with the same self-check. Its replay reproduced
   that commit's files byte for byte; replaying its snapshot at b5a8d59 gives different files (26 of 32),
   because the generator changed between the two commits. One run is not a record of how the APIs behave
   over time: their formats or limits may still change, which the frozen bytes and the fallback to
@@ -2168,10 +2169,12 @@ runs/<run>/             manifest.json, snapshot/ (snapshot/<domain>/ for several
   approaches have a twin about a quarter of the time; a refitted H would give one designation two values whenever its
   twin is printed), so neither is done. The answer-changing subcase, a note naming its own object's approach, is fixed. The figures in this item come from the audit fixes and were not recomputed at b5a8d59.
 * **Correction magnitudes keep the record's type (deferred).** An earthquake correction's wrong magnitude keeps the
-  record's magnitude type: a share of reviewed conflict reports (in the audit's samples) lie outside their type's range. The
-  correction notice settles every answer. A root fix needs a new domain hook, since `planted_value` never sees the
-  type; same-type donors would change most earthquake corrections off the legacy path, and the fallbacks would still
-  ignore the type. This is a known limitation. The share comes from the audit fixes and was not recomputed at b5a8d59.
+  record's magnitude type, but `_wrong_value` (in `traps.py`) picks its donor slot by group, place and time, not by
+  type, so a share of corrections lie outside their type's range (88 of 567 in the final review's sample of 300
+  synthetic instances, seed 201). The correction notice settles every answer. The fix needs no new domain hook:
+  `_wrong_value` already sees the record and the slots, whose qualifiers hold the magnitude type, so it could prefer
+  donors of the record's own type. It is deferred because same-type donors would change most earthquake corrections
+  off the legacy path, and the fallbacks would still ignore the type. The share was not recomputed at b5a8d59.
 * **Made-up slots (deferred).** Where a record's group has no slot left, a made-up slot can still be planted (see
   *When no slot is left* under Traps).
 * **Re-reports pinned to a station (deferred).** Filing a weather re-report at its record's station and time would bring

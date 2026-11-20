@@ -15,7 +15,9 @@ Some sources are working files of the measurement and are not committed: `run_ca
   every one of the 870 calibration result rows carries it as `code_sha256` and `commit` = b5a8d59
   [`calibration/calib-*/results.jsonl`; `calibration/calib-1-40/checks.json` (`tree_code_fingerprint`)]. The extracted tree
   `tree` is `git archive b5a8d59` (114 files), re-extracted for section 9 and identical (a second extraction, compared with `diff -rq`; not committed).
-- **Tests.** 1328 passed, 0 failed, 264.9 s [`tests-final.log`; `repair_result.json`].
+- **Tests.** 1328 passed, 0 failed, 264.9 s [`tests-final.log`; `repair_result.json`], run in the extracted tree with
+  every HTTP(S) and ALL proxy at 127.0.0.1:9 and the API-key variables unset; the suite has no network guard of its
+  own, and its live-source tests use recorded responses and fake transports.
 - **Clean checkout.** The code was extracted from the commit with `git archive`; nothing was committed or pushed for the measurement.
 - **Other commits named.** 4179c0c (`4179c0ce3cb2de5e6c7874d30df12937b88ef66b`, the previous final round,
   code_sha256 `3ef7d22f...`); 8e63aee (code_sha256 `71e4a019...`); 8ef8657 (live run, code_sha256 `c281a51a...`);
@@ -213,7 +215,7 @@ Interval rule (95% CI excludes 0.5 and reaches outside [0.35, 0.65]) / point rul
 
 ## 9. Live runs and replays
 
-- **A fresh live run at b5a8d59 (2026-11-15).** `generate --mix "weather:classic,neo:table,earthquakes:news" --source live --seed 8435451682288510821 --instances 6 --variants 1` from the final tree (rc 0; the run folder is not committed). It fetched 546 NWS observations (24 stations, 24 h window), 61 JPL close approaches and 199 USGS day-feed events; no source fell back to synthetic data; the oracle self-check was 56/56, 6/6 resolution invariant. Manifest: `runs/live-smoke-2026-11-15/manifest.json` (committed).
+- **A fresh live run at b5a8d59 (2026-11-15).** `generate --mix "weather:classic,neo:table,earthquakes:news" --source live --seed 8435451682288510821 --instances 6 --variants 1` from the final tree (rc 0; the run folder is not committed). It fetched 3,166 NWS observations from 24 stations (24 h window) and kept 546 of them (one per station and UTC hour), 61 JPL close approaches and 199 USGS day-feed events [3,166: the run's frozen NWS `raw_feed.json`, not committed; 546: the manifest's `snapshots.weather.n_events`]; no source fell back to synthetic data; the oracle self-check was 56/56, 6/6 resolution invariant. Manifest: `runs/live-smoke-2026-11-15/manifest.json` (committed).
 - **Offline replay of that run at b5a8d59** (`--source live --snapshot-dir <run>/snapshot`, the same seed and mix, every request routed to an unusable proxy; rc 0). Byte comparison: all six `instances/*.json`, all twelve `prompts/*/v*.txt`, both `audit/*` files and `forecasts.json` are identical, and so are the raw feeds and `events.json` in `snapshot/`. Each `snapshot/*/snapshot.json` differs only in its replay `note`; `manifest.json` differs in `run_id`, `seed_commitment`, `seed_nonce`, `generated_at_utc`, its `replay` block, `config.snapshot_dir` and the three snapshot notes. `live_replay_identical` = true for the instances, prompts, audit and forecasts (the sentence the docs now use).
 - **The earlier committed run (8ef8657, 2026-11-12, `runs/live-smoke-2026-11-12/manifest.json`).** Its snapshot replayed at 8ef8657 reproduces all 28 non-provenance files; replayed at b5a8d59 it does not (26 of 32 files differ), because the generator changed between the two commits (the instance domains and the prompts differ). Measured in the earlier round; the docs say so.
 
